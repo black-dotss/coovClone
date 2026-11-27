@@ -9,6 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import Link from "next/link";
 import { getWallets } from "@wallet-standard/app";
 import type { Wallet, WalletAccount } from "@wallet-standard/base";
 import {
@@ -388,19 +389,28 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
           )}
 
           {account ? (
-            <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 space-y-3">
+            <div className="p-4 rounded-xl border border-purple-500/40 bg-surface-elevated space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
+                <span className="text-xs font-bold text-purple-400 uppercase tracking-wider">
                   Connected ({selectedWallet?.name})
                 </span>
-                <Badge variant="success" className="text-[10px]">
+                <Badge variant="purple" className="text-[10px]">
                   {value.clusterLabel}
                 </Badge>
               </div>
-              <div className="font-mono text-xs text-text break-all bg-surface/60 p-2.5 rounded-lg border border-border">
+              <div className="font-mono text-xs text-text break-all bg-surface p-2.5 rounded-lg border border-border">
                 {account.address}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Link href="/profile?tab=solana" onClick={() => setIsModalOpen(false)}>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="bg-purple-600 hover:bg-purple-500 font-semibold"
+                  >
+                    On-Chain & SBT →
+                  </Button>
+                </Link>
                 <Button
                   variant="secondary"
                   size="sm"

@@ -29,7 +29,6 @@ export const Navbar: React.FC = () => {
     { label: "Role Compare", href: "/comparisons" },
     { label: "Plans", href: "/billing" },
     ...(isSuperAdmin ? [{ label: "Admin", href: "/admin" }] : []),
-    ...(session ? [{ label: "On-Chain & SBT", href: "/profile?tab=solana" }] : []),
     ...(session ? [{ label: "History", href: "/evaluations" }] : []),
   ];
 

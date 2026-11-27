@@ -230,6 +230,11 @@ export default function BountiesPage() {
               Connect Wallet
             </Button>
           )}
+          <Link href="/profile?tab=solana">
+            <Button variant="outline" size="md">
+              On-Chain & SBT
+            </Button>
+          </Link>
           <Link href="/bounties/new">
             <Button variant="primary" size="md" className="bg-purple-600 hover:bg-purple-500 font-semibold">
               + Post USDC Bounty Escrow

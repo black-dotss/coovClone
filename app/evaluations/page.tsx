@@ -162,6 +162,12 @@ export default function HistoryPage() {
           >
             + Compare Roles
           </Link>
+          <Link
+            href="/profile?tab=solana"
+            className="px-3.5 py-1.5 bg-surface-elevated hover:border-purple-500/50 border border-border text-purple-400 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
+          >
+            On-Chain & SBT
+          </Link>
         </div>
       </div>
 
