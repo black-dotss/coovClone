@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { createApiHandler, successResponse } from "@/lib/shared";
 import { requireAuth } from "@/lib/auth";
 import { getEvaluationProgress } from "@/lib/evaluations/progress";
@@ -19,9 +20,13 @@ export const GET = createApiHandler(
     // Immediate snapshot
     const initialProgress = await getEvaluationProgress(id, session.user.id);
 
-    // Auto-heal / self-trigger execution if evaluation is queued or stalled
+    // Auto-heal / self-trigger execution non-blockingly if queued or stalled
     if (initialProgress.status === "queued" || initialProgress.status === "processing") {
-      await dispatchEvaluationExecution(id);
+      try {
+        after(() => dispatchEvaluationExecution(id));
+      } catch {
+        void dispatchEvaluationExecution(id);
+      }
     }
 
     if (!isStreamRequested) {
@@ -92,7 +97,7 @@ export const GET = createApiHandler(
               Date.now() - lastTriggerTime > 20_000
             ) {
               lastTriggerTime = Date.now();
-              await dispatchEvaluationExecution(id);
+              void dispatchEvaluationExecution(id);
             }
           }
         } catch (err) {

@@ -1306,9 +1306,9 @@ export default function EvaluationReportPage({
                     Immutable SHA-256 report attestation & Token-2022 Soulbound Credential
                   </p>
                 </div>
-                <Badge variant="purple" size="sm">
+                <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
                   Solana Devnet
-                </Badge>
+                </span>
               </div>
               <EvaluationOnChainPanel evaluationId={id} />
             </div>

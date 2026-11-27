@@ -109,6 +109,20 @@ export interface SolanaWalletContextValue {
 
 const SolanaWalletContext = createContext<SolanaWalletContextValue | null>(null);
 
+function formatClientWalletError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err || "Wallet transaction failed.");
+  if (/user rejected|rejected the request/i.test(raw)) {
+    return "Transaction cancelled in wallet.";
+  }
+  if (/custom program error:\s*0x1\b|"Custom":1\b|insufficient funds|insufficient lamports/i.test(raw)) {
+    return "Insufficient Devnet USDC or SOL balance in your wallet to complete this transaction.";
+  }
+  if (/Blockhash not found/i.test(raw)) {
+    return "Solana transaction blockhash expired. Please click Submit again to sign with a fresh blockhash.";
+  }
+  return raw.replace(/\s*Catch the `SendTransactionError`[\s\S]*$/i, "").trim();
+}
+
 export function SolanaWalletProvider({ children }: { children: React.ReactNode }) {
   const [wallets, setWallets] = useState<readonly Wallet[]>([]);
   const [selectedWallet, setSelectedWallet] = useState<Wallet | null>(null);
@@ -282,29 +296,33 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
         | undefined;
 
       if (signTxFeature) {
-        const outputs = await signTxFeature.signTransaction({
-          account,
-          transaction: txBytes,
-          chain,
-          options: {
-            preflightCommitment: "confirmed",
-          },
-        });
-        const signed = outputs[0]?.signedTransaction;
-        if (!signed) {
-          throw new Error("Wallet did not return a signed transaction.");
-        }
-
-        const broadcastRes = await apiFetch<{ signature: string }>(
-          "/api/solana/broadcast",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              signedTxBase64: uint8ToBase64(signed),
-            }),
+        try {
+          const outputs = await signTxFeature.signTransaction({
+            account,
+            transaction: txBytes,
+            chain,
+            options: {
+              preflightCommitment: "confirmed",
+            },
+          });
+          const signed = outputs[0]?.signedTransaction;
+          if (!signed) {
+            throw new Error("Wallet did not return a signed transaction.");
           }
-        );
-        return broadcastRes.signature;
+
+          const broadcastRes = await apiFetch<{ signature: string }>(
+            "/api/solana/broadcast",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                signedTxBase64: uint8ToBase64(signed),
+              }),
+            }
+          );
+          return broadcastRes.signature;
+        } catch (err) {
+          throw new Error(formatClientWalletError(err));
+        }
       }
 
       const signAndSendFeature = selectedWallet.features[
@@ -314,20 +332,24 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
         | undefined;
 
       if (signAndSendFeature) {
-        const outputs = await signAndSendFeature.signAndSendTransaction({
-          account,
-          transaction: txBytes,
-          chain,
-          options: {
-            commitment: "confirmed",
-            preflightCommitment: "confirmed",
-          },
-        });
-        const rawSig = outputs[0]?.signature;
-        if (!rawSig) {
-          throw new Error("Wallet did not return a transaction signature.");
+        try {
+          const outputs = await signAndSendFeature.signAndSendTransaction({
+            account,
+            transaction: txBytes,
+            chain,
+            options: {
+              commitment: "confirmed",
+              preflightCommitment: "confirmed",
+            },
+          });
+          const rawSig = outputs[0]?.signature;
+          if (!rawSig) {
+            throw new Error("Wallet did not return a transaction signature.");
+          }
+          return encodeBase58(rawSig);
+        } catch (err) {
+          throw new Error(formatClientWalletError(err));
         }
-        return encodeBase58(rawSig);
       }
 
       throw new Error(`${selectedWallet.name} does not support Solana transaction signing.`);
@@ -389,25 +411,21 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
           )}
 
           {account ? (
-            <div className="p-4 rounded-xl border border-purple-500/40 bg-surface-elevated space-y-3">
+            <div className="p-4 rounded-xl border border-border bg-surface-elevated space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-purple-400 uppercase tracking-wider">
                   Connected ({selectedWallet?.name})
                 </span>
-                <Badge variant="purple" className="text-[10px]">
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-surface border border-border text-text-secondary">
                   {value.clusterLabel}
-                </Badge>
+                </span>
               </div>
               <div className="font-mono text-xs text-text break-all bg-surface p-2.5 rounded-lg border border-border">
                 {account.address}
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Link href="/profile?tab=solana" onClick={() => setIsModalOpen(false)}>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    className="bg-purple-600 hover:bg-purple-500 font-semibold"
-                  >
+                  <Button variant="primary" size="sm">
                     On-Chain & SBT →
                   </Button>
                 </Link>
@@ -479,7 +497,7 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
                         className="w-7 h-7 rounded-lg object-contain"
                       />
                     ) : (
-                      <div className="w-7 h-7 rounded-lg bg-purple-600/20 text-purple-400 flex items-center justify-center text-xs font-bold">
+                      <div className="w-7 h-7 rounded-lg bg-surface border border-border text-purple-400 flex items-center justify-center text-xs font-bold">
                         {w.name.slice(0, 1)}
                       </div>
                     )}

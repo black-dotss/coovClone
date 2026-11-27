@@ -7,7 +7,6 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
 import { apiFetch } from "@/lib/client/api";
 import { useSession } from "@/lib/auth/auth-client";
@@ -106,24 +105,21 @@ export default function NewBountyPage() {
       {/* Header matching /evaluations/new */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border">
         <div className="space-y-1">
-          <div className="flex items-center gap-3">
-            <Link
-              href="/bounties"
-              className="text-xs font-mono text-text-muted hover:text-purple-400 transition-colors"
-            >
-              ← Back to Bounties
-            </Link>
-          </div>
+          <Link
+            href="/bounties"
+            className="text-xs font-mono text-text-muted hover:text-purple-400 transition-colors"
+          >
+            ← Back to Bounties
+          </Link>
           <h1 className="text-2xl font-bold text-text">
             Post USDC Bounty Escrow
           </h1>
         </div>
-        <Badge variant="purple" size="sm">
+        <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-text-secondary">
           Solana {clusterLabel} · USDC
-        </Badge>
+        </span>
       </div>
 
-      {/* Prominent Top Error Alert — never hidden behind a modal */}
       {errorMessage && (
         <Alert
           variant="danger"
@@ -192,7 +188,7 @@ export default function NewBountyPage() {
                   />
                 </div>
 
-                <div className="p-4 rounded-xl bg-surface-elevated border border-purple-500/30 space-y-2">
+                <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-2">
                   <div className="flex items-center justify-between text-xs font-mono">
                     <span className="text-text-muted">Total Escrow Lock</span>
                     <span className="text-lg font-extrabold text-purple-400">
@@ -200,15 +196,15 @@ export default function NewBountyPage() {
                     </span>
                   </div>
                   <p className="text-[11px] text-text-secondary leading-relaxed">
-                    First {maxWinners || 1} candidate(s) scoring{" "}
+                    Up to {maxWinners || 1} candidate(s) scoring{" "}
                     <span className="font-semibold text-text">
                       {minScore || 85}/100+
                     </span>{" "}
-                    and anchoring their COOV report on-chain claim{" "}
+                    enter a 24h publisher review hold before claiming{" "}
                     <span className="font-semibold text-text">
                       {rewardPerWinner || 0} USDC
-                    </span>{" "}
-                    each. Unclaimed funds withdraw cleanly after expiry.
+                    </span>
+                    . Unclaimed funds withdraw cleanly after expiry.
                   </p>
                 </div>
               </CardContent>
@@ -222,14 +218,14 @@ export default function NewBountyPage() {
               </CardHeader>
               <CardContent className="pt-4 space-y-3">
                 {publicKey ? (
-                  <div className="p-3.5 rounded-xl bg-surface-elevated border border-border space-y-1">
+                  <div className="p-3.5 rounded-lg bg-surface-elevated border border-border space-y-1">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] font-mono text-text-muted uppercase">
                         Connected Wallet ({clusterLabel})
                       </span>
-                      <Badge variant="purple" size="sm">
+                      <span className="text-[11px] font-mono text-purple-400">
                         Ready
-                      </Badge>
+                      </span>
                     </div>
                     <p className="font-mono text-xs text-text break-all">
                       {publicKey}
@@ -302,7 +298,7 @@ export default function NewBountyPage() {
           </div>
         </div>
 
-        {/* Inline Error Mirror right beside Submit for long viewports */}
+        {/* Inline Error Mirror */}
         {errorMessage && (
           <Alert variant="danger" title="Transaction Error">
             {errorMessage}
@@ -321,7 +317,7 @@ export default function NewBountyPage() {
               type="button"
               variant="primary"
               size="lg"
-              className="min-w-[220px] font-bold"
+              className="min-w-[220px]"
               onClick={openConnectModal}
             >
               Connect Wallet to Fund →
@@ -332,7 +328,7 @@ export default function NewBountyPage() {
               variant="primary"
               size="lg"
               isLoading={submitting}
-              className="min-w-[240px] font-bold bg-purple-600 hover:bg-purple-500"
+              className="min-w-[240px]"
             >
               {submitting
                 ? "Confirming Escrow..."

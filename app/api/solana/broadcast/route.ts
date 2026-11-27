@@ -16,8 +16,8 @@ function formatSolanaBroadcastError(rawMessage: string, logs: string[]): string 
   if (/Attempt to debit an account but found no record of a prior credit/i.test(combined)) {
     return "Your connected Solana wallet has 0 Devnet SOL to pay network fees/rent. Fund your wallet with Devnet SOL and retry.";
   }
-  if (/insufficient funds|insufficient lamports/i.test(combined)) {
-    return "Insufficient Devnet SOL or USDC balance in your wallet for this transaction.";
+  if (/insufficient funds|insufficient lamports|custom program error:\s*0x1\b|"Custom":1\b/i.test(combined)) {
+    return "Insufficient Devnet USDC or SOL balance in your wallet to complete this transaction.";
   }
 
   // Extract explicit Anchor Error Message if present in logs

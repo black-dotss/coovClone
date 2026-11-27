@@ -3,7 +3,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
@@ -159,16 +158,16 @@ export const ProfileOnChainPanel: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-6">
+      <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-4">
           <div>
             <div className="flex items-center gap-2.5">
               <h2 className="text-xl font-extrabold text-text">
                 On-Chain Identity & Skill Registry
               </h2>
-              <Badge variant="purple" size="sm">
+              <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
                 Solana {clusterLabel}
-              </Badge>
+              </span>
             </div>
             <p className="text-xs text-text-secondary mt-1">
               Link Phantom or Solflare to publish verified committee scores and mint Token-2022 Soulbound credentials.
@@ -207,21 +206,15 @@ export const ProfileOnChainPanel: React.FC = () => {
         ) : (
           <div className="space-y-5">
             {/* Wallet Linking Controls */}
-            <div className="p-4 rounded-xl bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="p-4 rounded-lg bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="space-y-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-mono font-bold uppercase tracking-wider text-text-muted">
                     Linked Wallet
                   </span>
-                  {data?.linkedWallet ? (
-                    <Badge variant="purple" size="sm">
-                      Verified
-                    </Badge>
-                  ) : (
-                    <Badge variant="neutral" size="sm">
-                      Not Linked
-                    </Badge>
-                  )}
+                  <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-purple-400">
+                    {data?.linkedWallet ? "Verified" : "Not Linked"}
+                  </span>
                 </div>
                 {data?.linkedWallet ? (
                   <p className="font-mono text-xs sm:text-sm text-text break-all">
@@ -238,12 +231,7 @@ export const ProfileOnChainPanel: React.FC = () => {
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 {!publicKey && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    className="bg-purple-600 hover:bg-purple-500 font-semibold"
-                    onClick={openConnectModal}
-                  >
+                  <Button variant="primary" size="sm" onClick={openConnectModal}>
                     Connect Wallet
                   </Button>
                 )}
@@ -251,7 +239,6 @@ export const ProfileOnChainPanel: React.FC = () => {
                   <Button
                     variant="primary"
                     size="sm"
-                    className="bg-purple-600 hover:bg-purple-500 font-semibold"
                     isLoading={linking}
                     onClick={() => void handleLinkWallet()}
                   >
@@ -272,7 +259,7 @@ export const ProfileOnChainPanel: React.FC = () => {
             </div>
 
             {/* Candidate Profile PDA State */}
-            <div className="rounded-xl border border-border bg-surface-elevated p-5 space-y-4">
+            <div className="rounded-lg border border-border bg-surface-elevated p-5 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-extrabold text-text">
@@ -331,9 +318,12 @@ export const ProfileOnChainPanel: React.FC = () => {
                     </span>
                     <div className="flex flex-wrap gap-1.5">
                       {data.onChainProfile.topSkills.map((skill) => (
-                        <Badge key={skill} variant="purple" size="sm">
+                        <span
+                          key={skill}
+                          className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface border border-border text-text-secondary"
+                        >
                           {skill}
-                        </Badge>
+                        </span>
                       ))}
                     </div>
                   </div>
@@ -356,7 +346,7 @@ export const ProfileOnChainPanel: React.FC = () => {
       </div>
 
       {/* Token-2022 Non-Transferable Soulbound Credentials */}
-      <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-4">
+      <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border pb-4">
           <div>
             <h2 className="text-xl font-extrabold text-text">
@@ -366,9 +356,9 @@ export const ProfileOnChainPanel: React.FC = () => {
               Permanent non-transferable credentials minted for evaluations scoring 85/100 or higher.
             </p>
           </div>
-          <Badge variant="purple" size="sm">
+          <span className="px-2.5 py-0.5 text-xs font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
             {data?.credentials.length || 0} Minted
-          </Badge>
+          </span>
         </div>
 
         {loading ? (
@@ -376,7 +366,7 @@ export const ProfileOnChainPanel: React.FC = () => {
             <LoadingSpinner label="Scanning Token-2022 Non-Transferable mints..." />
           </div>
         ) : !data?.credentials || data.credentials.length === 0 ? (
-          <div className="p-6 rounded-xl bg-surface-elevated border border-border text-center space-y-2">
+          <div className="p-6 rounded-lg bg-surface-elevated border border-border text-center space-y-2">
             <p className="text-sm font-bold text-text">No Soulbound Credentials Yet</p>
             <p className="text-xs text-text-secondary max-w-lg mx-auto">
               Score 85/100+ on any COOV evaluation, open its On-Chain & SBT menu, anchor the proof, and mint your SBT credential.
@@ -387,26 +377,26 @@ export const ProfileOnChainPanel: React.FC = () => {
             {data.credentials.map((cred) => (
               <div
                 key={cred.mint}
-                className="p-5 rounded-xl border border-purple-500/40 bg-surface-elevated space-y-3"
+                className="p-5 rounded-lg border border-border bg-surface-elevated space-y-3"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="flex items-center gap-2">
-                      <Badge variant="purple" size="sm">
+                      <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-purple-400">
                         {cred.symbol || "COOV-SBT"}
-                      </Badge>
-                      <Badge variant="neutral" size="sm">
+                      </span>
+                      <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-text-muted">
                         Soulbound
-                      </Badge>
+                      </span>
                     </div>
                     <h4 className="text-base font-extrabold text-text mt-2">
                       {cred.roleTitle || cred.name}
                     </h4>
                   </div>
                   {cred.scoreTier && (
-                    <Badge variant="purple" size="sm">
+                    <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-text">
                       {cred.scoreTier}
-                    </Badge>
+                    </span>
                   )}
                 </div>
 

@@ -371,7 +371,7 @@ export default function NewEvaluationPage() {
           Targeting <strong>{activeBounty.title}</strong> at{" "}
           <strong>{activeBounty.company}</strong>. Resumes undergo SHA-256 duplicate &
           Fake Resume Detector gating. Scoring {activeBounty.minScore}/100+ reserves your
-          winner slot in a 48h recruiter review window before payout release.
+          winner slot in a 24h recruiter review window before payout release.
         </Alert>
       )}
 

@@ -1,5 +1,7 @@
+import { after } from "next/server";
 import { createApiHandler, successResponse } from "@/lib/shared";
 import { requireAuth } from "@/lib/auth";
+import { logger } from "@/lib/shared/logger";
 import { createEvaluation, listUserEvaluations } from "@/lib/evaluations/service";
 import { CreateEvaluationInputSchema } from "@/lib/evaluations/validation";
 import {
@@ -32,8 +34,17 @@ export const POST = createApiHandler(async (req: Request) => {
     headers: req.headers,
   });
 
-  // Launch execution through Cloudflare/Node unified runner
-  await dispatchEvaluationExecution(evaluation.id);
+  // Schedule non-blocking execution so the client immediately streams agent progress step-by-step
+  after(async () => {
+    try {
+      await dispatchEvaluationExecution(evaluation.id);
+    } catch (err) {
+      logger.error("Background evaluation dispatch failed", {
+        evaluationId: evaluation.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
 
   return successResponse(
     {

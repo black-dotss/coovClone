@@ -3,7 +3,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -335,15 +334,15 @@ export default function BountyPublisherReviewPage() {
           </Link>
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-2xl sm:text-3xl font-extrabold text-text">
-              Publisher Review Panel · {data.bounty.title}
+              Publisher Review · {data.bounty.title}
             </h1>
-            <Badge variant="purple" size="sm">
+            <span className="px-2 py-0.5 text-xs font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
               {data.bounty.company}
-            </Badge>
+            </span>
           </div>
           <p className="text-xs text-text-secondary">
             Min Score {data.bounty.minScore}/100 · {data.bounty.rewardPerWinnerUsdc} USDC per winner ·
-            48h Optimistic Review Escrow
+            24h Review Window
           </p>
         </div>
 
@@ -373,7 +372,7 @@ export default function BountyPublisherReviewPage() {
 
       {/* Slot & Anti-Fraud Metrics Bar */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="p-4 rounded-xl bg-surface border border-border">
+        <div className="p-4 rounded-lg bg-surface border border-border">
           <span className="text-[11px] font-mono uppercase text-text-muted">
             Reserved (Pending Review)
           </span>
@@ -381,26 +380,26 @@ export default function BountyPublisherReviewPage() {
             {data.slotMetrics.pendingReviewCount}
           </p>
         </div>
-        <div className="p-4 rounded-xl bg-surface border border-border">
+        <div className="p-4 rounded-lg bg-surface border border-border">
           <span className="text-[11px] font-mono uppercase text-text-muted">
-            Paid On-Chain / Approved
+            Paid / Approved
           </span>
           <p className="text-2xl font-extrabold text-text mt-1">
             {data.slotMetrics.claimsCount + data.slotMetrics.approvedCount} /{" "}
             {data.slotMetrics.maxWinners}
           </p>
         </div>
-        <div className="p-4 rounded-xl bg-surface border border-border">
+        <div className="p-4 rounded-lg bg-surface border border-border">
           <span className="text-[11px] font-mono uppercase text-text-muted">
-            Open Winner Slots
+            Open Slots
           </span>
           <p className="text-2xl font-extrabold text-text mt-1">
             {data.slotMetrics.availableSlots}
           </p>
         </div>
-        <div className="p-4 rounded-xl bg-surface border border-border">
+        <div className="p-4 rounded-lg bg-surface border border-border">
           <span className="text-[11px] font-mono uppercase text-text-muted">
-            Blocked / Restricted
+            Restricted
           </span>
           <p className="text-2xl font-extrabold text-red-400 mt-1">
             {data.restrictions.length}
@@ -412,10 +411,10 @@ export default function BountyPublisherReviewPage() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left: Submissions & Restrictions */}
         <div className="lg:col-span-4 space-y-6">
-          <Card className="bg-surface border-border">
+          <Card className="bg-surface border-border rounded-xl">
             <CardHeader className="pb-3 border-b border-border">
               <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
-                Candidate Submissions ({data.submissions.length})
+                Submissions ({data.submissions.length})
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-3 space-y-2.5 max-h-[540px] overflow-y-auto">
@@ -431,10 +430,10 @@ export default function BountyPublisherReviewPage() {
                       key={sub.id}
                       type="button"
                       onClick={() => setSelectedId(sub.id)}
-                      className={`w-full text-left p-3.5 rounded-xl border transition-all cursor-pointer space-y-2 ${
+                      className={`w-full text-left p-3.5 rounded-lg border transition-colors cursor-pointer space-y-2 bg-surface-elevated ${
                         isActive
-                          ? "bg-purple-600/15 border-purple-500/60"
-                          : "bg-surface-elevated border-border hover:border-purple-500/30"
+                          ? "border-purple-500/60"
+                          : "border-border hover:border-purple-500/30"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -451,25 +450,23 @@ export default function BountyPublisherReviewPage() {
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge
-                          variant={
-                            sub.reviewStatus === "approved" || sub.reviewStatus === "claimed"
-                              ? "purple"
-                              : sub.reviewStatus === "pending_review"
-                              ? "warning"
-                              : sub.reviewStatus.startsWith("blocked") ||
-                                sub.reviewStatus === "rejected"
-                              ? "danger"
-                              : "neutral"
-                          }
-                          size="sm"
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border ${
+                            sub.reviewStatus.startsWith("blocked") ||
+                            sub.reviewStatus === "rejected"
+                              ? "text-red-400"
+                              : sub.reviewStatus === "approved" ||
+                                sub.reviewStatus === "claimed"
+                              ? "text-purple-400"
+                              : "text-text-secondary"
+                          }`}
                         >
                           {statusLabel(sub.reviewStatus)}
-                        </Badge>
+                        </span>
                         {sub.remainingReviewLabel && (
                           <span className="text-[10px] font-mono text-text-muted">
-                            ⏱ {sub.remainingReviewLabel}
+                            {sub.remainingReviewLabel}
                           </span>
                         )}
                       </div>
@@ -481,7 +478,7 @@ export default function BountyPublisherReviewPage() {
           </Card>
 
           {/* Restricted Log */}
-          <Card className="bg-surface border-border">
+          <Card className="bg-surface border-border rounded-xl">
             <CardHeader className="pb-3 border-b border-border">
               <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
                 Restricted Entities ({data.restrictions.length})
@@ -499,9 +496,9 @@ export default function BountyPublisherReviewPage() {
                     className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1 text-xs"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <Badge variant="danger" size="sm">
+                      <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-red-400">
                         {r.reason.replace(/_/g, " ")}
-                      </Badge>
+                      </span>
                       <span className="text-[10px] font-mono text-text-muted">
                         {new Date(r.createdAt).toLocaleDateString()}
                       </span>
@@ -521,14 +518,14 @@ export default function BountyPublisherReviewPage() {
         {/* Right: Deep Submission Inspector */}
         <div className="lg:col-span-8 space-y-6">
           {!selected ? (
-            <div className="rounded-2xl border border-border bg-surface p-12 text-center text-sm text-text-secondary">
+            <div className="rounded-xl border border-border bg-surface p-12 text-center text-sm text-text-secondary">
               Select a submission from the left queue to inspect its full CV, 6-agent review,
               and Fake Resume Detector report.
             </div>
           ) : (
             <>
               {/* Candidate Header & Decision Controls */}
-              <Card className="bg-surface border-purple-500/40">
+              <Card className="bg-surface border-border rounded-xl">
                 <CardHeader className="pb-4 border-b border-border">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
@@ -536,9 +533,9 @@ export default function BountyPublisherReviewPage() {
                         <h2 className="text-xl font-extrabold text-text">
                           {selected.candidateName}
                         </h2>
-                        <Badge variant="purple" size="sm">
+                        <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
                           {statusLabel(selected.reviewStatus)}
-                        </Badge>
+                        </span>
                       </div>
                       <p className="text-xs font-mono text-text-muted mt-1">
                         {selected.candidateEmail} · Score:{" "}
@@ -570,7 +567,7 @@ export default function BountyPublisherReviewPage() {
                     </div>
                     <div className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1">
                       <span className="text-[10px] text-text-muted uppercase">
-                        Candidate Solana Wallet & Proof
+                        Candidate Solana Wallet
                       </span>
                       <p className="text-text break-all">
                         {selected.candidateWallet || "Not anchored to wallet yet"}
@@ -603,7 +600,6 @@ export default function BountyPublisherReviewPage() {
                         <Button
                           variant="primary"
                           size="md"
-                          className="bg-purple-600 hover:bg-purple-500 font-bold"
                           isLoading={submittingAction === "approve"}
                           onClick={() => void handleDecision("approve")}
                         >
@@ -629,9 +625,8 @@ export default function BountyPublisherReviewPage() {
                         selected.candidateWallet === publicKey &&
                         selected.evalTxSignature && (
                           <Button
-                            variant="primary"
+                            variant="outline"
                             size="md"
-                            className="bg-purple-600 hover:bg-purple-500 font-bold"
                             isLoading={submittingAction === "payout"}
                             onClick={() => void handleDirectTestPayout()}
                           >
@@ -641,27 +636,28 @@ export default function BountyPublisherReviewPage() {
                     </div>
 
                     <span className="text-[11px] font-mono text-text-muted">
-                      Approving clears the 48h lock immediately for on-chain USDC release.
+                      Approving clears the 24h hold immediately for on-chain USDC release.
                     </span>
                   </div>
                 </CardContent>
               </Card>
 
               {/* Fake Resume Detector Agent Report */}
-              <Card className="bg-surface border-border">
+              <Card className="bg-surface border-border rounded-xl">
                 <CardHeader className="pb-3 border-b border-border flex flex-row items-center justify-between">
                   <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
                     Fake Resume Detector Agent Report
                   </CardTitle>
-                  <Badge
-                    variant={
-                      selected.fakeDetectorStatus === "flagged" ? "danger" : "purple"
-                    }
-                    size="sm"
+                  <span
+                    className={`px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border ${
+                      selected.fakeDetectorStatus === "flagged"
+                        ? "text-red-400"
+                        : "text-purple-400"
+                    }`}
                   >
                     {selected.fakeDetectorStatus.toUpperCase()} · Risk{" "}
                     {selected.fakeDetectorScore ?? 0}/100
-                  </Badge>
+                  </span>
                 </CardHeader>
                 <CardContent className="pt-4 space-y-3 text-xs">
                   <p className="text-text-secondary">
@@ -678,9 +674,9 @@ export default function BountyPublisherReviewPage() {
                           >
                             <div className="flex items-center justify-between">
                               <span className="font-bold text-text">{sig.finding}</span>
-                              <Badge variant="neutral" size="sm">
+                              <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-text-muted">
                                 {sig.category} · {sig.severity}
-                              </Badge>
+                              </span>
                             </div>
                             <p className="font-mono text-[11px] text-text-muted">
                               Evidence: {sig.evidence}
@@ -693,7 +689,7 @@ export default function BountyPublisherReviewPage() {
               </Card>
 
               {/* 6-Agent Committee Review Breakdown */}
-              <Card className="bg-surface border-border">
+              <Card className="bg-surface border-border rounded-xl">
                 <CardHeader className="pb-3 border-b border-border">
                   <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
                     6-Agent Hiring Committee Review ({selected.agentRuns.length} Personas)
@@ -701,7 +697,7 @@ export default function BountyPublisherReviewPage() {
                 </CardHeader>
                 <CardContent className="pt-4 space-y-4">
                   {selected.structuredReport?.explanation && (
-                    <div className="p-3.5 rounded-xl bg-surface-elevated border border-border text-xs text-text-secondary leading-relaxed">
+                    <div className="p-3.5 rounded-lg bg-surface-elevated border border-border text-xs text-text-secondary leading-relaxed">
                       <span className="block font-mono uppercase text-[10px] text-purple-400 font-bold mb-1">
                         Synthesis Summary
                       </span>
@@ -718,7 +714,7 @@ export default function BountyPublisherReviewPage() {
                         {selected.structuredReport.redFlags.map((rf, i) => (
                           <div
                             key={i}
-                            className="p-3 rounded-lg border border-red-500/30 bg-red-500/5 text-xs space-y-1"
+                            className="p-3 rounded-lg border border-border bg-surface-elevated text-xs space-y-1"
                           >
                             <p className="font-semibold text-text">{rf.flag}</p>
                             <p className="font-mono text-[11px] text-text-muted">
@@ -733,7 +729,7 @@ export default function BountyPublisherReviewPage() {
                     {selected.agentRuns.map((run) => (
                       <div
                         key={run.agentRole}
-                        className="p-3.5 rounded-xl bg-surface-elevated border border-border space-y-2 text-xs"
+                        className="p-3.5 rounded-lg bg-surface-elevated border border-border space-y-2 text-xs"
                       >
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-text">
@@ -757,7 +753,7 @@ export default function BountyPublisherReviewPage() {
               </Card>
 
               {/* Full Candidate Resume / CV Reader */}
-              <Card className="bg-surface border-border">
+              <Card className="bg-surface border-border rounded-xl">
                 <CardHeader className="pb-3 border-b border-border flex flex-row items-center justify-between">
                   <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
                     Full Submitted Resume / CV
@@ -772,7 +768,7 @@ export default function BountyPublisherReviewPage() {
                 </CardHeader>
                 {showFullCv && (
                   <CardContent className="pt-4">
-                    <pre className="whitespace-pre-wrap font-mono text-xs text-text-secondary bg-surface-elevated p-4 rounded-xl border border-border max-h-[500px] overflow-y-auto leading-relaxed">
+                    <pre className="whitespace-pre-wrap font-mono text-xs text-text-secondary bg-surface-elevated p-4 rounded-lg border border-border max-h-[500px] overflow-y-auto leading-relaxed">
                       {selected.cvText}
                     </pre>
                   </CardContent>

@@ -20,12 +20,12 @@ export const WalletConnectButton: React.FC<{ compact?: boolean }> = ({
         type="button"
         onClick={openConnectModal}
         title={`Connected with ${selectedWallet?.name || "Wallet"} (${publicKey})`}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-purple-500/45 bg-purple-600/15 hover:bg-purple-600/25 text-purple-300 text-xs font-bold transition-colors cursor-pointer shrink-0"
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border hover:border-purple-500/50 bg-surface-elevated text-text text-xs font-semibold transition-colors cursor-pointer shrink-0"
       >
-        <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0" />
+        <span className="w-1.5 h-1.5 rounded-xs bg-purple-400 shrink-0" />
         <span className="font-mono">{shortenAddress(publicKey)}</span>
         {!compact && (
-          <span className="hidden xl:inline text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-purple-500/25 text-purple-200">
+          <span className="hidden xl:inline text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface border border-border text-purple-400">
             {clusterLabel}
           </span>
         )}
@@ -37,10 +37,10 @@ export const WalletConnectButton: React.FC<{ compact?: boolean }> = ({
     <button
       type="button"
       onClick={openConnectModal}
-      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-purple-500/35 bg-purple-500/10 hover:bg-purple-500/20 text-purple-700 dark:text-purple-300 text-xs font-semibold transition-colors cursor-pointer shrink-0"
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:border-purple-500/50 bg-surface-elevated text-text text-xs font-semibold transition-colors cursor-pointer shrink-0"
     >
       <svg
-        className="w-3.5 h-3.5 shrink-0"
+        className="w-3.5 h-3.5 text-purple-400 shrink-0"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"

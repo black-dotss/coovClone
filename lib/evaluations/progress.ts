@@ -3,6 +3,8 @@ import { evaluations, agentRuns, debateMessages } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 import { NotFoundError, ForbiddenError } from "@/lib/shared/errors";
 import { AGENT_ROLES, AgentRole } from "@/lib/agents/types";
+import { findBountyByJobDescriptionId, getActiveRestriction } from "@/lib/bounties/service";
+import { bountySubmissions } from "@/lib/db/schema";
 import type { CompletedAgentSummary, EvaluationProgress, EvaluationStatus, Verdict } from "./types";
 
 /**
@@ -109,6 +111,59 @@ export async function getEvaluationProgress(
     evaluation.status === "failed" ||
     evaluation.status === "cancelled";
 
+  let bountyContext: {
+    bountyId: string;
+    title: string;
+    company: string;
+    minScore: number;
+    rewardPerWinnerUsdc: number;
+    reviewStatus: string | null;
+    isEligible: boolean;
+  } | null = null;
+
+  if (evaluation.jobDescriptionId) {
+    try {
+      const bounty = await findBountyByJobDescriptionId(evaluation.jobDescriptionId);
+      if (bounty) {
+        const [subRows, restriction] = await Promise.all([
+          db
+            .select({ reviewStatus: bountySubmissions.reviewStatus })
+            .from(bountySubmissions)
+            .where(
+              and(
+                eq(bountySubmissions.bountyId, bounty.id),
+                eq(bountySubmissions.evaluationId, evaluationId)
+              )
+            )
+            .limit(1),
+          getActiveRestriction({
+            bountyId: bounty.id,
+            userId: evaluation.ownerUserId,
+          }),
+        ]);
+        const subStatus = subRows[0]?.reviewStatus ?? null;
+        bountyContext = {
+          bountyId: bounty.id,
+          title: bounty.title,
+          company: bounty.company,
+          minScore: bounty.minScore,
+          rewardPerWinnerUsdc: Number(bounty.rewardPerWinnerMicros) / 1_000_000,
+          reviewStatus: subStatus,
+          isEligible: Boolean(
+            evaluation.overallScore !== null &&
+              evaluation.overallScore >= bounty.minScore &&
+              !restriction &&
+              subStatus !== "rejected" &&
+              subStatus !== "blocked_duplicate" &&
+              subStatus !== "blocked_fake"
+          ),
+        };
+      }
+    } catch {
+      // Safe fallback when bounty tables are mocked in isolated progress tests
+    }
+  }
+
   return {
     evaluationId,
     status: evaluation.status as EvaluationStatus,
@@ -122,6 +177,7 @@ export async function getEvaluationProgress(
     isTerminal,
     overallScore: evaluation.overallScore,
     verdict: (evaluation.verdict as Verdict | null) ?? null,
+    bountyContext,
     errorMessage:
       evaluation.errorMessage ||
       ((evaluation.workflowState as Record<string, unknown> | null)?.lastError as string | undefined) ||

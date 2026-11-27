@@ -113,8 +113,8 @@ export default function BillingPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Currency selection: "USD" (Polar.sh) | "USDC" (Solana Devnet) | "ETB" (Verify.ET)
-  const [currency, setCurrency] = useState<"USD" | "USDC" | "ETB">("USD");
+  // Currency selection: "USDC" (default Solana Devnet) | "USD" (Polar.sh) | "ETB" (Verify.ET)
+  const [currency, setCurrency] = useState<"USDC" | "USD" | "ETB">("USDC");
   const [polarLoadingTier, setPolarLoadingTier] = useState<string | null>(null);
   const [usdcLoadingTier, setUsdcLoadingTier] = useState<string | null>(null);
 
@@ -560,36 +560,36 @@ export default function BillingPage() {
                       Connect Wallet
                     </Button>
                   )}
-                  <div className="flex items-center p-1 bg-surface-elevated border border-border rounded-xl shrink-0 self-start sm:self-auto">
-                    <button
-                      type="button"
-                      onClick={() => setCurrency("USD")}
-                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                        currency === "USD"
-                          ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
-                          : "text-text-muted hover:text-text"
-                      }`}
-                    >
-                      USD ($)
-                    </button>
+                  <div className="flex items-center p-1 bg-surface-elevated border border-border rounded-lg shrink-0 self-start sm:self-auto">
                     <button
                       type="button"
                       onClick={() => setCurrency("USDC")}
-                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-bold font-mono transition-all cursor-pointer ${
                         currency === "USDC"
-                          ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
-                          : "text-text-muted hover:text-text"
+                          ? "bg-surface border border-border text-purple-400"
+                          : "text-text-muted hover:text-text border border-transparent"
                       }`}
                     >
                       USDC (Solana)
                     </button>
                     <button
                       type="button"
+                      onClick={() => setCurrency("USD")}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-bold font-mono transition-all cursor-pointer ${
+                        currency === "USD"
+                          ? "bg-surface border border-border text-purple-400"
+                          : "text-text-muted hover:text-text border border-transparent"
+                      }`}
+                    >
+                      USD ($)
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setCurrency("ETB")}
-                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-bold font-mono transition-all cursor-pointer ${
                         currency === "ETB"
-                          ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
-                          : "text-text-muted hover:text-text"
+                          ? "bg-surface border border-border text-purple-400"
+                          : "text-text-muted hover:text-text border border-transparent"
                       }`}
                     >
                       ETB

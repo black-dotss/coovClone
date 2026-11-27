@@ -27,6 +27,15 @@ interface EvaluationProgressEvent {
   status: "queued" | "processing" | "completed" | "failed" | "cancelled";
   overallScore?: number;
   verdict?: string;
+  bountyContext?: {
+    bountyId: string;
+    title: string;
+    company: string;
+    minScore: number;
+    rewardPerWinnerUsdc: number;
+    reviewStatus: string | null;
+    isEligible: boolean;
+  } | null;
   progressPercent?: number;
   progressPercentage?: number;
   currentPhase?: string;
@@ -86,6 +95,7 @@ export default function LiveDebateProgressPage() {
   const [completedAgents, setCompletedAgents] = useState<CompletedAgentSummary[]>([]);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
   const [debateMessages, setDebateMessages] = useState<DebateTurn[]>([]);
+  const [bountyContext, setBountyContext] = useState<EvaluationProgressEvent["bountyContext"]>(null);
   const [error, setError] = useState<string | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -131,6 +141,7 @@ export default function LiveDebateProgressPage() {
       }
       setStatus(data.status);
       if (data.currentPhase) _setCurrentPhase(data.currentPhase);
+      if (data.bountyContext !== undefined) setBountyContext(data.bountyContext);
       if (data.completedAgents && Array.isArray(data.completedAgents)) {
         setCompletedAgents(data.completedAgents);
       }
@@ -167,7 +178,13 @@ export default function LiveDebateProgressPage() {
         const isArchive = isViewingArchive || wasAlreadyCompletedOnMount.current === true;
         if (data.status === "completed" && !isArchive && wasAlreadyCompletedOnMount.current === false) {
           redirectTimeout = setTimeout(() => {
-            router.push(`/evaluations/${evaluationId}/report`);
+            if (data.bountyContext?.bountyId) {
+              router.push(
+                `/bounties?fromEval=${encodeURIComponent(evaluationId)}&bountyId=${encodeURIComponent(data.bountyContext.bountyId)}`
+              );
+            } else {
+              router.push(`/evaluations/${evaluationId}/report`);
+            }
           }, 2000);
         }
       }
@@ -317,12 +334,29 @@ export default function LiveDebateProgressPage() {
             ← My Reviews
           </Link>
           {status === "completed" && (
-            <Link
-              href={`/evaluations/${evaluationId}/report`}
-              className="inline-flex items-center justify-center px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors"
-            >
-              View Full Report →
-            </Link>
+            bountyContext?.bountyId ? (
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/evaluations/${evaluationId}/report`}
+                  className="px-3 py-1.5 border border-border bg-surface hover:bg-surface-elevated text-text text-xs font-semibold rounded-lg transition-colors"
+                >
+                  View Report
+                </Link>
+                <Link
+                  href={`/bounties?fromEval=${encodeURIComponent(evaluationId)}&bountyId=${encodeURIComponent(bountyContext.bountyId)}`}
+                  className="inline-flex items-center justify-center px-4 py-2 bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 text-xs font-semibold rounded-lg transition-colors"
+                >
+                  Go to Bounty →
+                </Link>
+              </div>
+            ) : (
+              <Link
+                href={`/evaluations/${evaluationId}/report`}
+                className="inline-flex items-center justify-center px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors"
+              >
+                View Full Report →
+              </Link>
+            )
           )}
         </div>
       </div>

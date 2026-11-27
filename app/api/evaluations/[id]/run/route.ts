@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { createApiHandler, successResponse } from "@/lib/shared";
 import { requireAuth } from "@/lib/auth";
 import { getEvaluationProgress } from "@/lib/evaluations/progress";
@@ -21,8 +22,12 @@ export const POST = createApiHandler(
       });
     }
 
-    // Launch or join existing execution
-    await dispatchEvaluationExecution(id);
+    // Launch or join existing execution non-blockingly so client streams progress live
+    try {
+      after(() => dispatchEvaluationExecution(id));
+    } catch {
+      void dispatchEvaluationExecution(id);
+    }
 
     return successResponse({
       evaluationId: id,

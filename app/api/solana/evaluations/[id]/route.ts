@@ -17,7 +17,7 @@ import {
   NotFoundError,
   successResponse,
 } from "@/lib/shared";
-import { syncEvaluationToBountySubmission } from "@/lib/bounties/service";
+import { findBountyByJobDescriptionId, syncEvaluationToBountySubmission } from "@/lib/bounties/service";
 import {
   agentScoresToTuple,
   computeCanonicalHashFromReportRecord,
@@ -197,6 +197,7 @@ export const GET = createApiHandler(
     }
 
     const effectiveScore = ctx.evalRow.overallScore ?? 0;
+    const linkedBounty = await findBountyByJobDescriptionId(ctx.evalRow.jobDescriptionId);
     const needsDefenseSync = Boolean(
       onChainEval &&
         ctx.canonicalHashHex &&
@@ -207,6 +208,15 @@ export const GET = createApiHandler(
     return successResponse({
       evaluationId: ctx.evalRow.id,
       jobDescriptionId: ctx.evalRow.jobDescriptionId,
+      bountyContext: linkedBounty
+        ? {
+            bountyId: linkedBounty.id,
+            title: linkedBounty.title,
+            company: linkedBounty.company,
+            minScore: linkedBounty.minScore,
+            isEligible: effectiveScore >= linkedBounty.minScore,
+          }
+        : null,
       status: ctx.evalRow.status,
       overallScore: effectiveScore,
       scoreTier: getScoreTierLabel(effectiveScore),

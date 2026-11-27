@@ -3,6 +3,7 @@ import {
   PublicKey,
   Transaction,
 } from "@solana/web3.js";
+import { BadRequestError } from "@/lib/shared/errors";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
@@ -239,17 +240,17 @@ async function assertInitializedOracle(): Promise<{
 
   const info = await connection.getAccountInfo(configPda, "confirmed");
   if (!info) {
-    throw new Error(
-      `COOV ProgramConfig PDA (${configPda.toBase58()}) is not initialized yet. Run scripts/init-solana-config.ts first.`
+    throw new BadRequestError(
+      `COOV ProgramConfig PDA (${configPda.toBase58()}) is not initialized yet.`
     );
   }
   const config = decodeProgramConfig(info.data);
   if (config.paused) {
-    throw new Error("COOV Solana protocol is currently paused in ProgramConfig.");
+    throw new BadRequestError("COOV Solana protocol is currently paused in ProgramConfig.");
   }
   if (config.oracleAuthority !== oracleKeypair.publicKey.toBase58()) {
-    throw new Error(
-      `Configured COOV_ORACLE_PRIVATE_KEY (${oracleKeypair.publicKey.toBase58()}) does not match on-chain oracle_authority (${config.oracleAuthority}).`
+    throw new BadRequestError(
+      `Configured oracle authority does not match on-chain ProgramConfig.`
     );
   }
 
@@ -293,7 +294,7 @@ export async function prepareAnchorEvaluationTx(params: {
   ]);
 
   if (evalInfo) {
-    throw new Error(
+    throw new BadRequestError(
       `Evaluation proof PDA (${evalPda.toBase58()}) is already anchored on-chain.`
     );
   }
@@ -376,7 +377,7 @@ export async function prepareDefenseUpdateTx(params: {
 
   const evalInfo = await connection.getAccountInfo(evalPda, "confirmed");
   if (!evalInfo) {
-    throw new Error(
+    throw new BadRequestError(
       `Evaluation proof PDA (${evalPda.toBase58()}) has not been anchored on-chain yet.`
     );
   }
@@ -385,7 +386,7 @@ export async function prepareDefenseUpdateTx(params: {
     existingEval.currentReportHash === params.newReportHashHex.toLowerCase() &&
     existingEval.compositeScore === Math.round(params.newCompositeScore)
   ) {
-    throw new Error("On-chain evaluation proof is already up to date with this Defense score and hash.");
+    throw new BadRequestError("On-chain evaluation proof is already up to date with this Defense score and hash.");
   }
 
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
@@ -448,18 +449,18 @@ export async function prepareMintCredentialTx(params: {
   const [evalPda] = deriveEvaluationPda(candidatePubkey, params.evalId, programId);
   const evalInfo = await connection.getAccountInfo(evalPda, "confirmed");
   if (!evalInfo) {
-    throw new Error(
+    throw new BadRequestError(
       "Evaluation must be anchored on-chain before minting its Soulbound Credential."
     );
   }
   const decodedEval = decodeEvaluationRecord(evalInfo.data);
   if (decodedEval.sbtMinted) {
-    throw new Error(
+    throw new BadRequestError(
       `Soulbound Credential already minted for this evaluation (${decodedEval.sbtMint}).`
     );
   }
   if (decodedEval.compositeScore < 85) {
-    throw new Error(
+    throw new BadRequestError(
       `Score ${decodedEval.compositeScore}/100 does not meet the 85/100 Soulbound threshold.`
     );
   }
@@ -547,8 +548,8 @@ export async function prepareCreateBountyEscrowTx(params: {
 
   const solBalance = await connection.getBalance(recruiterPubkey, "confirmed");
   if (solBalance < 2_500_000) {
-    throw new Error(
-      `Insufficient Devnet SOL for escrow rent/fees (${(solBalance / 1_000_000_000).toFixed(4)} SOL). Ensure at least 0.003 SOL.`
+    throw new BadRequestError(
+      `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for escrow rent and network fees. Fund at least 0.003 SOL.`
     );
   }
 
@@ -561,8 +562,8 @@ export async function prepareCreateBountyEscrowTx(params: {
   );
   const ataInfo = await connection.getAccountInfo(recruiterAta, "confirmed");
   if (!ataInfo) {
-    throw new Error(
-      `Your wallet (${params.recruiterWallet}) has no Devnet USDC token account (${usdcMint.toBase58()}).`
+    throw new BadRequestError(
+      `Your connected wallet (${params.recruiterWallet.slice(0, 6)}...${params.recruiterWallet.slice(-4)}) has 0 Devnet USDC (${usdcMint.toBase58()}).`
     );
   }
   const balance = await connection.getTokenAccountBalance(recruiterAta, "confirmed");
@@ -571,8 +572,8 @@ export async function prepareCreateBountyEscrowTx(params: {
   if (availableMicros < requiredMicros) {
     const reqUsdc = (Number(requiredMicros) / 1_000_000).toFixed(2);
     const haveUsdc = (Number(availableMicros) / 1_000_000).toFixed(2);
-    throw new Error(
-      `Insufficient Devnet USDC balance: need ${reqUsdc} USDC to fund pool, wallet has ${haveUsdc} USDC.`
+    throw new BadRequestError(
+      `Insufficient Devnet USDC balance: funding this pool requires ${reqUsdc} USDC, but your wallet only holds ${haveUsdc} USDC.`
     );
   }
 
@@ -642,33 +643,33 @@ export async function prepareClaimBountyTx(params: {
   ]);
 
   if (!escrowInfo) {
-    throw new Error("On-chain bounty escrow account was not found.");
+    throw new BadRequestError("On-chain bounty escrow account was not found.");
   }
   const escrow = decodeBountyEscrow(escrowInfo.data);
   if (escrow.isClosed) {
-    throw new Error("This bounty escrow has already been closed.");
+    throw new BadRequestError("This bounty escrow has already been closed.");
   }
   if (escrow.claimsCount >= escrow.maxWinners) {
-    throw new Error("All winner slots for this bounty have already been claimed.");
+    throw new BadRequestError("All winner slots for this bounty have already been claimed.");
   }
   const nowSec = Math.floor(Date.now() / 1000);
   if (nowSec > escrow.expiresAt) {
-    throw new Error("This bounty has expired and can no longer be claimed.");
+    throw new BadRequestError("This bounty has expired and can no longer be claimed.");
   }
 
   if (!evalInfo) {
-    throw new Error(
+    throw new BadRequestError(
       "Your evaluation must be anchored on-chain before you can claim a USDC bounty."
     );
   }
   const decodedEval = decodeEvaluationRecord(evalInfo.data);
   if (decodedEval.compositeScore < escrow.minScore) {
-    throw new Error(
+    throw new BadRequestError(
       `Your on-chain score (${decodedEval.compositeScore}/100) is below the bounty minimum (${escrow.minScore}/100).`
     );
   }
   if (existingClaim) {
-    throw new Error("This wallet has already claimed its USDC payout for this bounty.");
+    throw new BadRequestError("This wallet has already claimed its USDC payout for this bounty.");
   }
 
   const candidateAta = getAssociatedTokenAddressSync(
@@ -742,23 +743,23 @@ export async function prepareWithdrawExpiredEscrowTx(params: {
   const [escrowPda] = deriveEscrowPda(params.jobId, programId);
   const escrowInfo = await connection.getAccountInfo(escrowPda, "confirmed");
   if (!escrowInfo) {
-    throw new Error("On-chain bounty escrow account was not found.");
+    throw new BadRequestError("On-chain bounty escrow account was not found.");
   }
   const escrow = decodeBountyEscrow(escrowInfo.data);
   if (escrow.isClosed) {
-    throw new Error("This bounty escrow is already closed.");
+    throw new BadRequestError("This bounty escrow is already closed.");
   }
   if (escrow.recruiter !== recruiterPubkey.toBase58()) {
-    throw new Error("Only the original recruiter wallet can refund this bounty escrow.");
+    throw new BadRequestError("Only the original recruiter wallet can refund this bounty escrow.");
   }
   const nowSec = Math.floor(Date.now() / 1000);
   if (nowSec <= escrow.expiresAt) {
-    throw new Error("Bounty escrow cannot be refunded until after its expiration timestamp.");
+    throw new BadRequestError("Bounty escrow cannot be refunded until after its expiration timestamp.");
   }
 
   const solBalance = await connection.getBalance(recruiterPubkey, "confirmed");
   if (solBalance < 2_500_000) {
-    throw new Error(
+    throw new BadRequestError(
       `Insufficient Devnet SOL for escrow rent/fees (${(solBalance / 1_000_000_000).toFixed(4)} SOL). Ensure at least 0.003 SOL.`
     );
   }
@@ -1005,8 +1006,8 @@ export async function prepareUsdcPlanPaymentTx(params: {
 
   const solBalance = await connection.getBalance(payerPubkey, "confirmed");
   if (solBalance < 2_500_000) {
-    throw new Error(
-      `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for transaction fee/ATA creation.`
+    throw new BadRequestError(
+      `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) to pay network fees. Please fund your wallet with Devnet SOL.`
     );
   }
 
@@ -1027,8 +1028,8 @@ export async function prepareUsdcPlanPaymentTx(params: {
 
   const senderAtaInfo = await connection.getAccountInfo(senderAta, "confirmed");
   if (!senderAtaInfo) {
-    throw new Error(
-      `Your wallet (${params.payerWallet}) has no Devnet USDC token account (${usdcMint.toBase58()}).`
+    throw new BadRequestError(
+      `Insufficient Devnet USDC balance: wallet ${params.payerWallet.slice(0, 6)}...${params.payerWallet.slice(-4)} holds 0.00 USDC (need ${params.usdcAmount} USDC).`
     );
   }
 
@@ -1036,8 +1037,8 @@ export async function prepareUsdcPlanPaymentTx(params: {
   const balance = await connection.getTokenAccountBalance(senderAta, "confirmed");
   const availableMicros = BigInt(balance.value.amount || "0");
   if (availableMicros < requiredMicros) {
-    throw new Error(
-      `Insufficient Devnet USDC: plan costs ${params.usdcAmount} USDC, wallet has ${(Number(availableMicros) / 1_000_000).toFixed(2)} USDC.`
+    throw new BadRequestError(
+      `Insufficient Devnet USDC balance: this plan costs ${params.usdcAmount} USDC, but your wallet only holds ${(Number(availableMicros) / 1_000_000).toFixed(2)} USDC.`
     );
   }
 
@@ -1121,14 +1122,14 @@ export async function verifyUsdcTransferTransaction(params: {
   });
 
   if (!parsedTx || !parsedTx.meta || parsedTx.meta.err) {
-    throw new Error("On-chain USDC payment transaction was not found or failed execution.");
+    throw new BadRequestError("On-chain USDC payment transaction was not found or failed execution.");
   }
 
   const payerSigned = parsedTx.transaction.message.accountKeys.some(
     (k) => k.signer && k.pubkey.toBase58() === params.payerWallet
   );
   if (!payerSigned) {
-    throw new Error("Connected wallet did not sign this USDC payment transaction.");
+    throw new BadRequestError("Connected wallet did not sign this USDC payment transaction.");
   }
 
   const treasuryAtaStr = treasuryAta.toBase58();
@@ -1181,8 +1182,8 @@ export async function verifyUsdcTransferTransaction(params: {
   }
 
   if (receivedDelta < params.expectedMicros) {
-    throw new Error(
-      `USDC transfer amount mismatch: expected ${params.expectedMicros.toString()} micro-USDC to ${treasuryAtaStr}, verified ${receivedDelta.toString()}.`
+    throw new BadRequestError(
+      `USDC transfer amount mismatch: expected ${(Number(params.expectedMicros) / 1_000_000).toFixed(2)} USDC, verified ${(Number(receivedDelta) / 1_000_000).toFixed(2)} USDC.`
     );
   }
 
