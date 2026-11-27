@@ -8,6 +8,7 @@ import { logger } from "@/lib/shared/logger";
 
 export interface AgentExecutionResult {
   output: AgentOutput;
+  model: string;
   promptTokens: number;
   completionTokens: number;
   durationMs: number;
@@ -36,6 +37,7 @@ export async function executeAgent(
 
     return {
       output: validated,
+      model: "mock-deterministic-v1",
       promptTokens,
       completionTokens,
       durationMs,
@@ -88,6 +90,7 @@ You MUST evaluate as ${input.agentRole} and return valid JSON adhering strictly 
 
     return {
       output: validated,
+      model: response.model || "gemini-2.5-flash",
       promptTokens: response.promptTokens,
       completionTokens: response.completionTokens,
       durationMs: response.durationMs,
@@ -118,6 +121,7 @@ You MUST evaluate as ${input.agentRole} and return valid JSON adhering strictly 
 
     return {
       output: validated,
+      model: "deterministic-fallback-v1",
       promptTokens: Math.ceil((input.cvText.length + input.jdText.length) / 4),
       completionTokens: Math.ceil(JSON.stringify(validated).length / 4),
       durationMs,

@@ -8,6 +8,7 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { AppShell } from "@/components/layout/app-shell";
+import { EvaluationOnChainPanel } from "@/components/solana/evaluation-onchain-panel";
 import type { DefenseRevision } from "@/lib/reports/types";
 
 function getAgentAvatarForPersona(persona?: string, role?: string): {
@@ -192,6 +193,9 @@ export default function DefendScorePage({
           <span>/</span>
           <span className="text-text font-bold">Defend Yourself</span>
         </div>
+
+        {/* Solana On-Chain Defense Sync */}
+        <EvaluationOnChainPanel key={revisions.length} evaluationId={id} compact />
 
         {error && (
           <Alert

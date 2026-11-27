@@ -10,6 +10,7 @@ import { ScoreRing } from "@/components/ui/score-ring";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Alert } from "@/components/ui/alert";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ShareVerificationBadge } from "@/components/solana/share-verification-badge";
 import type { SharedReportResult } from "@/lib/reports/share";
 
 export default function PublicSharedReportPage({
@@ -89,7 +90,7 @@ export default function PublicSharedReportPage({
     );
   }
 
-  const { report, shareLink } = data;
+  const { report, shareLink, onChainProof } = data;
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
@@ -107,6 +108,9 @@ export default function PublicSharedReportPage({
           Views: {shareLink.accessCount}
         </span>
       </div>
+
+      {/* Live Browser SHA-256 & Solana On-Chain Proof Verification */}
+      {onChainProof && <ShareVerificationBadge report={report} proof={onChainProof} />}
 
       {/* Report Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-border pb-6">

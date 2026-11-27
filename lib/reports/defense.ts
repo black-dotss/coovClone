@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { evaluations, cvVersions, jobDescriptions } from "@/lib/db/schema";
+import { evaluations, cvVersions, jobDescriptions, reports, agentRuns } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { DefenseSubmissionInput, DefenseRevision } from "./types";
 import { mapScoreToVerdict } from "@/lib/evaluations";
@@ -7,6 +7,7 @@ import { Verdict } from "@/lib/evaluations/types";
 import { ForbiddenError, NotFoundError, BadRequestError } from "@/lib/shared/errors";
 import { logger } from "@/lib/shared/logger";
 import { getAIProvider } from "@/lib/ai/providers";
+import { computeCanonicalHashFromReportRecord } from "@/lib/solana/canonical-hash";
 
 /**
  * Evaluates user defense submission and calculates a bounded reassessment delta.
@@ -85,6 +86,7 @@ export async function submitDefense(
       status: evaluations.status,
       overallScore: evaluations.overallScore,
       verdict: evaluations.verdict,
+      modelVersion: evaluations.modelVersion,
       workflowState: evaluations.workflowState,
     })
     .from(evaluations)
@@ -287,13 +289,55 @@ Respond strictly in valid JSON format:
 
   existingRevisions.push(newRevision);
 
-  // 5. Update evaluation with new revision and updated scores
+  // 5. Recompute updated canonical hash (redacted payload + new score/verdict + defense count)
+  let updatedCanonicalHash: string | undefined = undefined;
+  try {
+    const [reportRow] = await db
+      .select()
+      .from(reports)
+      .where(eq(reports.evaluationId, evaluationId))
+      .limit(1);
+
+    if (reportRow && reportRow.structuredReport && evalRecord.jobDescriptionId) {
+      const runs = await db
+        .select({
+          agentRole: agentRuns.agentRole,
+          scoreContribution: agentRuns.scoreContribution,
+          modelVersion: agentRuns.modelVersion,
+        })
+        .from(agentRuns)
+        .where(eq(agentRuns.evaluationId, evaluationId));
+
+      const modelVersion =
+        evalRecord.modelVersion ||
+        runs.find((r) => r.modelVersion)?.modelVersion ||
+        process.env.GEMINI_MODEL ||
+        "gemini-2.5-flash";
+
+      const computed = await computeCanonicalHashFromReportRecord({
+        evaluationId,
+        jobDescriptionId: evalRecord.jobDescriptionId,
+        structuredReport: reportRow.structuredReport as Record<string, unknown>,
+        agentRuns: runs,
+        overrideScore: Math.round(newScore),
+        overrideVerdict: newVerdict,
+        modelVersion,
+        defenseRevisionsCount: existingRevisions.length,
+      });
+      updatedCanonicalHash = computed.hashHex;
+    }
+  } catch {
+    // Non-fatal in test mocks where reports/agentRuns tables are mocked empty
+  }
+
+  // 6. Update evaluation with new revision and updated scores
   // Note: Original report in 'reports' table is strictly PRESERVED without overwriting!
   await db
     .update(evaluations)
     .set({
       overallScore: Math.round(newScore),
       verdict: newVerdict,
+      ...(updatedCanonicalHash ? { canonicalReportHash: updatedCanonicalHash } : {}),
       workflowState: {
         ...currentState,
         defenseRevisions: existingRevisions,

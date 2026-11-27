@@ -1,12 +1,19 @@
 import { createHash, randomBytes } from "node:crypto";
+import { PublicKey } from "@solana/web3.js";
 import { db } from "@/lib/db";
-import { shareLinks, reports, evaluations } from "@/lib/db/schema";
+import { shareLinks, reports, evaluations, agentRuns, jobDescriptions } from "@/lib/db/schema";
 import { eq, sql, or } from "drizzle-orm";
 import { ForbiddenError, NotFoundError } from "@/lib/shared/errors";
 import { redactStructuredReport } from "./redaction";
 import { StructuredEvaluationReport } from "./types";
 import { recordAuditEvent } from "@/lib/operations/audit";
 import { logger } from "@/lib/shared/logger";
+import { deriveProfilePda } from "@/lib/solana/codec";
+import {
+  extractCanonicalAgentScoresFromRuns,
+  computeCanonicalHashFromReportRecord,
+  type CanonicalAgentScores,
+} from "@/lib/solana/canonical-hash";
 
 export interface ShareLinkCreated {
   id: string;
@@ -18,6 +25,26 @@ export interface ShareLinkCreated {
   createdAt: Date;
 }
 
+export interface SharedOnChainProofMetadata {
+  evaluationId: string;
+  jobDescriptionId: string;
+  targetRole: string | null;
+  targetCompany: string | null;
+  overallScore: number;
+  verdict: string;
+  modelVersion: string;
+  defenseRevisionsCount: number;
+  canonicalReportHash: string;
+  agentScores: CanonicalAgentScores;
+  candidateWallet: string | null;
+  profilePdaAddress: string | null;
+  evalPdaAddress: string | null;
+  evalTxSignature: string | null;
+  sbtMintAddress: string | null;
+  sbtTxSignature: string | null;
+  anchoredAt: Date | null;
+}
+
 export interface SharedReportResult {
   report: StructuredEvaluationReport;
   shareLink: {
@@ -26,6 +53,7 @@ export interface SharedReportResult {
     accessCount: number;
     createdAt: Date;
   };
+  onChainProof?: SharedOnChainProofMetadata | null;
 }
 
 /**
@@ -240,6 +268,100 @@ export async function getSharedReportByToken(rawToken: string): Promise<SharedRe
   // 5. Redact personal contact details by default
   const redacted = redactStructuredReport(fullReport);
 
+  // 6. Enrich with canonical proof + Solana anchoring metadata when available
+  let onChainProof: SharedOnChainProofMetadata | null = null;
+  try {
+    const [evalRow] = await db
+      .select({
+        id: evaluations.id,
+        jobDescriptionId: evaluations.jobDescriptionId,
+        overallScore: evaluations.overallScore,
+        verdict: evaluations.verdict,
+        modelVersion: evaluations.modelVersion,
+        canonicalReportHash: evaluations.canonicalReportHash,
+        candidateWallet: evaluations.candidateWallet,
+        evalPdaAddress: evaluations.evalPdaAddress,
+        evalTxSignature: evaluations.evalTxSignature,
+        sbtMintAddress: evaluations.sbtMintAddress,
+        sbtTxSignature: evaluations.sbtTxSignature,
+        updatedAt: evaluations.updatedAt,
+        workflowState: evaluations.workflowState,
+      })
+      .from(evaluations)
+      .where(eq(evaluations.id, link.evaluationId))
+      .limit(1);
+
+    if (evalRow && "jobDescriptionId" in evalRow && evalRow.jobDescriptionId) {
+      const runs = await db
+        .select({
+          agentRole: agentRuns.agentRole,
+          scoreContribution: agentRuns.scoreContribution,
+          modelVersion: agentRuns.modelVersion,
+        })
+        .from(agentRuns)
+        .where(eq(agentRuns.evaluationId, link.evaluationId));
+
+      const [jdRow] = await db
+        .select({
+          title: jobDescriptions.title,
+          company: jobDescriptions.company,
+        })
+        .from(jobDescriptions)
+        .where(eq(jobDescriptions.id, evalRow.jobDescriptionId))
+        .limit(1);
+
+      const revisions = Array.isArray(
+        (evalRow.workflowState as Record<string, unknown> | null)?.defenseRevisions
+      )
+        ? ((evalRow.workflowState as Record<string, unknown>).defenseRevisions as unknown[])
+        : [];
+
+      const resolvedModel =
+        evalRow.modelVersion ||
+        runs.find((r) => r.modelVersion)?.modelVersion ||
+        "gemini-2.5-flash";
+
+      const effectiveScore = evalRow.overallScore ?? redacted.overallScore;
+      const effectiveVerdict = evalRow.verdict ?? redacted.verdict;
+
+      const canonical = await computeCanonicalHashFromReportRecord({
+        evaluationId: evalRow.id,
+        jobDescriptionId: evalRow.jobDescriptionId,
+        structuredReport: rawReport,
+        agentRuns: runs,
+        overrideScore: effectiveScore,
+        overrideVerdict: effectiveVerdict,
+        modelVersion: resolvedModel,
+        defenseRevisionsCount: revisions.length,
+      });
+
+      const agentScores = extractCanonicalAgentScoresFromRuns(runs);
+      onChainProof = {
+        evaluationId: evalRow.id,
+        jobDescriptionId: evalRow.jobDescriptionId,
+        targetRole: jdRow && "title" in jdRow ? jdRow.title : null,
+        targetCompany: jdRow && "company" in jdRow ? jdRow.company : null,
+        overallScore: effectiveScore,
+        verdict: effectiveVerdict,
+        modelVersion: resolvedModel,
+        defenseRevisionsCount: revisions.length,
+        canonicalReportHash: evalRow.canonicalReportHash || canonical.hashHex,
+        agentScores,
+        candidateWallet: evalRow.candidateWallet ?? null,
+        profilePdaAddress: evalRow.candidateWallet
+          ? deriveProfilePda(new PublicKey(evalRow.candidateWallet))[0].toBase58()
+          : null,
+        evalPdaAddress: evalRow.evalPdaAddress ?? null,
+        evalTxSignature: evalRow.evalTxSignature ?? null,
+        sbtMintAddress: evalRow.sbtMintAddress ?? null,
+        sbtTxSignature: evalRow.sbtTxSignature ?? null,
+        anchoredAt: evalRow.evalTxSignature ? evalRow.updatedAt : null,
+      };
+    }
+  } catch {
+    // Non-fatal in test mocks
+  }
+
   await recordAuditEvent({
     action: "share.accessed",
     targetType: "share_link",
@@ -255,6 +377,7 @@ export async function getSharedReportByToken(rawToken: string): Promise<SharedRe
       accessCount: link.accessCount + 1,
       createdAt: link.createdAt,
     },
+    onChainProof,
   };
 }
 

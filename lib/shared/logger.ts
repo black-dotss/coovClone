@@ -22,6 +22,10 @@ const SENSITIVE_KEY_PATTERNS = [
   /cvv/i,
   /cookie/i,
   /device_?token/i,
+  /private_?key/i,
+  /keypair/i,
+  /mnemonic/i,
+  /seed_?phrase/i,
 ];
 
 const REDACTED_PLACEHOLDER = "[REDACTED]";

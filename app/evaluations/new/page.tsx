@@ -56,6 +56,16 @@ interface RecentJobPreset {
   description: string;
 }
 
+interface ActiveBountyTarget {
+  id: string;
+  jobDescriptionId: string;
+  title: string;
+  company: string;
+  minScore: number;
+  rewardPerWinnerUsdc: number;
+  rawText: string;
+}
+
 export default function NewEvaluationPage() {
   const router = useRouter();
   const { data: session } = useSession();
@@ -75,6 +85,30 @@ export default function NewEvaluationPage() {
   const [benchmarkCategory, setBenchmarkCategory] = useState<"all" | PresetCategory>("all");
   const [showAllBenchmarks, setShowAllBenchmarks] = useState(false);
   const [recentJobs, setRecentJobs] = useState<RecentJobPreset[]>([]);
+  const [activeBounty, setActiveBounty] = useState<ActiveBountyTarget | null>(null);
+
+  useEffect(() => {
+    async function loadBountyTarget() {
+      if (typeof window === "undefined") return;
+      const bountyId = new URLSearchParams(window.location.search).get("bountyId");
+      if (!bountyId) return;
+      try {
+        const res = await apiFetch<{ bounties?: ActiveBountyTarget[] }>(
+          "/api/solana/bounties"
+        );
+        const match = res?.bounties?.find((b) => b.id === bountyId);
+        if (match) {
+          setActiveBounty(match);
+          setCompany(match.company);
+          setJobTitle(match.title);
+          setJobDescriptionText(match.rawText);
+        }
+      } catch {
+        // Ignore if unreachable
+      }
+    }
+    void loadBountyTarget();
+  }, []);
 
   useEffect(() => {
     async function loadRecentJobs() {
@@ -223,20 +257,24 @@ export default function NewEvaluationPage() {
         throw new Error("Could not process CV version. Please try uploading again.");
       }
 
-      // Create Job Description
-      const jdRes = await apiFetch<CreateJdResponse>("/api/job-descriptions", {
-        method: "POST",
-        body: JSON.stringify({
-          title: jobTitle.trim() || "Target Role",
-          company: company.trim() || undefined,
-          rawText: jobDescriptionText.trim(),
-        }),
-      });
+      // Reuse existing Bounty Job Description ID when applying for an on-chain USDC bounty,
+      // otherwise create a new Job Description owned by this user.
+      let jobDescriptionId = activeBounty?.jobDescriptionId;
+      if (!jobDescriptionId) {
+        const jdRes = await apiFetch<CreateJdResponse>("/api/job-descriptions", {
+          method: "POST",
+          body: JSON.stringify({
+            title: jobTitle.trim() || "Target Role",
+            company: company.trim() || undefined,
+            rawText: jobDescriptionText.trim(),
+          }),
+        });
 
-      const jobDescriptionId =
-        jdRes?.id ||
-        jdRes?.jobDescription?.id ||
-        jdRes?.data?.id;
+        jobDescriptionId =
+          jdRes?.id ||
+          jdRes?.jobDescription?.id ||
+          jdRes?.data?.id;
+      }
 
       if (!jobDescriptionId) {
         throw new Error("Could not save job description. Please try again.");
@@ -292,6 +330,26 @@ export default function NewEvaluationPage() {
       {errorMessage && (
         <Alert variant="danger" title="Notice">
           {errorMessage}
+        </Alert>
+      )}
+
+      {activeBounty && (
+        <Alert
+          variant="info"
+          title={`Solana USDC Bounty Mode · ${activeBounty.rewardPerWinnerUsdc} USDC Reward`}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setActiveBounty(null)}
+            >
+              Detach Bounty
+            </Button>
+          }
+        >
+          Targeting <strong>{activeBounty.title}</strong> at{" "}
+          <strong>{activeBounty.company}</strong>. Score {activeBounty.minScore}/100+ and
+          anchor your proof on Solana Devnet to claim {activeBounty.rewardPerWinnerUsdc} USDC.
         </Alert>
       )}
 

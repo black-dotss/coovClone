@@ -6,6 +6,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
+import { WalletConnectButton } from "@/components/solana/wallet-connect-button";
 import { useSession } from "@/lib/auth/auth-client";
 
 export const Navbar: React.FC = () => {
@@ -24,6 +25,7 @@ export const Navbar: React.FC = () => {
 
   const navLinks = [
     { label: "New Review", href: "/evaluations/new" },
+    { label: "Bounties", href: "/bounties" },
     { label: "Role Compare", href: "/comparisons" },
     { label: "Plans", href: "/billing" },
     ...(isSuperAdmin ? [{ label: "Admin", href: "/admin" }] : []),
@@ -69,7 +71,8 @@ export const Navbar: React.FC = () => {
         </div>
 
         {/* Right Actions Dock */}
-        <div className="hidden md:flex items-center gap-3">
+        <div className="hidden md:flex items-center gap-2.5">
+          <WalletConnectButton />
           {isPending ? (
             <div className="h-9 w-28 rounded-lg bg-surface-elevated/40 animate-pulse border border-border/40" />
           ) : session ? (
@@ -105,6 +108,7 @@ export const Navbar: React.FC = () => {
 
         {/* Mobile menu trigger */}
         <div className="flex items-center gap-2 md:hidden">
+          <WalletConnectButton compact />
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
             className="p-1.5 rounded-md text-text-muted hover:text-text hover:bg-surface-elevated border border-border cursor-pointer transition-colors"

@@ -6,8 +6,10 @@ import {
   reports,
   jobDescriptions,
   cvVersions,
+  bounties,
 } from "@/lib/db/schema";
 import { eq, desc } from "drizzle-orm";
+import { computeCanonicalHashFromReportRecord } from "@/lib/solana/canonical-hash";
 import { EvaluationTone } from "./types";
 import type {
   AgentOutput,
@@ -61,7 +63,24 @@ export async function createEvaluation(input: CreateEvaluationInput) {
     if (jds.length > 0) {
       jd = jds[0];
       if (jd.userId !== input.ownerUserId) {
-        throw new ForbiddenError("You do not own this job description");
+        // Allow candidates to evaluate against a Job Description attached to an active on-chain bounty
+        let isActiveBountyJd = false;
+        try {
+          const [linkedBounty] = await db
+            .select({ id: bounties.id, status: bounties.status })
+            .from(bounties)
+            .where(eq(bounties.jobDescriptionId, input.jobDescriptionId))
+            .limit(1);
+          if (linkedBounty && linkedBounty.status === "active") {
+            isActiveBountyJd = true;
+          }
+        } catch {
+          // Safe fallback in unit tests where bounties table is mocked away
+        }
+
+        if (!isActiveBountyJd) {
+          throw new ForbiddenError("You do not own this job description");
+        }
       }
     }
   } catch (err) {
@@ -193,6 +212,7 @@ export async function runEvaluationWorkflow(options: RunEvaluationOptions) {
           evaluationId,
           agentRole: role,
           status: "completed",
+          modelVersion: process.env.GEMINI_MODEL || "gemini-2.5-flash",
           structuredResult: output as unknown as Record<string, unknown>,
           scoreContribution: output.scoreContribution,
           promptTokens: usage.promptTokens,
@@ -243,15 +263,43 @@ export async function runEvaluationWorkflow(options: RunEvaluationOptions) {
     });
 
     const finalReport = result.finalReport as SynthesisReport;
+    const modelVersion = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
-    // 4. Update evaluation record as completed
+    // 4. Update evaluation record as completed (plus canonical hash when DB is available)
     try {
+      const [evalMeta] = await db
+        .select({ jobDescriptionId: evaluations.jobDescriptionId })
+        .from(evaluations)
+        .where(eq(evaluations.id, evaluationId))
+        .limit(1);
+
+      let canonicalHash: string | undefined;
+      if (evalMeta?.jobDescriptionId) {
+        const runs = Object.entries(result.agentOutputs || {}).map(([agentRole, out]) => ({
+          agentRole,
+          scoreContribution: (out as AgentOutput)?.scoreContribution ?? 0,
+        }));
+        const canonical = await computeCanonicalHashFromReportRecord({
+          evaluationId,
+          jobDescriptionId: evalMeta.jobDescriptionId,
+          structuredReport: finalReport as unknown as Record<string, unknown>,
+          agentRuns: runs,
+          overrideScore: Math.round(finalReport.overallScore),
+          overrideVerdict: finalReport.verdict,
+          modelVersion,
+          defenseRevisionsCount: 0,
+        });
+        canonicalHash = canonical.hashHex;
+      }
+
       await db
         .update(evaluations)
         .set({
           status: "completed",
           overallScore: Math.round(finalReport.overallScore),
           verdict: finalReport.verdict,
+          modelVersion,
+          ...(canonicalHash ? { canonicalReportHash: canonicalHash } : {}),
           workflowState: {
             tokenUsage: result.totalTokenUsage,
           },
