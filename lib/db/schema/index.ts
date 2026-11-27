@@ -105,11 +105,16 @@ export const userProfiles = pgTable(
     timezone: text("timezone").notNull().default("Africa/Addis_Ababa"),
     preferences: jsonb("preferences").$type<Record<string, unknown>>().default({}),
     accountStatus: text("account_status").notNull().default("active"), // active, suspended, pending_deletion
+    walletAddress: text("wallet_address"),
+    walletVerifiedAt: timestamp("wallet_verified_at", { withTimezone: true }),
+    profilePdaAddress: text("profile_pda_address"),
+    profileTxSignature: text("profile_tx_signature"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("user_profiles_user_id_idx").on(table.userId),
+    uniqueIndex("user_profiles_wallet_address_idx").on(table.walletAddress),
   ]
 );
 
@@ -290,6 +295,13 @@ export const evaluations = pgTable(
     status: text("status").notNull().default("queued"), // queued, processing, completed, failed, cancelled
     overallScore: integer("overall_score"),
     verdict: text("verdict"), // Strong fit, Potential fit, Significant gaps, Weak fit
+    modelVersion: text("model_version"),
+    canonicalReportHash: text("canonical_report_hash"),
+    candidateWallet: text("candidate_wallet"),
+    evalPdaAddress: text("eval_pda_address"),
+    evalTxSignature: text("eval_tx_signature"),
+    sbtMintAddress: text("sbt_mint_address"),
+    sbtTxSignature: text("sbt_tx_signature"),
     workflowState: jsonb("workflow_state").$type<Record<string, unknown>>(),
     errorMessage: text("error_message"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -312,6 +324,7 @@ export const agentRuns = pgTable(
     status: text("status").notNull().default("pending"), // pending, running, completed, failed
     structuredResult: jsonb("structured_result").$type<Record<string, unknown>>(),
     scoreContribution: integer("score_contribution"),
+    modelVersion: text("model_version"),
     promptTokens: integer("prompt_tokens"),
     completionTokens: integer("completion_tokens"),
     durationMs: integer("duration_ms"),
@@ -350,6 +363,8 @@ export const reports = pgTable(
       .unique()
       .references(() => evaluations.id, { onDelete: "cascade" }),
     structuredReport: jsonb("structured_report").$type<Record<string, unknown>>().notNull(),
+    canonicalReportHash: text("canonical_report_hash"),
+    redactedSnapshot: jsonb("redacted_snapshot").$type<Record<string, unknown>>(),
     pdfStorageKey: text("pdf_storage_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -635,5 +650,70 @@ export const referrals = pgTable(
   (table) => [
     index("referrals_referrer_id_idx").on(table.referrerId),
     uniqueIndex("referrals_referred_user_id_idx").on(table.referredUserId),
+  ]
+);
+
+// ==============================================================================
+// 14. Solana Recruiter USDC Bounties & Claims
+// ==============================================================================
+
+export const bounties = pgTable(
+  "bounties",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recruiterUserId: text("recruiter_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recruiterWallet: text("recruiter_wallet").notNull(),
+    jobDescriptionId: uuid("job_description_id")
+      .notNull()
+      .references(() => jobDescriptions.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    company: text("company").notNull(),
+    usdcMint: text("usdc_mint").notNull(),
+    escrowPdaAddress: text("escrow_pda_address").notNull().unique(),
+    vaultAddress: text("vault_address").notNull(),
+    createTxSignature: text("create_tx_signature"),
+    refundTxSignature: text("refund_tx_signature"),
+    minScore: integer("min_score").notNull(),
+    rewardPerWinnerMicros: text("reward_per_winner_micros").notNull(),
+    maxWinners: integer("max_winners").notNull(),
+    claimsCount: integer("claims_count").notNull().default(0),
+    status: text("status").notNull().default("active"), // active, filled, expired, refunded
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bounties_escrow_pda_idx").on(table.escrowPdaAddress),
+    uniqueIndex("bounties_job_description_idx").on(table.jobDescriptionId),
+    index("bounties_recruiter_idx").on(table.recruiterUserId),
+    index("bounties_status_idx").on(table.status),
+  ]
+);
+
+export const bountyClaims = pgTable(
+  "bounty_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    bountyId: uuid("bounty_id")
+      .notNull()
+      .references(() => bounties.id, { onDelete: "cascade" }),
+    candidateUserId: text("candidate_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    candidateWallet: text("candidate_wallet").notNull(),
+    evaluationId: uuid("evaluation_id")
+      .notNull()
+      .references(() => evaluations.id, { onDelete: "cascade" }),
+    claimReceiptPda: text("claim_receipt_pda").notNull(),
+    claimTxSignature: text("claim_tx_signature").notNull(),
+    amountMicros: text("amount_micros").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bounty_claims_bounty_user_idx").on(table.bountyId, table.candidateUserId),
+    uniqueIndex("bounty_claims_bounty_wallet_idx").on(table.bountyId, table.candidateWallet),
+    index("bounty_claims_candidate_idx").on(table.candidateUserId),
   ]
 );

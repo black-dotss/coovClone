@@ -13,6 +13,7 @@ import { Alert } from "@/components/ui/alert";
 import { Modal } from "@/components/ui/modal";
 import { LoadingSpinner, FullPageLoading } from "@/components/ui/loading-spinner";
 import { Avatar, AgentRoleKey } from "@/components/ui/avatar";
+import { EvaluationOnChainPanel } from "@/components/solana/evaluation-onchain-panel";
 import { useSession } from "@/lib/auth/auth-client";
 import type { StructuredEvaluationReport } from "@/lib/reports/types";
 
@@ -1077,6 +1078,9 @@ export default function EvaluationReportPage({
           {/* TAB 1: OVERVIEW */}
           {activeCategory === "overview" && (
             <div className="w-full max-w-full min-w-0 space-y-6">
+              {/* 0. Solana On-Chain Proof & Soulbound Credential */}
+              <EvaluationOnChainPanel evaluationId={id} />
+
               {/* 1. Role Competency Curve */}
               <div className="w-full max-w-full min-w-0 overflow-hidden p-3 sm:p-5 bg-surface border border-border rounded-xl space-y-4 shadow-xs">
                 <CompetencyXYChart dimensions={dimensionMetrics} />

@@ -49,3 +49,8 @@ next-env.d.ts
 .wrangler
 .dev.vars*
 !.dev.vars.example
+
+# Solana keypairs (never commit or expose in public/)
+public/program-keypair.json
+solana/*keypair*.json
+**/*keypair*.json

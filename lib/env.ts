@@ -97,6 +97,34 @@ export const envSchema = z.object({
   POLAR_PRODUCT_ID_UNLIMITED_YEARLY: z
     .string()
     .optional(),
+  SOLANA_CLUSTER: z
+    .enum(["devnet", "testnet", "mainnet-beta"])
+    .optional()
+    .default("devnet"),
+  SOLANA_RPC_URL: z
+    .string()
+    .url()
+    .optional()
+    .default("https://api.devnet.solana.com"),
+  NEXT_PUBLIC_SOLANA_RPC_URL: z
+    .string()
+    .url()
+    .optional(),
+  NEXT_PUBLIC_SOLANA_CLUSTER: z
+    .enum(["devnet", "testnet", "mainnet-beta"])
+    .optional()
+    .default("devnet"),
+  NEXT_PUBLIC_SOLANA_PROGRAM_ID: z
+    .string()
+    .optional()
+    .default("FXboyZZ2em2FqXrcr4Uz5nfrHHQ4K1NaJ6kP9VMBJ3Yt"),
+  NEXT_PUBLIC_SOLANA_USDC_MINT: z
+    .string()
+    .optional()
+    .default("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"),
+  COOV_ORACLE_PRIVATE_KEY: z
+    .string()
+    .optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -9,6 +9,7 @@ import {
   documents,
 } from "@/lib/db/schema";
 import { eq, and, lt } from "drizzle-orm";
+import { computeCanonicalHashFromReportRecord } from "@/lib/solana/canonical-hash";
 import {
   AgentOutput,
   AgentRole,
@@ -236,6 +237,7 @@ export async function executeEvaluationWithCheckpoints(
             evaluationId,
             agentRole: role,
             status: "completed",
+            modelVersion: res.model,
             structuredResult: res.output as unknown as Record<string, unknown>,
             scoreContribution: Math.round(res.output.scoreContribution),
             promptTokens: res.promptTokens,
@@ -315,11 +317,49 @@ export async function executeEvaluationWithCheckpoints(
         jdText,
         evaluation.tone as EvaluationTone
       );
+    }
 
+    const latestRuns = await db
+      .select({
+        agentRole: agentRuns.agentRole,
+        scoreContribution: agentRuns.scoreContribution,
+        modelVersion: agentRuns.modelVersion,
+      })
+      .from(agentRuns)
+      .where(eq(agentRuns.evaluationId, evaluationId));
+
+    const resolvedModelVersion =
+      latestRuns.find((r) => r.modelVersion && r.modelVersion.length > 0)?.modelVersion ||
+      process.env.GEMINI_MODEL ||
+      "gemini-2.5-flash";
+
+    const canonical = await computeCanonicalHashFromReportRecord({
+      evaluationId,
+      jobDescriptionId: evaluation.jobDescriptionId,
+      structuredReport: finalReport as unknown as Record<string, unknown>,
+      agentRuns: latestRuns,
+      overrideScore: Math.round(finalReport.overallScore),
+      overrideVerdict: finalReport.verdict,
+      modelVersion: resolvedModelVersion,
+      defenseRevisionsCount: 0,
+    });
+
+    if (!existingReportRecord) {
       await db.insert(reports).values({
         evaluationId,
         structuredReport: finalReport as unknown as Record<string, unknown>,
+        canonicalReportHash: canonical.hashHex,
+        redactedSnapshot: canonical.redactedSnapshot,
       });
+    } else if (!existingReportRecord.canonicalReportHash) {
+      await db
+        .update(reports)
+        .set({
+          canonicalReportHash: canonical.hashHex,
+          redactedSnapshot: canonical.redactedSnapshot,
+          updatedAt: new Date(),
+        })
+        .where(eq(reports.id, existingReportRecord.id));
     }
 
     // 6. Settle Quota Credit
@@ -345,6 +385,8 @@ export async function executeEvaluationWithCheckpoints(
         status: "completed",
         overallScore: Math.round(finalReport.overallScore),
         verdict: finalReport.verdict,
+        modelVersion: resolvedModelVersion,
+        canonicalReportHash: canonical.hashHex,
         updatedAt: new Date(),
       })
       .where(eq(evaluations.id, evaluationId));
