@@ -9,11 +9,11 @@ use anchor_spl::associated_token::{
     self, get_associated_token_address_with_program_id, AssociatedToken,
 };
 use anchor_spl::token_2022::{
-    self, initialize_mint2, mint_to, set_authority, spl_token_2022, InitializeMint2, MintTo,
+    initialize_mint2, mint_to, set_authority, spl_token_2022, InitializeMint2, MintTo,
     SetAuthority, Token2022,
 };
 use anchor_spl::token_interface::{
-    self, close_account, transfer_checked, CloseAccount, Mint, TokenAccount, TokenInterface,
+    close_account, transfer_checked, CloseAccount, Mint, TokenAccount, TokenInterface,
     TransferChecked,
 };
 
@@ -278,7 +278,7 @@ pub mod coov_protocol {
 
         // 1. Compute base Mint size (NonTransferable + MetadataPointer) + rent for full TokenMetadata TLV
         let base_mint_len = spl_token_2022::extension::ExtensionType::try_calculate_account_len::<
-            spl_token_2022::pod::PodMint,
+            spl_token_2022::state::Mint,
         >(&[
             spl_token_2022::extension::ExtensionType::NonTransferable,
             spl_token_2022::extension::ExtensionType::MetadataPointer,
