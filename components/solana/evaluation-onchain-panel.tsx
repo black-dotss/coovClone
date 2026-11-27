@@ -131,7 +131,7 @@ export const EvaluationOnChainPanel: React.FC<{
           method: "PATCH",
           body: JSON.stringify({ txSignature: sig }),
         });
-        setNotice("COOV ProgramConfig PDA initialized on Solana Devnet!");
+        setNotice("COOV ProgramConfig initialized on Solana Devnet.");
       }
       await loadStatus();
     } catch (err) {
@@ -175,8 +175,8 @@ export const EvaluationOnChainPanel: React.FC<{
 
       setNotice(
         prepared.mode === "defense_sync"
-          ? "Updated on-chain EvaluationRecord PDA with your Defense reassessment!"
-          : "Anchored evaluation proof & CandidateProfile PDA on Solana Devnet!"
+          ? "Updated EvaluationRecord PDA with your Defense reassessment."
+          : "Anchored evaluation proof & CandidateProfile PDA on Solana Devnet."
       );
       await loadStatus();
     } catch (err) {
@@ -216,7 +216,7 @@ export const EvaluationOnChainPanel: React.FC<{
         }),
       });
 
-      setNotice("Minted Token-2022 Non-Transferable Soulbound Credential to your wallet!");
+      setNotice("Minted Token-2022 Non-Transferable Soulbound Credential to your wallet.");
       await loadStatus();
     } catch (err) {
       setError(
@@ -231,7 +231,7 @@ export const EvaluationOnChainPanel: React.FC<{
 
   if (loading && !state) {
     return (
-      <div className="rounded-xl border border-border bg-surface p-5 flex items-center justify-center">
+      <div className="rounded-xl border border-border bg-surface p-8 flex items-center justify-center">
         <LoadingSpinner size="sm" label="Checking Solana on-chain proof..." />
       </div>
     );
@@ -241,46 +241,51 @@ export const EvaluationOnChainPanel: React.FC<{
 
   const isAnchored = Boolean(state.onChainEval || state.evalTxSignature);
   const isSbtMinted = Boolean(state.sbtMintAddress || state.onChainEval?.sbtMinted);
-  const effectiveScore = state.overallScore;
 
   return (
-    <div className="rounded-2xl border border-purple-500/30 bg-surface p-5 sm:p-6 space-y-4 shadow-xs">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="space-y-1">
+    <div className="rounded-xl border border-border bg-surface p-5 sm:p-6 space-y-5">
+      {/* Bold Header + Primary Action */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border">
+        <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm sm:text-base font-bold text-text">
-              Solana On-Chain Proof & Soulbound Credential
+            <h3 className="text-base sm:text-lg font-extrabold text-text">
+              On-Chain Proof & Soulbound Credential
             </h3>
-            <Badge variant={isAnchored ? "success" : "purple"} size="sm">
+            <Badge variant={isAnchored ? "purple" : "neutral"} size="sm">
               {isAnchored
                 ? state.needsDefenseSync
-                  ? "Defense Update Ready"
-                  : `Anchored · Solana ${clusterLabel}`
-                : `Not Yet Anchored · ${clusterLabel}`}
+                  ? "Defense Sync Ready"
+                  : `Anchored · ${clusterLabel}`
+                : `Unanchored · ${clusterLabel}`}
             </Badge>
             {isSbtMinted && (
-              <Badge variant="warning" size="sm">
-                Token-2022 SBT Minted
+              <Badge variant="purple" size="sm">
+                SBT Minted
               </Badge>
             )}
           </div>
           <p className="text-xs text-text-secondary">
-            Anchor the SHA-256 hash of all 6 committee scores onto Solana Devnet
             {state.sbtEligible
-              ? " and mint your non-transferable Soulbound Token (>= 85/100)."
-              : ". Score >= 85/100 (directly or via Defend Yourself) unlocks Soulbound SBT minting."}
+              ? "Immutable SHA-256 report proof & non-transferable Token-2022 Soulbound Credential (>= 85/100)."
+              : "Immutable SHA-256 report proof on Solana. Score 85/100+ to unlock Token-2022 SBT minting."}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           {!publicKey ? (
-            <Button variant="primary" size="sm" onClick={openConnectModal}>
-              Connect Solana Wallet
+            <Button
+              variant="primary"
+              size="sm"
+              className="bg-purple-600 hover:bg-purple-500 font-semibold"
+              onClick={openConnectModal}
+            >
+              Connect Wallet
             </Button>
           ) : !isAnchored ? (
             <Button
               variant="primary"
               size="sm"
+              className="bg-purple-600 hover:bg-purple-500 font-semibold"
               isLoading={anchoring}
               disabled={!state.programConfigInitialized || state.status !== "completed"}
               onClick={() => void handleAnchor()}
@@ -291,6 +296,7 @@ export const EvaluationOnChainPanel: React.FC<{
             <Button
               variant="primary"
               size="sm"
+              className="bg-purple-600 hover:bg-purple-500 font-semibold"
               isLoading={anchoring}
               onClick={() => void handleAnchor()}
             >
@@ -300,12 +306,13 @@ export const EvaluationOnChainPanel: React.FC<{
 
           {isAnchored && state.sbtEligible && !isSbtMinted && (
             <Button
-              variant="secondary"
+              variant="primary"
               size="sm"
+              className="bg-purple-600 hover:bg-purple-500 font-semibold"
               isLoading={minting}
               onClick={() => void handleMintSbt()}
             >
-              Mint Soulbound Credential
+              Mint Soulbound SBT
             </Button>
           )}
         </div>
@@ -322,11 +329,11 @@ export const EvaluationOnChainPanel: React.FC<{
               isLoading={initializingConfig}
               onClick={() => void handleInitConfigWithWallet()}
             >
-              Initialize Config (Admin)
+              Initialize Config
             </Button>
           }
         >
-          Run <code>npx tsx scripts/init-solana-config.ts</code> or click Initialize Config with an admin wallet to activate on-chain attestations.
+          Click Initialize Config with an authorized admin wallet to activate on-chain attestations.
         </Alert>
       )}
 
@@ -339,69 +346,81 @@ export const EvaluationOnChainPanel: React.FC<{
       )}
 
       {!compact && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-          <div className="p-3.5 rounded-xl bg-surface-elevated/60 border border-border space-y-1.5">
-            <div className="flex items-center justify-between text-[11px] font-mono text-text-muted">
-              <span>Canonical Report SHA-256</span>
-              <span>Model: {state.modelVersion}</span>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Left: Score & Blockchain References */}
+          <div className="p-4 rounded-xl bg-surface-elevated border border-border space-y-3">
+            <div className="flex items-center justify-between border-b border-border/70 pb-2.5">
+              <span className="text-xs font-mono uppercase tracking-wider text-text-muted">
+                Verified Score
+              </span>
+              <span className="text-xl font-extrabold text-purple-400">
+                {state.overallScore}/100
+                <span className="ml-2 text-xs font-mono font-semibold text-text-secondary">
+                  {state.scoreTier}
+                </span>
+              </span>
             </div>
-            <p className="font-mono text-xs text-text break-all">
-              {state.canonicalReportHash || "Pending completion"}
-            </p>
-            <div className="flex flex-wrap gap-1 pt-1">
-              {state.verifiedSkills.map((s) => (
-                <Badge key={s} variant="neutral" size="sm">
-                  {s}
-                </Badge>
-              ))}
+
+            <div className="space-y-1.5 text-xs font-mono">
+              {state.evalPdaAddress && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-text-muted shrink-0">Eval PDA</span>
+                  <a
+                    href={state.evalPdaUrl || "#"}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-purple-400 hover:underline truncate"
+                  >
+                    {state.evalPdaAddress}
+                  </a>
+                </div>
+              )}
+              {state.evalTxUrl && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-text-muted shrink-0">Anchor Tx</span>
+                  <a
+                    href={state.evalTxUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-purple-400 hover:underline truncate"
+                  >
+                    {state.evalTxSignature}
+                  </a>
+                </div>
+              )}
+              {state.sbtMintUrl && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-text-muted shrink-0">SBT Mint</span>
+                  <a
+                    href={state.sbtMintUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-purple-400 hover:underline truncate"
+                  >
+                    {state.sbtMintAddress}
+                  </a>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="p-3.5 rounded-xl bg-surface-elevated/60 border border-border space-y-1.5 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-text-muted font-mono">On-Chain Status</span>
-              <span className="font-semibold text-text">
-                {effectiveScore}/100 ({state.scoreTier})
-              </span>
+          {/* Right: Digest & Skills */}
+          <div className="p-4 rounded-xl bg-surface-elevated border border-border space-y-3">
+            <div className="flex items-center justify-between text-[11px] font-mono text-text-muted border-b border-border/70 pb-2">
+              <span>Canonical Report SHA-256</span>
+              <span>{state.modelVersion}</span>
             </div>
-            {state.evalPdaAddress && (
-              <p className="font-mono text-[11px] text-text-secondary truncate">
-                Eval PDA:{" "}
-                <a
-                  href={state.evalPdaUrl || "#"}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-purple-400 hover:underline"
-                >
-                  {state.evalPdaAddress}
-                </a>
-              </p>
-            )}
-            {state.evalTxUrl && (
-              <p className="font-mono text-[11px] text-text-secondary truncate">
-                Anchor Tx:{" "}
-                <a
-                  href={state.evalTxUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-emerald-400 hover:underline"
-                >
-                  {state.evalTxSignature}
-                </a>
-              </p>
-            )}
-            {state.sbtMintUrl && (
-              <p className="font-mono text-[11px] text-text-secondary truncate">
-                SBT Mint:{" "}
-                <a
-                  href={state.sbtMintUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-amber-400 hover:underline"
-                >
-                  {state.sbtMintAddress}
-                </a>
-              </p>
+            <p className="font-mono text-xs text-text break-all leading-relaxed">
+              {state.canonicalReportHash || "Pending completion"}
+            </p>
+            {state.verifiedSkills.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {state.verifiedSkills.map((skill) => (
+                  <Badge key={skill} variant="purple" size="sm">
+                    {skill}
+                  </Badge>
+                ))}
+              </div>
             )}
           </div>
         </div>

@@ -111,11 +111,11 @@ export const ShareVerificationBadge: React.FC<{
   const clusterQuery = cluster === "mainnet-beta" ? "" : `?cluster=${cluster}`;
 
   return (
-    <Card className="bg-surface border-purple-500/30">
+    <Card className="bg-surface border-purple-500/40">
       <CardHeader className="border-b border-border pb-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <CardTitle className="text-xs font-bold uppercase tracking-wider text-text font-mono">
+            <CardTitle className="text-xs font-extrabold uppercase tracking-wider text-text font-mono">
               Cryptographic Audit & Solana On-Chain Proof
             </CardTitle>
             {checking ? (
@@ -123,7 +123,7 @@ export const ShareVerificationBadge: React.FC<{
                 Verifying SHA-256...
               </Badge>
             ) : isVerifiedMatch ? (
-              <Badge variant="success" size="sm">
+              <Badge variant="purple" size="sm">
                 Verified On-Chain
               </Badge>
             ) : isAnchoredOutOfSync ? (
@@ -146,7 +146,7 @@ export const ShareVerificationBadge: React.FC<{
               rel="noreferrer"
             >
               <Badge variant="purple" size="sm">
-                Soulbound Credential Verified →
+                Soulbound SBT Verified →
               </Badge>
             </a>
           )}
@@ -157,7 +157,7 @@ export const ShareVerificationBadge: React.FC<{
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1">
             <span className="text-[11px] font-mono text-text-muted">
-              Browser Recomputed SHA-256 Digest
+              Browser SHA-256 Digest
             </span>
             <p className="font-mono text-[11px] text-text break-all">
               {browserHash || proof.canonicalReportHash}
@@ -184,12 +184,14 @@ export const ShareVerificationBadge: React.FC<{
           ].map(([label, score]) => (
             <div
               key={String(label)}
-              className="p-2.5 rounded-lg bg-surface-elevated/60 border border-border text-center"
+              className="p-2.5 rounded-lg bg-surface-elevated border border-border text-center"
             >
               <span className="text-[10px] font-mono text-text-muted block truncate">
                 {label}
               </span>
-              <span className="text-sm font-bold text-text">{score}/100</span>
+              <span className="text-sm font-extrabold text-purple-400">
+                {score}/100
+              </span>
             </div>
           ))}
         </div>
@@ -205,7 +207,7 @@ export const ShareVerificationBadge: React.FC<{
                 href={onChain.evalPdaUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="text-purple-400 hover:underline"
+                className="text-purple-400 hover:underline font-semibold"
               >
                 Evaluation PDA →
               </a>
@@ -215,7 +217,7 @@ export const ShareVerificationBadge: React.FC<{
                 href={`https://explorer.solana.com/tx/${proof.evalTxSignature}${clusterQuery}`}
                 target="_blank"
                 rel="noreferrer"
-                className="text-emerald-400 hover:underline"
+                className="text-purple-400 hover:underline font-semibold"
               >
                 Anchor Tx →
               </a>

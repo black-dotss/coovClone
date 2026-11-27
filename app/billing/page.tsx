@@ -9,6 +9,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Alert } from "@/components/ui/alert";
 import { Modal } from "@/components/ui/modal";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
+import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 
 interface UsageData {
   plan: {
@@ -85,7 +86,8 @@ interface PaymentOrder {
   id: string;
   orderReference: string;
   planTier: string;
-  amount: number;
+  amount?: number;
+  amountEtb?: number;
   currency: string;
   status: "pending" | "verified" | "failed" | "expired";
   preferredProvider?: string;
@@ -102,15 +104,19 @@ interface PaymentOrder {
 type ProviderType = "telebirr" | "cbe";
 
 export default function BillingPage() {
+  const { publicKey, openConnectModal, signAndSubmitTx, clusterLabel } =
+    useSolanaWallet();
+
   const [usageData, setUsageData] = useState<UsageData | null>(null);
   const [rawQuotas, setRawQuotas] = useState<RawUsageResponse["quotas"] | null>(null);
   const [orders, setOrders] = useState<PaymentOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Currency selection: "USD" (default via Polar.sh) | "ETB" (via Verify.ET / Telebirr & CBE)
-  const [currency, setCurrency] = useState<"USD" | "ETB">("USD");
+  // Currency selection: "USD" (Polar.sh) | "USDC" (Solana Devnet) | "ETB" (Verify.ET)
+  const [currency, setCurrency] = useState<"USD" | "USDC" | "ETB">("USD");
   const [polarLoadingTier, setPolarLoadingTier] = useState<string | null>(null);
+  const [usdcLoadingTier, setUsdcLoadingTier] = useState<string | null>(null);
 
   // Order modal state
   const [showOrderModal, setShowOrderModal] = useState(false);
@@ -359,6 +365,65 @@ export default function BillingPage() {
     }
   };
 
+  const handleUsdcCheckout = async (planTier: string) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+
+    setUsdcLoadingTier(planTier);
+    setError(null);
+    try {
+      const prepared = await apiFetch<{
+        orderId: string;
+        planTier: string;
+        serializedTxBase64: string;
+        amountUsdc: number;
+      }>("/api/solana/payments", {
+        method: "POST",
+        body: JSON.stringify({
+          planTier,
+          walletAddress: publicKey,
+        }),
+      });
+
+      const txSignature = await signAndSubmitTx(prepared.serializedTxBase64);
+
+      await apiFetch("/api/solana/payments", {
+        method: "PATCH",
+        body: JSON.stringify({
+          orderId: prepared.orderId,
+          planTier,
+          walletAddress: publicKey,
+          txSignature,
+        }),
+      });
+
+      const displayName = getPlanDisplayName(planTier);
+      setWelcomeBanner({
+        tierName: displayName,
+        tierKey: planTier,
+      });
+      setVerifyResult({
+        status: "verified",
+        message: `Paid ${prepared.amountUsdc} USDC on Solana ${clusterLabel}! ${displayName} is now active.`,
+      });
+      setRefreshKey((k) => k + 1);
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to complete Solana USDC checkout.";
+      setError(message);
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    } finally {
+      setUsdcLoadingTier(null);
+    }
+  };
+
   const [welcomeBanner, setWelcomeBanner] = useState<{
     tierName: string;
     tierKey: string;
@@ -441,9 +506,8 @@ export default function BillingPage() {
               </Link>
             }
           >
-            This physical device has already claimed the 3 free recruitment reviews on another registered account.
-            Free trials are strictly restricted to 1 per device. To evaluate more CVs, upgrade to Pro below or use
-            Device Recovery to transfer your verified account.
+            This device and account have reached their shared limit of 3 free recruitment reviews.
+            To evaluate more CVs without waiting, upgrade to Pro below with USD, Solana USDC, or ETB.
           </Alert>
         )}
 
@@ -481,32 +545,56 @@ export default function BillingPage() {
                   <p className="text-xs text-text-secondary mt-0.5">
                     {currency === "USD"
                       ? "Pay internationally with Credit Card / Apple Pay / Google Pay via Polar.sh"
+                      : currency === "USDC"
+                      ? `Pay directly on Solana ${clusterLabel} with USDC (${
+                          publicKey
+                            ? `Connected: ${publicKey.slice(0, 4)}...${publicKey.slice(-4)}`
+                            : "Phantom or Solflare wallet"
+                        })`
                       : "Pay locally in Ethiopia via Telebirr or CBE bank transfer"}
                   </p>
                 </div>
-                <div className="flex items-center p-1 bg-surface-elevated border border-border rounded-xl shrink-0 self-start sm:self-auto">
-                  <button
-                    type="button"
-                    onClick={() => setCurrency("USD")}
-                    className={`px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                      currency === "USD"
-                        ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
-                        : "text-text-muted hover:text-text"
-                    }`}
-                  >
-                    USD ($)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCurrency("ETB")}
-                    className={`px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
-                      currency === "ETB"
-                        ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
-                        : "text-text-muted hover:text-text"
-                    }`}
-                  >
-                    ETB
-                  </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {currency === "USDC" && !publicKey && (
+                    <Button variant="outline" size="sm" onClick={openConnectModal}>
+                      Connect Wallet
+                    </Button>
+                  )}
+                  <div className="flex items-center p-1 bg-surface-elevated border border-border rounded-xl shrink-0 self-start sm:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => setCurrency("USD")}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                        currency === "USD"
+                          ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
+                          : "text-text-muted hover:text-text"
+                      }`}
+                    >
+                      USD ($)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCurrency("USDC")}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                        currency === "USDC"
+                          ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
+                          : "text-text-muted hover:text-text"
+                      }`}
+                    >
+                      USDC (Solana)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCurrency("ETB")}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                        currency === "ETB"
+                          ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
+                          : "text-text-muted hover:text-text"
+                      }`}
+                    >
+                      ETB
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -525,7 +613,7 @@ export default function BillingPage() {
                     <CardHeader className="border-b border-border pb-4">
                       <div className="flex items-center justify-between mb-3">
                         <Badge variant="neutral" size="sm">Trial</Badge>
-                        <span className="text-[10px] font-mono text-text-muted">1 claim per device</span>
+                        <span className="text-[10px] font-mono text-text-muted">3 shared trial reviews</span>
                       </div>
                       <div className="flex items-baseline gap-1">
                         <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text">0</span>
@@ -575,7 +663,7 @@ export default function BillingPage() {
                       </div>
                       <div className="flex items-baseline gap-1">
                         <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text">
-                          {currency === "USD" ? "5" : "150"}
+                          {currency === "ETB" ? "150" : "5"}
                         </span>
                         <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-300">{currency}</span>
                         <span className="text-xs font-mono text-text-muted ml-1">/ mo</span>
@@ -618,10 +706,15 @@ export default function BillingPage() {
                             : ""
                         }`}
                         disabled={usageData?.plan.tier === "pro_monthly"}
-                        isLoading={polarLoadingTier === "pro_monthly"}
+                        isLoading={
+                          polarLoadingTier === "pro_monthly" ||
+                          usdcLoadingTier === "pro_monthly"
+                        }
                         onClick={() => {
                           if (currency === "USD") {
                             handlePolarCheckout("pro_monthly");
+                          } else if (currency === "USDC") {
+                            void handleUsdcCheckout("pro_monthly");
                           } else {
                             openEtbModal("pro_monthly");
                           }
@@ -630,8 +723,20 @@ export default function BillingPage() {
                         {usageData?.plan.tier === "pro_monthly"
                           ? "Current Plan"
                           : usageData?.plan.tier && usageData.plan.tier !== "free_trial"
-                          ? `Switch to Pro Monthly (${currency === "USD" ? "$5 USD" : "150 ETB"})`
-                          : currency === "USD" ? "Upgrade ($5 USD)" : "Upgrade (150 ETB)"}
+                          ? `Switch to Pro Monthly (${
+                              currency === "USD"
+                                ? "$5 USD"
+                                : currency === "USDC"
+                                ? "5 USDC"
+                                : "150 ETB"
+                            })`
+                          : currency === "USD"
+                          ? "Upgrade ($5 USD)"
+                          : currency === "USDC"
+                          ? publicKey
+                            ? "Pay 5 USDC (Solana)"
+                            : "Connect Wallet · 5 USDC"
+                          : "Upgrade (150 ETB)"}
                       </Button>
                     </CardContent>
                   </Card>
@@ -645,7 +750,7 @@ export default function BillingPage() {
                       </div>
                       <div className="flex items-baseline gap-1">
                         <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text dark:text-white">
-                          {currency === "USD" ? "9" : "300"}
+                          {currency === "ETB" ? "300" : "9"}
                         </span>
                         <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-300">{currency}</span>
                         <span className="text-xs font-mono text-text-muted dark:text-purple-200 ml-1">/ mo</span>
@@ -688,10 +793,15 @@ export default function BillingPage() {
                             : "bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30 dark:shadow-purple-900/50"
                         }`}
                         disabled={usageData?.plan.tier === "pro_plus_monthly"}
-                        isLoading={polarLoadingTier === "pro_plus_monthly"}
+                        isLoading={
+                          polarLoadingTier === "pro_plus_monthly" ||
+                          usdcLoadingTier === "pro_plus_monthly"
+                        }
                         onClick={() => {
                           if (currency === "USD") {
                             handlePolarCheckout("pro_plus_monthly");
+                          } else if (currency === "USDC") {
+                            void handleUsdcCheckout("pro_plus_monthly");
                           } else {
                             openEtbModal("pro_plus_monthly");
                           }
@@ -700,8 +810,20 @@ export default function BillingPage() {
                         {usageData?.plan.tier === "pro_plus_monthly"
                           ? "Current Plan"
                           : usageData?.plan.tier && usageData.plan.tier !== "free_trial"
-                          ? `Switch to Pro Plus (${currency === "USD" ? "$9 USD" : "300 ETB"})`
-                          : currency === "USD" ? "Select $9 USD" : "Select 300 ETB"}
+                          ? `Switch to Pro Plus (${
+                              currency === "USD"
+                                ? "$9 USD"
+                                : currency === "USDC"
+                                ? "9 USDC"
+                                : "300 ETB"
+                            })`
+                          : currency === "USD"
+                          ? "Select $9 USD"
+                          : currency === "USDC"
+                          ? publicKey
+                            ? "Pay 9 USDC (Solana)"
+                            : "Connect Wallet · 9 USDC"
+                          : "Select 300 ETB"}
                       </Button>
                     </CardContent>
                   </Card>
@@ -715,7 +837,7 @@ export default function BillingPage() {
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-bold text-text">Annual & Unlimited Plans</h3>
                       <Badge variant="success" size="sm">
-                        {currency === "USD" ? "Save 55%" : "Save 1,600 ETB"}
+                        {currency === "ETB" ? "Save 1,600 ETB" : "Save 55%"}
                       </Badge>
                     </div>
                     <p className="text-xs text-text-secondary mt-0.5">
@@ -730,13 +852,13 @@ export default function BillingPage() {
                     <CardHeader className="border-b border-border pb-4">
                       <div className="flex items-center justify-between mb-3">
                         <Badge variant="success" size="sm">
-                          {currency === "USD" ? "Save 55%" : "Save 1,600 ETB"}
+                          {currency === "ETB" ? "Save 1,600 ETB" : "Save 55%"}
                         </Badge>
                         <span className="text-[10px] font-mono text-text-muted">Annual Access</span>
                       </div>
                       <div className="flex items-baseline gap-1">
                         <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text">
-                          {currency === "USD" ? "49" : "2,000"}
+                          {currency === "ETB" ? "2,000" : "49"}
                         </span>
                         <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-300">{currency}</span>
                         <span className="text-xs font-mono text-text-muted ml-1">/ yr</span>
@@ -779,10 +901,15 @@ export default function BillingPage() {
                             : ""
                         }`}
                         disabled={usageData?.plan.tier === "pro_plus_yearly"}
-                        isLoading={polarLoadingTier === "pro_plus_yearly"}
+                        isLoading={
+                          polarLoadingTier === "pro_plus_yearly" ||
+                          usdcLoadingTier === "pro_plus_yearly"
+                        }
                         onClick={() => {
                           if (currency === "USD") {
                             handlePolarCheckout("pro_plus_yearly");
+                          } else if (currency === "USDC") {
+                            void handleUsdcCheckout("pro_plus_yearly");
                           } else {
                             openEtbModal("pro_plus_yearly");
                           }
@@ -791,8 +918,20 @@ export default function BillingPage() {
                         {usageData?.plan.tier === "pro_plus_yearly"
                           ? "Current Plan"
                           : usageData?.plan.tier && usageData.plan.tier !== "free_trial"
-                          ? `Switch to Pro Plus Yearly (${currency === "USD" ? "$49 USD" : "2,000 ETB"})`
-                          : currency === "USD" ? "Select $49 USD" : "Select 2,000 ETB"}
+                          ? `Switch to Pro Plus Yearly (${
+                              currency === "USD"
+                                ? "$49 USD"
+                                : currency === "USDC"
+                                ? "49 USDC"
+                                : "2,000 ETB"
+                            })`
+                          : currency === "USD"
+                          ? "Select $49 USD"
+                          : currency === "USDC"
+                          ? publicKey
+                            ? "Pay 49 USDC (Solana)"
+                            : "Connect Wallet · 49 USDC"
+                          : "Select 2,000 ETB"}
                       </Button>
                     </CardContent>
                   </Card>
@@ -806,7 +945,7 @@ export default function BillingPage() {
                       </div>
                       <div className="flex items-baseline gap-1">
                         <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text dark:text-white">
-                          {currency === "USD" ? "99" : "4,000"}
+                          {currency === "ETB" ? "4,000" : "99"}
                         </span>
                         <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-300">{currency}</span>
                         <span className="text-xs font-mono text-text-muted dark:text-purple-200 ml-1">/ 1-yr</span>
@@ -849,10 +988,15 @@ export default function BillingPage() {
                             : "bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30 dark:shadow-purple-900/50"
                         }`}
                         disabled={usageData?.plan.tier === "unlimited_yearly"}
-                        isLoading={polarLoadingTier === "unlimited_yearly"}
+                        isLoading={
+                          polarLoadingTier === "unlimited_yearly" ||
+                          usdcLoadingTier === "unlimited_yearly"
+                        }
                         onClick={() => {
                           if (currency === "USD") {
                             handlePolarCheckout("executive_unlimited");
+                          } else if (currency === "USDC") {
+                            void handleUsdcCheckout("unlimited_yearly");
                           } else {
                             openEtbModal("unlimited_yearly");
                           }
@@ -861,8 +1005,20 @@ export default function BillingPage() {
                         {usageData?.plan.tier === "unlimited_yearly"
                           ? "Current Plan"
                           : usageData?.plan.tier && usageData.plan.tier !== "free_trial"
-                          ? `Switch to Unlimited (${currency === "USD" ? "$99 USD" : "4,000 ETB"})`
-                          : currency === "USD" ? "Get Unlimited ($99 USD)" : "Get Unlimited (4,000 ETB)"}
+                          ? `Switch to Unlimited (${
+                              currency === "USD"
+                                ? "$99 USD"
+                                : currency === "USDC"
+                                ? "99 USDC"
+                                : "4,000 ETB"
+                            })`
+                          : currency === "USD"
+                          ? "Get Unlimited ($99 USD)"
+                          : currency === "USDC"
+                          ? publicKey
+                            ? "Pay 99 USDC (Solana)"
+                            : "Connect Wallet · 99 USDC"
+                          : "Get Unlimited (4,000 ETB)"}
                       </Button>
                     </CardContent>
                   </Card>
@@ -912,7 +1068,7 @@ export default function BillingPage() {
                                 {ord.planTier.replace("_", " ")}
                               </td>
                               <td className="px-4 py-3 font-mono font-medium text-text">
-                                {ord.amount} {ord.currency}
+                                {ord.amountEtb ?? ord.amount} {ord.currency}
                               </td>
                               <td className="px-4 py-3">
                                 <Badge
@@ -932,7 +1088,7 @@ export default function BillingPage() {
                                 {new Date(ord.createdAt).toLocaleDateString()}
                               </td>
                               <td className="px-4 py-3 text-right">
-                                {ord.status === "pending" && (
+                                {ord.status === "pending" && ord.currency !== "USDC" && (
                                   <button
                                     onClick={() => {
                                       openEtbModal(ord.planTier);

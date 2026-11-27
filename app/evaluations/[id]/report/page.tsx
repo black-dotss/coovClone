@@ -42,6 +42,7 @@ const COMMITTEE_PERSONAS: Array<{
 
 type ReportCategory =
   | "overview"
+  | "solana"
   | "agents"
   | "pipeline"
   | "strengths"
@@ -754,6 +755,15 @@ export default function EvaluationReportPage({
       ),
     },
     {
+      id: "solana",
+      label: "On-Chain & SBT",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+        </svg>
+      ),
+    },
+    {
       id: "agents",
       label: "Agent Opinions",
       count: 6,
@@ -1078,9 +1088,6 @@ export default function EvaluationReportPage({
           {/* TAB 1: OVERVIEW */}
           {activeCategory === "overview" && (
             <div className="w-full max-w-full min-w-0 space-y-6">
-              {/* 0. Solana On-Chain Proof & Soulbound Credential */}
-              <EvaluationOnChainPanel evaluationId={id} />
-
               {/* 1. Role Competency Curve */}
               <div className="w-full max-w-full min-w-0 overflow-hidden p-3 sm:p-5 bg-surface border border-border rounded-xl space-y-4 shadow-xs">
                 <CompetencyXYChart dimensions={dimensionMetrics} />
@@ -1284,6 +1291,26 @@ export default function EvaluationReportPage({
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* TAB: ON-CHAIN & SBT */}
+          {activeCategory === "solana" && (
+            <div className="w-full max-w-full min-w-0 space-y-6">
+              <div className="border-b border-border pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-lg font-extrabold text-text">
+                    Solana On-Chain Proof & SBT
+                  </h2>
+                  <p className="text-xs font-mono text-text-muted">
+                    Immutable SHA-256 report attestation & Token-2022 Soulbound Credential
+                  </p>
+                </div>
+                <Badge variant="purple" size="sm">
+                  Solana Devnet
+                </Badge>
+              </div>
+              <EvaluationOnChainPanel evaluationId={id} />
             </div>
           )}
 

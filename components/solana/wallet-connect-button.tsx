@@ -20,12 +20,12 @@ export const WalletConnectButton: React.FC<{ compact?: boolean }> = ({
         type="button"
         onClick={openConnectModal}
         title={`Connected with ${selectedWallet?.name || "Wallet"} (${publicKey})`}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-semibold transition-colors cursor-pointer shrink-0"
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-purple-500/45 bg-purple-600/15 hover:bg-purple-600/25 text-purple-300 text-xs font-bold transition-colors cursor-pointer shrink-0"
       >
-        <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+        <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0" />
         <span className="font-mono">{shortenAddress(publicKey)}</span>
         {!compact && (
-          <span className="hidden xl:inline text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/20">
+          <span className="hidden xl:inline text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-purple-500/25 text-purple-200">
             {clusterLabel}
           </span>
         )}

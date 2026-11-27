@@ -8,6 +8,7 @@ import {
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountIdempotentInstruction,
+  createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
   getTokenMetadata,
 } from "@solana/spl-token";
@@ -136,7 +137,7 @@ export async function initializeProgramConfig(): Promise<{
     };
   }
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
   const tx = new Transaction({
     feePayer: oracleKeypair.publicKey,
     blockhash,
@@ -200,7 +201,7 @@ export async function prepareAdminInitializeConfigTx(adminWallet: string): Promi
   }
 
   const adminPubkey = new PublicKey(adminWallet);
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
   const tx = new Transaction({
     feePayer: adminPubkey,
     blockhash,
@@ -297,7 +298,7 @@ export async function prepareAnchorEvaluationTx(params: {
     );
   }
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
   const tx = new Transaction({
     feePayer: candidatePubkey,
     blockhash,
@@ -387,7 +388,7 @@ export async function prepareDefenseUpdateTx(params: {
     throw new Error("On-chain evaluation proof is already up to date with this Defense score and hash.");
   }
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
   const tx = new Transaction({
     feePayer: candidatePubkey,
     blockhash,
@@ -464,7 +465,7 @@ export async function prepareMintCredentialTx(params: {
   }
 
   const mintKeypair = Keypair.generate();
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
 
   const tx = new Transaction({
     feePayer: candidatePubkey,
@@ -544,6 +545,13 @@ export async function prepareCreateBountyEscrowTx(params: {
     throw new Error(`Bounty escrow PDA (${escrowPda.toBase58()}) already exists for this job.`);
   }
 
+  const solBalance = await connection.getBalance(recruiterPubkey, "confirmed");
+  if (solBalance < 2_500_000) {
+    throw new Error(
+      `Insufficient Devnet SOL for escrow rent/fees (${(solBalance / 1_000_000_000).toFixed(4)} SOL). Ensure at least 0.003 SOL.`
+    );
+  }
+
   const recruiterAta = getAssociatedTokenAddressSync(
     usdcMint,
     recruiterPubkey,
@@ -568,7 +576,7 @@ export async function prepareCreateBountyEscrowTx(params: {
     );
   }
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
   const tx = new Transaction({
     feePayer: recruiterPubkey,
     blockhash,
@@ -671,7 +679,7 @@ export async function prepareClaimBountyTx(params: {
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
   const tx = new Transaction({
     feePayer: candidatePubkey,
     blockhash,
@@ -748,6 +756,13 @@ export async function prepareWithdrawExpiredEscrowTx(params: {
     throw new Error("Bounty escrow cannot be refunded until after its expiration timestamp.");
   }
 
+  const solBalance = await connection.getBalance(recruiterPubkey, "confirmed");
+  if (solBalance < 2_500_000) {
+    throw new Error(
+      `Insufficient Devnet SOL for escrow rent/fees (${(solBalance / 1_000_000_000).toFixed(4)} SOL). Ensure at least 0.003 SOL.`
+    );
+  }
+
   const recruiterAta = getAssociatedTokenAddressSync(
     usdcMint,
     recruiterPubkey,
@@ -756,7 +771,7 @@ export async function prepareWithdrawExpiredEscrowTx(params: {
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
   const tx = new Transaction({
     feePayer: recruiterPubkey,
     blockhash,
@@ -955,4 +970,226 @@ export async function fetchWalletCredentials(
   );
 
   return resolved.filter((item): item is WalletSoulboundCredential => item !== null && item.isCoovCredential);
+}
+
+// ============================================================================
+// Subscription Plan USDC Payments (Solana Devnet)
+// ============================================================================
+
+export function getTreasuryWallet(): PublicKey {
+  const configured = process.env.COOV_TREASURY_WALLET?.trim();
+  if (configured) {
+    return new PublicKey(configured);
+  }
+  return getOracleKeypair().publicKey;
+}
+
+export async function prepareUsdcPlanPaymentTx(params: {
+  payerWallet: string;
+  usdcAmount: number;
+}): Promise<{
+  serializedTxBase64: string;
+  amountUsdc: number;
+  amountMicros: string;
+  treasuryWallet: string;
+  treasuryAta: string;
+  usdcMint: string;
+  recentBlockhash: string;
+  lastValidBlockHeight: number;
+}> {
+  const connection = getSolanaConnection();
+  const payerPubkey = new PublicKey(params.payerWallet);
+  const usdcMint = getUsdcMint();
+  const treasuryPubkey = getTreasuryWallet();
+  const tokenProgramId = await resolveUsdcTokenProgram(usdcMint);
+
+  const solBalance = await connection.getBalance(payerPubkey, "confirmed");
+  if (solBalance < 2_500_000) {
+    throw new Error(
+      `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for transaction fee/ATA creation.`
+    );
+  }
+
+  const senderAta = getAssociatedTokenAddressSync(
+    usdcMint,
+    payerPubkey,
+    false,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  const treasuryAta = getAssociatedTokenAddressSync(
+    usdcMint,
+    treasuryPubkey,
+    false,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  const senderAtaInfo = await connection.getAccountInfo(senderAta, "confirmed");
+  if (!senderAtaInfo) {
+    throw new Error(
+      `Your wallet (${params.payerWallet}) has no Devnet USDC token account (${usdcMint.toBase58()}).`
+    );
+  }
+
+  const requiredMicros = BigInt(Math.round(params.usdcAmount * 1_000_000));
+  const balance = await connection.getTokenAccountBalance(senderAta, "confirmed");
+  const availableMicros = BigInt(balance.value.amount || "0");
+  if (availableMicros < requiredMicros) {
+    throw new Error(
+      `Insufficient Devnet USDC: plan costs ${params.usdcAmount} USDC, wallet has ${(Number(availableMicros) / 1_000_000).toFixed(2)} USDC.`
+    );
+  }
+
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+  const tx = new Transaction({
+    feePayer: payerPubkey,
+    blockhash,
+    lastValidBlockHeight,
+  })
+    .add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        payerPubkey,
+        treasuryAta,
+        treasuryPubkey,
+        usdcMint,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    )
+    .add(
+      createTransferCheckedInstruction(
+        senderAta,
+        usdcMint,
+        treasuryAta,
+        payerPubkey,
+        requiredMicros,
+        6,
+        [],
+        tokenProgramId
+      )
+    );
+
+  const serialized = tx.serialize({
+    requireAllSignatures: false,
+    verifySignatures: false,
+  });
+
+  return {
+    serializedTxBase64: bytesToBase64(serialized),
+    amountUsdc: params.usdcAmount,
+    amountMicros: requiredMicros.toString(),
+    treasuryWallet: treasuryPubkey.toBase58(),
+    treasuryAta: treasuryAta.toBase58(),
+    usdcMint: usdcMint.toBase58(),
+    recentBlockhash: blockhash,
+    lastValidBlockHeight,
+  };
+}
+
+/**
+ * Verifies a confirmed Devnet transaction transferred at least `expectedMicros`
+ * of COOV's USDC mint into the treasury ATA.
+ */
+export async function verifyUsdcTransferTransaction(params: {
+  signature: string;
+  payerWallet: string;
+  expectedMicros: bigint;
+}): Promise<{
+  verified: boolean;
+  treasuryWallet: string;
+  treasuryAta: string;
+  receivedMicros: string;
+}> {
+  const connection = getSolanaConnection();
+  const usdcMint = getUsdcMint();
+  const treasuryPubkey = getTreasuryWallet();
+  const tokenProgramId = await resolveUsdcTokenProgram(usdcMint);
+  const treasuryAta = getAssociatedTokenAddressSync(
+    usdcMint,
+    treasuryPubkey,
+    false,
+    tokenProgramId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  await confirmSubmittedSignature(params.signature);
+
+  const parsedTx = await connection.getParsedTransaction(params.signature, {
+    commitment: "confirmed",
+    maxSupportedTransactionVersion: 0,
+  });
+
+  if (!parsedTx || !parsedTx.meta || parsedTx.meta.err) {
+    throw new Error("On-chain USDC payment transaction was not found or failed execution.");
+  }
+
+  const payerSigned = parsedTx.transaction.message.accountKeys.some(
+    (k) => k.signer && k.pubkey.toBase58() === params.payerWallet
+  );
+  if (!payerSigned) {
+    throw new Error("Connected wallet did not sign this USDC payment transaction.");
+  }
+
+  const treasuryAtaStr = treasuryAta.toBase58();
+  const mintStr = usdcMint.toBase58();
+  const accountKeys = parsedTx.transaction.message.accountKeys;
+  const treasuryIdx = accountKeys.findIndex(
+    (k) => k.pubkey.toBase58() === treasuryAtaStr
+  );
+
+  let receivedDelta = BigInt(0);
+  if (treasuryIdx >= 0) {
+    const preEntry = parsedTx.meta.preTokenBalances?.find(
+      (b) => b.accountIndex === treasuryIdx && b.mint === mintStr
+    );
+    const postEntry = parsedTx.meta.postTokenBalances?.find(
+      (b) => b.accountIndex === treasuryIdx && b.mint === mintStr
+    );
+    const preMicros = BigInt(preEntry?.uiTokenAmount?.amount || "0");
+    const postMicros = BigInt(postEntry?.uiTokenAmount?.amount || "0");
+    if (postMicros > preMicros) {
+      receivedDelta = postMicros - preMicros;
+    }
+  }
+
+  // Fallback check on parsed instructions if treasuryIdx token delta wasn't populated
+  if (receivedDelta < params.expectedMicros) {
+    for (const ix of parsedTx.transaction.message.instructions) {
+      if ("parsed" in ix && ix.parsed && typeof ix.parsed === "object") {
+        const parsed = ix.parsed as {
+          type?: string;
+          info?: {
+            destination?: string;
+            mint?: string;
+            tokenAmount?: { amount?: string };
+            amount?: string;
+          };
+        };
+        if (
+          (parsed.type === "transferChecked" || parsed.type === "transfer") &&
+          parsed.info?.destination === treasuryAtaStr &&
+          (!parsed.info.mint || parsed.info.mint === mintStr)
+        ) {
+          const amt = BigInt(
+            parsed.info.tokenAmount?.amount || parsed.info.amount || "0"
+          );
+          if (amt > receivedDelta) receivedDelta = amt;
+        }
+      }
+    }
+  }
+
+  if (receivedDelta < params.expectedMicros) {
+    throw new Error(
+      `USDC transfer amount mismatch: expected ${params.expectedMicros.toString()} micro-USDC to ${treasuryAtaStr}, verified ${receivedDelta.toString()}.`
+    );
+  }
+
+  return {
+    verified: true,
+    treasuryWallet: treasuryPubkey.toBase58(),
+    treasuryAta: treasuryAtaStr,
+    receivedMicros: receivedDelta.toString(),
+  };
 }
