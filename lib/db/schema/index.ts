@@ -724,3 +724,73 @@ export const bountyClaims = pgTable(
     index("bounty_claims_candidate_idx").on(table.candidateUserId),
   ]
 );
+
+export const bountySubmissions = pgTable(
+  "bounty_submissions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    bountyId: uuid("bounty_id")
+      .notNull()
+      .references(() => bounties.id, { onDelete: "cascade" }),
+    jobDescriptionId: uuid("job_description_id")
+      .notNull()
+      .references(() => jobDescriptions.id, { onDelete: "cascade" }),
+    candidateUserId: text("candidate_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    candidateWallet: text("candidate_wallet"),
+    evaluationId: uuid("evaluation_id")
+      .notNull()
+      .references(() => evaluations.id, { onDelete: "cascade" }),
+    cvVersionId: uuid("cv_version_id")
+      .notNull()
+      .references(() => cvVersions.id, { onDelete: "cascade" }),
+    resumeHash: text("resume_hash").notNull(),
+    resumeFingerprint: jsonb("resume_fingerprint").$type<number[]>().notNull(),
+    fakeDetectorStatus: text("fake_detector_status").notNull().default("pending"), // pending, passed, flagged
+    fakeDetectorScore: integer("fake_detector_score"),
+    fakeDetectorReport: jsonb("fake_detector_report").$type<Record<string, unknown>>(),
+    reviewStatus: text("review_status").notNull().default("evaluating"), // evaluating, below_threshold, pending_review, approved, claimed, rejected, blocked_duplicate, blocked_fake
+    slotReservedAt: timestamp("slot_reserved_at", { withTimezone: true }),
+    reviewDeadlineAt: timestamp("review_deadline_at", { withTimezone: true }),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    reviewedByUserId: text("reviewed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    recruiterNotes: text("recruiter_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bounty_submissions_bounty_eval_idx").on(table.bountyId, table.evaluationId),
+    index("bounty_submissions_bounty_hash_idx").on(table.bountyId, table.resumeHash),
+    index("bounty_submissions_bounty_status_idx").on(table.bountyId, table.reviewStatus),
+    index("bounty_submissions_candidate_idx").on(table.candidateUserId),
+    index("bounty_submissions_jd_idx").on(table.jobDescriptionId),
+  ]
+);
+
+export const bountyRestrictions = pgTable(
+  "bounty_restrictions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    bountyId: uuid("bounty_id")
+      .notNull()
+      .references(() => bounties.id, { onDelete: "cascade" }),
+    jobDescriptionId: uuid("job_description_id")
+      .notNull()
+      .references(() => jobDescriptions.id, { onDelete: "cascade" }),
+    userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
+    walletAddress: text("wallet_address"),
+    resumeHash: text("resume_hash"),
+    reason: text("reason").notNull(), // duplicate_resume, fake_resume_detected, recruiter_rejected
+    details: text("details").notNull(),
+    createdByUserId: text("created_by_user_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("bounty_restrictions_bounty_user_idx").on(table.bountyId, table.userId),
+    index("bounty_restrictions_bounty_wallet_idx").on(table.bountyId, table.walletAddress),
+    index("bounty_restrictions_bounty_hash_idx").on(table.bountyId, table.resumeHash),
+  ]
+);

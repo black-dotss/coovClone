@@ -22,6 +22,11 @@ import { reserveEvaluationCredit } from "@/lib/billing/ledger";
 import { CreditReservation } from "@/lib/billing/types";
 import { NotFoundError, ForbiddenError, QuotaExceededError, BadRequestError } from "@/lib/shared/errors";
 import { logger } from "@/lib/shared/logger";
+import {
+  persistInitialBountySubmission,
+  syncEvaluationToBountySubmission,
+  validatePreBountySubmission,
+} from "@/lib/bounties/service";
 
 export interface CreateEvaluationInput {
   ownerUserId: string;
@@ -90,7 +95,8 @@ export async function createEvaluation(input: CreateEvaluationInput) {
     // In test mocks with unreachable DB, continue
   }
 
-  // Check CV version ownership
+  // Check CV version ownership & run Pre-Bounty Anti-Fraud / Duplicate Gates
+  let cvTextForBounty = "";
   try {
     const cvs = await db
       .select()
@@ -108,9 +114,20 @@ export async function createEvaluation(input: CreateEvaluationInput) {
           "The selected CV does not contain readable text. Please re-upload your CV with readable text."
         );
       }
+      cvTextForBounty = cvText;
     }
   } catch (err) {
     if (err instanceof ForbiddenError || err instanceof BadRequestError) throw err;
+  }
+
+  let preBountyGate: Awaited<ReturnType<typeof validatePreBountySubmission>> = null;
+  if (cvTextForBounty.length >= 50) {
+    preBountyGate = await validatePreBountySubmission({
+      jobDescriptionId: input.jobDescriptionId,
+      ownerUserId: input.ownerUserId,
+      cvVersionId: input.cvVersionId,
+      cvText: cvTextForBounty,
+    });
   }
 
   // Atomically reserve evaluation quota credit with device awareness
@@ -151,6 +168,19 @@ export async function createEvaluation(input: CreateEvaluationInput) {
         },
       })
       .returning();
+
+    if (preBountyGate) {
+      await persistInitialBountySubmission({
+        bounty: preBountyGate.bounty,
+        candidateUserId: input.ownerUserId,
+        candidateWallet: preBountyGate.candidateWallet,
+        evaluationId: inserted[0].id,
+        cvVersionId: input.cvVersionId,
+        resumeHash: preBountyGate.resumeHash,
+        fingerprint: preBountyGate.fingerprint,
+        detectorReport: preBountyGate.detectorReport,
+      });
+    }
 
     return inserted[0];
   } catch (err) {
@@ -310,6 +340,8 @@ export async function runEvaluationWorkflow(options: RunEvaluationOptions) {
           updatedAt: new Date(),
         })
         .where(eq(evaluations.id, evaluationId));
+
+      await syncEvaluationToBountySubmission({ evaluationId });
     } catch {
       // Ignored if db unreachable in unit tests
     }

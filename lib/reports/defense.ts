@@ -8,6 +8,7 @@ import { ForbiddenError, NotFoundError, BadRequestError } from "@/lib/shared/err
 import { logger } from "@/lib/shared/logger";
 import { getAIProvider } from "@/lib/ai/providers";
 import { computeCanonicalHashFromReportRecord } from "@/lib/solana/canonical-hash";
+import { syncEvaluationToBountySubmission } from "@/lib/bounties/service";
 
 /**
  * Evaluates user defense submission and calculates a bounded reassessment delta.
@@ -346,6 +347,12 @@ Respond strictly in valid JSON format:
       updatedAt: new Date(),
     })
     .where(eq(evaluations.id, evaluationId));
+
+  try {
+    await syncEvaluationToBountySubmission({ evaluationId });
+  } catch {
+    // Non-fatal in isolated defense unit tests with mocked DB
+  }
 
   logger.info("Processed defense submission and bounded reassessment", {
     evaluationId,

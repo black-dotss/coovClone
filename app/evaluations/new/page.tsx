@@ -20,6 +20,7 @@ import {
 import { getCompanyLogo } from "@/components/ui/company-logo";
 import { preloadAgentAvatars } from "@/components/ui/avatar";
 import { useSession } from "@/lib/auth/auth-client";
+import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 
 type BenchmarkPreset = FamousRolePreset;
 
@@ -64,11 +65,13 @@ interface ActiveBountyTarget {
   minScore: number;
   rewardPerWinnerUsdc: number;
   rawText: string;
+  availableSlots?: number;
 }
 
 export default function NewEvaluationPage() {
   const router = useRouter();
   const { data: session } = useSession();
+  const { publicKey } = useSolanaWallet();
 
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [cvDragOver, setCvDragOver] = useState(false);
@@ -86,6 +89,10 @@ export default function NewEvaluationPage() {
   const [showAllBenchmarks, setShowAllBenchmarks] = useState(false);
   const [recentJobs, setRecentJobs] = useState<RecentJobPreset[]>([]);
   const [activeBounty, setActiveBounty] = useState<ActiveBountyTarget | null>(null);
+  const [bountyRestriction, setBountyRestriction] = useState<{
+    reason: string;
+    details: string;
+  } | null>(null);
 
   useEffect(() => {
     async function loadBountyTarget() {
@@ -93,22 +100,26 @@ export default function NewEvaluationPage() {
       const bountyId = new URLSearchParams(window.location.search).get("bountyId");
       if (!bountyId) return;
       try {
-        const res = await apiFetch<{ bounties?: ActiveBountyTarget[] }>(
-          "/api/solana/bounties"
-        );
+        const query = publicKey ? `?wallet=${encodeURIComponent(publicKey)}` : "";
+        const res = await apiFetch<{
+          bounties?: ActiveBountyTarget[];
+          myRestrictions?: Array<{ bountyId: string; reason: string; details: string }>;
+        }>(`/api/solana/bounties${query}`);
         const match = res?.bounties?.find((b) => b.id === bountyId);
         if (match) {
           setActiveBounty(match);
           setCompany(match.company);
           setJobTitle(match.title);
           setJobDescriptionText(match.rawText);
+          const rest = res?.myRestrictions?.find((r) => r.bountyId === bountyId);
+          setBountyRestriction(rest ? { reason: rest.reason, details: rest.details } : null);
         }
       } catch {
         // Ignore if unreachable
       }
     }
     void loadBountyTarget();
-  }, []);
+  }, [publicKey]);
 
   useEffect(() => {
     async function loadRecentJobs() {
@@ -333,7 +344,17 @@ export default function NewEvaluationPage() {
         </Alert>
       )}
 
-      {activeBounty && (
+      {bountyRestriction && activeBounty && (
+        <Alert
+          variant="danger"
+          title={`Restricted from Bounty (${bountyRestriction.reason.replace(/_/g, " ")})`}
+        >
+          {bountyRestriction.details} You cannot submit or claim on{" "}
+          <strong>{activeBounty.title}</strong>.
+        </Alert>
+      )}
+
+      {activeBounty && !bountyRestriction && (
         <Alert
           variant="info"
           title={`Solana USDC Bounty Mode · ${activeBounty.rewardPerWinnerUsdc} USDC Reward`}
@@ -348,8 +369,9 @@ export default function NewEvaluationPage() {
           }
         >
           Targeting <strong>{activeBounty.title}</strong> at{" "}
-          <strong>{activeBounty.company}</strong>. Score {activeBounty.minScore}/100+ and
-          anchor your proof on Solana Devnet to claim {activeBounty.rewardPerWinnerUsdc} USDC.
+          <strong>{activeBounty.company}</strong>. Resumes undergo SHA-256 duplicate &
+          Fake Resume Detector gating. Scoring {activeBounty.minScore}/100+ reserves your
+          winner slot in a 48h recruiter review window before payout release.
         </Alert>
       )}
 

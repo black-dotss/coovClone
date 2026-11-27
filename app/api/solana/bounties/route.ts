@@ -1,8 +1,16 @@
 import { PublicKey } from "@solana/web3.js";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { bounties, bountyClaims, evaluations, jobDescriptions } from "@/lib/db/schema";
+import {
+  bounties,
+  bountyClaims,
+  bountyRestrictions,
+  bountySubmissions,
+  evaluations,
+  jobDescriptions,
+} from "@/lib/db/schema";
+import { formatRemainingDuration, RESERVED_SUBMISSION_STATUSES } from "@/lib/bounties/service";
 import { getSession, requireAuth } from "@/lib/auth";
 import { createJobDescription } from "@/lib/job-descriptions";
 import {
@@ -40,6 +48,8 @@ const ConfirmBountySchema = z.object({
 
 export const GET = createApiHandler(async (req: Request) => {
   const session = await getSession(req.headers);
+  const url = new URL(req.url);
+  const walletParam = url.searchParams.get("wallet")?.trim() || null;
 
   const rows = await db
     .select({
@@ -67,6 +77,23 @@ export const GET = createApiHandler(async (req: Request) => {
     .innerJoin(jobDescriptions, eq(bounties.jobDescriptionId, jobDescriptions.id))
     .orderBy(desc(bounties.createdAt));
 
+  const bountyIds = rows.map((r) => r.id);
+  const activeReservations =
+    bountyIds.length > 0
+      ? await db
+          .select({
+            bountyId: bountySubmissions.bountyId,
+            reviewStatus: bountySubmissions.reviewStatus,
+          })
+          .from(bountySubmissions)
+          .where(
+            and(
+              inArray(bountySubmissions.bountyId, bountyIds),
+              inArray(bountySubmissions.reviewStatus, [...RESERVED_SUBMISSION_STATUSES])
+            )
+          )
+      : [];
+
   // Sync live claims/closed status for open bounties
   const syncedRows = await Promise.all(
     rows.map(async (row) => {
@@ -90,10 +117,24 @@ export const GET = createApiHandler(async (req: Request) => {
         }
       }
 
+      const reservedForBounty = activeReservations.filter((r) => r.bountyId === row.id);
+      const pendingReviewCount = reservedForBounty.filter(
+        (r) => r.reviewStatus === "pending_review"
+      ).length;
+      const approvedCount = reservedForBounty.filter(
+        (r) => r.reviewStatus === "approved"
+      ).length;
+      const occupiedSlots = claimsCount + reservedForBounty.length;
+      const availableSlots = Math.max(0, row.maxWinners - occupiedSlots);
+
       return {
         ...row,
         claimsCount,
         status,
+        pendingReviewCount,
+        approvedCount,
+        occupiedSlots,
+        availableSlots,
         isExpired: row.expiresAt.getTime() < Date.now(),
         rewardPerWinnerUsdc: Number(row.rewardPerWinnerMicros) / 1_000_000,
         totalPoolUsdc:
@@ -118,31 +159,119 @@ export const GET = createApiHandler(async (req: Request) => {
     amountMicros: string;
     candidateWallet: string;
   }> = [];
+  let mySubmissions: Array<{
+    id: string;
+    bountyId: string;
+    evaluationId: string;
+    candidateWallet: string | null;
+    resumeHash: string;
+    fakeDetectorStatus: string;
+    fakeDetectorScore: number | null;
+    reviewStatus: string;
+    slotReservedAt: string | null;
+    reviewDeadlineAt: string | null;
+    recruiterNotes: string | null;
+    isReviewExpired: boolean;
+    remainingReviewLabel: string | null;
+  }> = [];
+  let myRestrictions: Array<{
+    bountyId: string;
+    reason: string;
+    details: string;
+    createdAt: string;
+  }> = [];
 
-  if (session?.user?.id) {
-    [myEvaluations, myClaims] = await Promise.all([
-      db
-        .select({
-          id: evaluations.id,
-          jobDescriptionId: evaluations.jobDescriptionId,
-          status: evaluations.status,
-          overallScore: evaluations.overallScore,
-          candidateWallet: evaluations.candidateWallet,
-          evalTxSignature: evaluations.evalTxSignature,
-        })
-        .from(evaluations)
-        .where(eq(evaluations.ownerUserId, session.user.id))
-        .orderBy(desc(evaluations.createdAt)),
-      db
-        .select({
-          bountyId: bountyClaims.bountyId,
-          claimTxSignature: bountyClaims.claimTxSignature,
-          amountMicros: bountyClaims.amountMicros,
-          candidateWallet: bountyClaims.candidateWallet,
-        })
-        .from(bountyClaims)
-        .where(eq(bountyClaims.candidateUserId, session.user.id)),
+  if (session?.user?.id || walletParam) {
+    const restrictionConds = [];
+    if (session?.user?.id) restrictionConds.push(eq(bountyRestrictions.userId, session.user.id));
+    if (walletParam) restrictionConds.push(eq(bountyRestrictions.walletAddress, walletParam));
+
+    const [evalRows, claimRows, subRows, restrictionRows] = await Promise.all([
+      session?.user?.id
+        ? db
+            .select({
+              id: evaluations.id,
+              jobDescriptionId: evaluations.jobDescriptionId,
+              status: evaluations.status,
+              overallScore: evaluations.overallScore,
+              candidateWallet: evaluations.candidateWallet,
+              evalTxSignature: evaluations.evalTxSignature,
+            })
+            .from(evaluations)
+            .where(eq(evaluations.ownerUserId, session.user.id))
+            .orderBy(desc(evaluations.createdAt))
+        : Promise.resolve([]),
+      session?.user?.id
+        ? db
+            .select({
+              bountyId: bountyClaims.bountyId,
+              claimTxSignature: bountyClaims.claimTxSignature,
+              amountMicros: bountyClaims.amountMicros,
+              candidateWallet: bountyClaims.candidateWallet,
+            })
+            .from(bountyClaims)
+            .where(eq(bountyClaims.candidateUserId, session.user.id))
+        : Promise.resolve([]),
+      session?.user?.id
+        ? db
+            .select({
+              id: bountySubmissions.id,
+              bountyId: bountySubmissions.bountyId,
+              evaluationId: bountySubmissions.evaluationId,
+              candidateWallet: bountySubmissions.candidateWallet,
+              resumeHash: bountySubmissions.resumeHash,
+              fakeDetectorStatus: bountySubmissions.fakeDetectorStatus,
+              fakeDetectorScore: bountySubmissions.fakeDetectorScore,
+              reviewStatus: bountySubmissions.reviewStatus,
+              slotReservedAt: bountySubmissions.slotReservedAt,
+              reviewDeadlineAt: bountySubmissions.reviewDeadlineAt,
+              recruiterNotes: bountySubmissions.recruiterNotes,
+            })
+            .from(bountySubmissions)
+            .where(eq(bountySubmissions.candidateUserId, session.user.id))
+            .orderBy(desc(bountySubmissions.createdAt))
+        : Promise.resolve([]),
+      restrictionConds.length > 0
+        ? db
+            .select({
+              bountyId: bountyRestrictions.bountyId,
+              reason: bountyRestrictions.reason,
+              details: bountyRestrictions.details,
+              createdAt: bountyRestrictions.createdAt,
+            })
+            .from(bountyRestrictions)
+            .where(or(...restrictionConds))
+            .orderBy(desc(bountyRestrictions.createdAt))
+        : Promise.resolve([]),
     ]);
+
+    myEvaluations = evalRows;
+    myClaims = claimRows;
+
+    const nowMs = Date.now();
+    mySubmissions = subRows.map((s) => {
+      const deadlineMs = s.reviewDeadlineAt ? s.reviewDeadlineAt.getTime() : null;
+      const isReviewExpired = Boolean(
+        s.reviewStatus === "pending_review" && deadlineMs !== null && nowMs >= deadlineMs
+      );
+      return {
+        ...s,
+        slotReservedAt: s.slotReservedAt ? s.slotReservedAt.toISOString() : null,
+        reviewDeadlineAt: s.reviewDeadlineAt ? s.reviewDeadlineAt.toISOString() : null,
+        isReviewExpired,
+        remainingReviewLabel:
+          deadlineMs && nowMs < deadlineMs
+            ? formatRemainingDuration(deadlineMs, nowMs)
+            : isReviewExpired
+            ? "Deadline expired (Auto-claim ready)"
+            : null,
+      };
+    });
+
+    myRestrictions = restrictionRows.map((r) => ({
+      ...r,
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 
   return successResponse({
@@ -151,6 +280,8 @@ export const GET = createApiHandler(async (req: Request) => {
     bounties: syncedRows,
     myEvaluations,
     myClaims,
+    mySubmissions,
+    myRestrictions,
   });
 });
 

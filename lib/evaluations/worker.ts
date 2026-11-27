@@ -27,6 +27,7 @@ import { storage } from "@/lib/documents/storage";
 import { extractDocumentText } from "@/lib/documents/extraction";
 import { settleEvaluationCredit, releaseEvaluationCredit } from "@/lib/billing/ledger";
 import { CreditReservation } from "@/lib/billing/types";
+import { syncEvaluationToBountySubmission } from "@/lib/bounties/service";
 import { AppError, NotFoundError, ForbiddenError, BadRequestError } from "@/lib/shared/errors";
 import { logger } from "@/lib/shared/logger";
 import {
@@ -390,6 +391,8 @@ export async function executeEvaluationWithCheckpoints(
         updatedAt: new Date(),
       })
       .where(eq(evaluations.id, evaluationId));
+
+    await syncEvaluationToBountySubmission({ evaluationId });
 
     logger.info("Evaluation completed successfully", {
       evaluationId,
