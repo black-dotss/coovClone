@@ -17,6 +17,7 @@ import {
   NotFoundError,
   successResponse,
 } from "@/lib/shared";
+import { syncEvaluationToBountySubmission } from "@/lib/bounties/service";
 import {
   agentScoresToTuple,
   computeCanonicalHashFromReportRecord,
@@ -373,6 +374,11 @@ export const PATCH = createApiHandler(
           .where(eq(userProfiles.userId, session.user.id));
       }
     }
+
+    await syncEvaluationToBountySubmission({
+      evaluationId: ctx.evalRow.id,
+      walletAddress: candidateWallet,
+    });
 
     return successResponse({
       confirmed: true,

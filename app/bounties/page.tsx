@@ -27,6 +27,10 @@ interface BountyItem {
   totalPoolUsdc: number;
   maxWinners: number;
   claimsCount: number;
+  pendingReviewCount: number;
+  approvedCount: number;
+  occupiedSlots: number;
+  availableSlots: number;
   status: string;
   isExpired: boolean;
   expiresAt: string;
@@ -51,12 +55,37 @@ interface CandidateClaimSummary {
   candidateWallet: string;
 }
 
+interface CandidateSubmissionSummary {
+  id: string;
+  bountyId: string;
+  evaluationId: string;
+  candidateWallet: string | null;
+  resumeHash: string;
+  fakeDetectorStatus: string;
+  fakeDetectorScore: number | null;
+  reviewStatus: string;
+  slotReservedAt: string | null;
+  reviewDeadlineAt: string | null;
+  recruiterNotes: string | null;
+  isReviewExpired: boolean;
+  remainingReviewLabel: string | null;
+}
+
+interface RestrictionSummary {
+  bountyId: string;
+  reason: string;
+  details: string;
+  createdAt: string;
+}
+
 interface BountiesApiResponse {
   cluster: string;
   currentUserId: string | null;
   bounties: BountyItem[];
   myEvaluations: CandidateEvalSummary[];
   myClaims: CandidateClaimSummary[];
+  mySubmissions?: CandidateSubmissionSummary[];
+  myRestrictions?: RestrictionSummary[];
 }
 
 export default function BountiesPage() {
@@ -81,7 +110,8 @@ export default function BountiesPage() {
   const loadBounties = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiFetch<BountiesApiResponse>("/api/solana/bounties");
+      const query = publicKey ? `?wallet=${encodeURIComponent(publicKey)}` : "";
+      const res = await apiFetch<BountiesApiResponse>(`/api/solana/bounties${query}`);
       setData(res);
     } catch (err) {
       setError(
@@ -90,7 +120,7 @@ export default function BountiesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [publicKey]);
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.search.includes("created=1")) {
@@ -102,7 +132,8 @@ export default function BountiesPage() {
     let active = true;
     (async () => {
       try {
-        const res = await apiFetch<BountiesApiResponse>("/api/solana/bounties");
+        const query = publicKey ? `?wallet=${encodeURIComponent(publicKey)}` : "";
+        const res = await apiFetch<BountiesApiResponse>(`/api/solana/bounties${query}`);
         if (active) setData(res);
       } catch (err) {
         if (active) {
@@ -117,12 +148,35 @@ export default function BountiesPage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [publicKey]);
 
   const showError = (err: unknown, fallback: string) => {
     setError(err instanceof Error ? err.message : fallback);
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  const handleSubmitSlot = async (bounty: BountyItem, evalId: string) => {
+    setBusyBountyId(bounty.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/solana/bounties/${bounty.id}/submit`, {
+        method: "POST",
+        body: JSON.stringify({
+          evaluationId: evalId,
+          ...(publicKey ? { walletAddress: publicKey } : {}),
+        }),
+      });
+      setNotice(
+        "Winner slot reserved in pending_review! Payout unlocks upon recruiter approval or after the 48h review window expires."
+      );
+      await loadBounties();
+    } catch (err) {
+      showError(err, "Failed to reserve bounty review slot.");
+    } finally {
+      setBusyBountyId(null);
     }
   };
 
@@ -218,9 +272,8 @@ export default function BountiesPage() {
             </Badge>
           </div>
           <p className="text-xs sm:text-sm text-text-secondary max-w-2xl">
-            Recruiters lock Devnet USDC in program-controlled escrow PDAs. Candidates
-            who score at or above the threshold and anchor their COOV proof claim
-            payouts directly.
+            Recruiters lock Devnet USDC in escrow PDAs with anti-fraud gating & a 48h
+            optimistic review window before on-chain payout release.
           </p>
         </div>
 
@@ -283,11 +336,15 @@ export default function BountiesPage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {data.bounties.map((bounty) => {
+            const occupied = bounty.occupiedSlots ?? bounty.claimsCount;
             const fillPct =
               bounty.maxWinners > 0
-                ? Math.round((bounty.claimsCount / bounty.maxWinners) * 100)
+                ? Math.min(100, Math.round((occupied / bounty.maxWinners) * 100))
                 : 0;
             const myClaim = data.myClaims.find((c) => c.bountyId === bounty.id);
+            const mySub = data.mySubmissions?.find((s) => s.bountyId === bounty.id);
+            const myRestriction = data.myRestrictions?.find((r) => r.bountyId === bounty.id);
+
             const matchingEvals = data.myEvaluations.filter(
               (ev) =>
                 ev.jobDescriptionId === bounty.jobDescriptionId &&
@@ -299,7 +356,7 @@ export default function BountiesPage() {
                 typeof ev.overallScore === "number" &&
                 ev.overallScore >= bounty.minScore
             );
-            const unanchoredQualifying = matchingEvals.find(
+            const qualifyingUnanchored = matchingEvals.find(
               (ev) =>
                 !ev.evalTxSignature &&
                 typeof ev.overallScore === "number" &&
@@ -309,6 +366,11 @@ export default function BountiesPage() {
             const isCreator =
               Boolean(data.currentUserId) &&
               data.currentUserId === bounty.recruiterUserId;
+
+            const isSubUnlocked =
+              mySub &&
+              (mySub.reviewStatus === "approved" ||
+                (mySub.reviewStatus === "pending_review" && mySub.isReviewExpired));
 
             return (
               <div
@@ -365,7 +427,11 @@ export default function BountiesPage() {
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs font-mono text-text-muted">
                       <span>
-                        Slots: {bounty.claimsCount} / {bounty.maxWinners} claimed
+                        Slots: {bounty.claimsCount} paid
+                        {bounty.pendingReviewCount > 0
+                          ? ` · ${bounty.pendingReviewCount} in review`
+                          : ""}{" "}
+                        / {bounty.maxWinners} total
                       </span>
                       <span>
                         Expires: {new Date(bounty.expiresAt).toLocaleDateString()}
@@ -402,27 +468,98 @@ export default function BountiesPage() {
                     )}
                   </div>
 
+                  {myRestriction && (
+                    <div className="p-3 rounded-xl border border-red-500/40 bg-red-500/10 text-xs space-y-1">
+                      <span className="font-bold text-red-400 uppercase font-mono">
+                        Restricted ({myRestriction.reason.replace(/_/g, " ")})
+                      </span>
+                      <p className="text-text-secondary">{myRestriction.details}</p>
+                    </div>
+                  )}
+
+                  {mySub && mySub.reviewStatus === "pending_review" && !mySub.isReviewExpired && (
+                    <div className="p-3 rounded-xl border border-purple-500/35 bg-surface-elevated text-xs space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-purple-400 uppercase font-mono">
+                          Slot Reserved · Pending Review
+                        </span>
+                        <span className="font-mono text-text">
+                          ⏱ {mySub.remainingReviewLabel} left
+                        </span>
+                      </div>
+                      <p className="text-text-secondary">
+                        Recruiter can approve early for immediate release, or auto-claim unlocks automatically when the 48h window ends.
+                      </p>
+                    </div>
+                  )}
+
                   <div className="flex flex-wrap items-center gap-2">
+                    {isCreator && (
+                      <Link href={`/bounties/${bounty.id}/review`}>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          className="bg-purple-600 hover:bg-purple-500 font-semibold"
+                        >
+                          Publisher Review Panel
+                          {bounty.pendingReviewCount > 0
+                            ? ` (${bounty.pendingReviewCount} pending)`
+                            : ""} →
+                        </Button>
+                      </Link>
+                    )}
+
                     {myClaim ? (
                       <Badge variant="purple" size="md">
                         Claimed {Number(myClaim.amountMicros) / 1_000_000} USDC
                       </Badge>
-                    ) : claimableEval && bounty.status === "active" && !isExpired ? (
+                    ) : myRestriction ? null : mySub ? (
+                      isSubUnlocked ? (
+                        claimableEval ? (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            className="bg-purple-600 hover:bg-purple-500 font-semibold"
+                            isLoading={busyBountyId === bounty.id}
+                            onClick={() => void handleClaim(bounty, claimableEval.id)}
+                          >
+                            {mySub.reviewStatus === "approved"
+                              ? `Claim Approved ${bounty.rewardPerWinnerUsdc} USDC`
+                              : `Auto-Claim ${bounty.rewardPerWinnerUsdc} USDC`}{" "}
+                            →
+                          </Button>
+                        ) : qualifyingUnanchored ? (
+                          <Link href={`/evaluations/${qualifyingUnanchored.id}/report`}>
+                            <Button variant="secondary" size="sm">
+                              Anchor Proof to Claim {bounty.rewardPerWinnerUsdc} USDC →
+                            </Button>
+                          </Link>
+                        ) : null
+                      ) : mySub.reviewStatus === "pending_review" && qualifyingUnanchored ? (
+                        <Link href={`/evaluations/${qualifyingUnanchored.id}/report`}>
+                          <Button variant="outline" size="sm">
+                            Anchor Evaluation Proof ({qualifyingUnanchored.overallScore}/100) →
+                          </Button>
+                        </Link>
+                      ) : null
+                    ) : claimableEval || qualifyingUnanchored ? (
                       <Button
-                        variant="primary"
+                        variant="secondary"
                         size="sm"
-                        className="bg-purple-600 hover:bg-purple-500 font-semibold"
                         isLoading={busyBountyId === bounty.id}
-                        onClick={() => void handleClaim(bounty, claimableEval.id)}
+                        onClick={() =>
+                          void handleSubmitSlot(
+                            bounty,
+                            (claimableEval ?? qualifyingUnanchored)!.id
+                          )
+                        }
                       >
-                        Claim {bounty.rewardPerWinnerUsdc} USDC ({claimableEval.overallScore}/100)
+                        Submit & Reserve Slot ({(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →
                       </Button>
-                    ) : unanchoredQualifying ? (
-                      <Link href={`/evaluations/${unanchoredQualifying.id}/report`}>
-                        <Button variant="secondary" size="sm">
-                          Anchor Proof ({unanchoredQualifying.overallScore}/100) to Claim →
-                        </Button>
-                      </Link>
+                    ) : bounty.availableSlots <= 0 ? (
+                      <Badge variant="neutral" size="sm">
+                        All Winner Slots Reserved / Paid
+                      </Badge>
                     ) : bounty.status === "active" && !isExpired ? (
                       <Link href={`/evaluations/new?bountyId=${bounty.id}`}>
                         <Button variant="primary" size="sm" className="bg-purple-600 hover:bg-purple-500 font-semibold">

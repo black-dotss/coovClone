@@ -2,8 +2,9 @@ import { PublicKey } from "@solana/web3.js";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { bounties, bountyClaims, evaluations } from "@/lib/db/schema";
+import { bounties, bountyClaims, bountySubmissions, evaluations } from "@/lib/db/schema";
 import { requireAuth } from "@/lib/auth";
+import { assertCandidateEligibleToClaimOnChain } from "@/lib/bounties/service";
 import {
   BadRequestError,
   ConflictError,
@@ -78,6 +79,13 @@ async function assertEligibleClaimInput(params: {
       `Switch to wallet ${evalRow.candidateWallet} (the wallet used to anchor this evaluation).`
     );
   }
+
+  await assertCandidateEligibleToClaimOnChain({
+    bounty,
+    evalRow,
+    userId: params.userId,
+    walletAddress: params.walletAddress,
+  });
 
   return { bounty, evalRow };
 }
@@ -196,6 +204,20 @@ export const PATCH = createApiHandler(
         updatedAt: new Date(),
       })
       .where(eq(bounties.id, bounty.id));
+
+    await db
+      .update(bountySubmissions)
+      .set({
+        candidateWallet,
+        reviewStatus: "claimed",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(bountySubmissions.bountyId, bounty.id),
+          eq(bountySubmissions.evaluationId, evalRow.id)
+        )
+      );
 
     return successResponse({
       confirmed: true,
