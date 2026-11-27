@@ -30,6 +30,8 @@ export interface CreateEvaluationInput {
   tone?: EvaluationTone;
   deviceId?: string;
   rawToken?: string | null;
+  hardwareId?: string | null;
+  rawHardwareToken?: string | null;
   ipAddress?: string | null;
   headers?: Headers;
 }
@@ -118,6 +120,8 @@ export async function createEvaluation(input: CreateEvaluationInput) {
       userId: input.ownerUserId,
       deviceId: input.deviceId,
       rawToken: input.rawToken,
+      hardwareId: input.hardwareId,
+      rawHardwareToken: input.rawHardwareToken,
       ipAddress: input.ipAddress,
       headers: input.headers,
     });

@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useSyncExternalStore } from "react";
-import { useRouter } from "next/navigation";
-import { useSession, signOut } from "@/lib/auth/auth-client";
+import { useSession } from "@/lib/auth/auth-client";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 
 interface SessionGateProps {
@@ -16,7 +15,6 @@ const emptySubscribe = () => () => {};
  * flash of unauthenticated ("logged out") UI for authenticated users.
  */
 export function SessionGate({ children }: SessionGateProps) {
-  const router = useRouter();
   const { data: session, isPending } = useSession();
   const isClient = useSyncExternalStore(
     emptySubscribe,
@@ -33,37 +31,6 @@ export function SessionGate({ children }: SessionGateProps) {
 
     return () => clearTimeout(timer);
   }, []);
-
-  // One Account Per Device Global Enforcement
-  useEffect(() => {
-    if (session?.user?.id && typeof window !== "undefined") {
-      try {
-        const claimedUserId =
-          localStorage.getItem("cookmycv_device_claimed_user_id") ||
-          (document.cookie.match(/cookmycv_device_claimed_user_id=([^;]+)/) || [])[1];
-
-        if (claimedUserId && claimedUserId !== session.user.id) {
-          // Cross-account login detected on the same device
-          signOut().finally(() => {
-            router.replace("/device-limit");
-          });
-          return;
-        }
-
-        // Bind device to current user if not already bound
-        if (!claimedUserId) {
-          localStorage.setItem("cookmycv_device_claimed", "true");
-          localStorage.setItem("cookmycv_device_claimed_user_id", session.user.id);
-          document.cookie = `cookmycv_device_claimed=true; Path=/; Max-Age=31536000; SameSite=Lax`;
-          document.cookie = `cookmycv_device_claimed_user_id=${session.user.id}; Path=/; Max-Age=31536000; SameSite=Lax`;
-          if (session.user.email) {
-            localStorage.setItem("cookmycv_device_claimed_email", session.user.email.toLowerCase());
-            document.cookie = `cookmycv_device_claimed_email=${encodeURIComponent(session.user.email.toLowerCase())}; Path=/; Max-Age=31536000; SameSite=Lax`;
-          }
-        }
-      } catch {}
-    }
-  }, [session?.user?.id, session?.user?.email, router]);
 
   // Capture ?ref= from URL on any page
   useEffect(() => {

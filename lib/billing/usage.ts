@@ -14,6 +14,8 @@ import { getReferralBonusCredits } from "@/lib/referrals/service";
 export interface GetUserUsageSummaryOptions {
   deviceId?: string;
   rawToken?: string | null;
+  hardwareId?: string | null;
+  rawHardwareToken?: string | null;
   ipAddress?: string | null;
   headers?: Headers;
 }
@@ -48,19 +50,26 @@ export async function getUserUsageSummary(
   const trialReserved = trialCounter?.evaluationsReserved ?? 0;
   const bonusCredits = await getReferralBonusCredits(userId);
   const effectiveTrialAllowance = plan.trialAllowance + bonusCredits;
-  const trialRemaining = Math.max(0, effectiveTrialAllowance - (trialUsed + trialReserved));
 
   if (!isPaid) {
-    // Check device-aware trial eligibility
+    // Check combined (device + account) trial eligibility
     const eligibility = await checkDeviceTrialEligibility({
       userId,
       deviceId: options?.deviceId,
       rawToken: options?.rawToken,
+      hardwareId: options?.hardwareId,
+      rawHardwareToken: options?.rawHardwareToken,
+      trialAllowance: effectiveTrialAllowance,
       ipAddress: options?.ipAddress,
       headers: options?.headers,
     });
 
-    const isEligible = eligibility.eligible && trialRemaining > 0;
+    const combinedUsed = Math.max(
+      trialUsed + trialReserved,
+      eligibility.deviceUsed ?? 0
+    );
+    const combinedRemaining = Math.max(0, effectiveTrialAllowance - combinedUsed);
+    const isEligible = eligibility.eligible && combinedRemaining > 0;
     const canEvaluate = isEligible;
 
     return {
@@ -73,26 +82,26 @@ export async function getUserUsageSummary(
       quotas: {
         timezone: ETHIOPIA_TIMEZONE,
         daily: {
-          used: trialUsed,
+          used: combinedUsed,
           reserved: trialReserved,
           limit: effectiveTrialAllowance,
-          remaining: trialRemaining,
+          remaining: combinedRemaining,
           resetsAt: "never (lifetime)",
         },
         monthly: {
-          used: trialUsed,
+          used: combinedUsed,
           reserved: trialReserved,
           limit: effectiveTrialAllowance,
-          remaining: trialRemaining,
+          remaining: combinedRemaining,
           resetsAt: "never (lifetime)",
         },
         trial: {
           isTrial: true,
-          used: trialUsed + trialReserved,
+          used: combinedUsed,
           limit: effectiveTrialAllowance,
-          remaining: trialRemaining,
+          remaining: combinedRemaining,
           bonusCredits,
-          eligible: eligibility.eligible,
+          eligible: isEligible,
           ineligibilityReason: eligibility.reason,
           deviceClaimed: eligibility.deviceTrialClaimed,
         },

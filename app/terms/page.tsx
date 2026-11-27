@@ -28,9 +28,9 @@ export default function TermsOfServicePage() {
         Cook My Cv provides automated candidate career assessment tools, multi-agent hiring committee simulations, applicant tracking system (ATS) scans, role comparisons, truthful resume bullet revisions, and interview preparation simulations.
       </p>
 
-      <h2 className="text-lg font-bold text-white pt-2">3. One Account Per Device Policy</h2>
+      <h2 className="text-lg font-bold text-white pt-2">3. Device &amp; Account Free Trial Policy</h2>
       <p>
-        Each user is permitted only one account per physical device. Creating multiple accounts on a single device to bypass trial limits, abuse promotional allowances, or circumvent quotas is strictly prohibited. Accounts identified in violation of this policy are subject to immediate suspension.
+        Free trial evaluations (3 lifetime reviews) are tracked across both each registered account and each physical device. Switching accounts on the same device continues from that device&apos;s remaining trial allowance, and logging into an existing account on another device preserves your account&apos;s remaining trial allowance.
       </p>
 
       <h2 className="text-lg font-bold text-white pt-2">4. User Accounts and Content Ownership</h2>
@@ -66,7 +66,7 @@ export default function TermsOfServicePage() {
       </p>
       <ul className="list-disc pl-6 space-y-1">
         <li>Attempting to disrupt or compromise system security or availability.</li>
-        <li>Creating multiple accounts per device to claim excess trial evaluations.</li>
+        <li>Attempting to bypass combined device and account free-trial quota protections.</li>
         <li>Reverse engineering prompt architectures, models, or backend infrastructure.</li>
         <li>Uploading malicious software, viruses, or illegal materials.</li>
       </ul>

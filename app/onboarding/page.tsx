@@ -258,7 +258,7 @@ export default function OnboardingPage() {
                 Device Verification & Free Trial
               </CardTitle>
               <CardDescription className="text-xs sm:text-sm text-text-secondary mt-1">
-                CookMyCV links each registered device to one account to protect the free trial allowance without requiring credit cards.
+                CookMyCV links your browser session and tracks your 3 lifetime free reviews across both your account and shared device allowance without requiring credit cards.
               </CardDescription>
             </CardHeader>
 
