@@ -1,0 +1,610 @@
+Reference
+
+API Reference
+Register a webhook, then use these endpoint contracts. The Webhooks section has the setup steps, payload, and signature rules.
+
+Overview
+API responses use a predictable envelope with success, message, and data. Verification submissions also include requestId, verification, and links when a status URL is available. The suggested way to receive the finished result is an active webhook. Register it once, then call POST /api/verify without a callback URL.
+
+Start with a webhook
+
+Open API Keys, choose Webhooks, and follow the steps in the Webhooks section below. Use polling or SSE only when a screen needs to show progress.
+Base URL: https://verify.et
+
+Authentication
+Send API keys in the x-api-key header.
+Session cookies work for dashboard-owned routes. Server-to-server integrations should use API keys with explicit permissions.
+
+Request Headers
+x-api-key: VERIFY_BANK_ET_your_key_here
+Idempotency-Key: verify-request-001
+Response Headers
+x-request-id: <request-id>
+X-Verify-Cache: HIT
+Retry-After: 30
+x-api-key
+Idempotency-Key
+x-request-id
+Retry-After
+Base URLs
+Verify.ET API traffic uses the hosted production domain.
+Production: https://verify.et
+Selected: https://verify.et
+Supported Banks & Required Fields
+Field	Required	Description
+cbe	Required	Send the Receipt ID in reference or referenceNumber. No account number. A full mbreciept.cbe.com.et link is accepted. An older FT reference also needs the receiver's account: the full 13-digit number in accountNumber, or its last 8 digits in accountSuffix.
+boa	Required	Use referenceNumber/reference plus the sender's account: the full number (8 to 16 digits) in accountNumber, or its last 5 digits in accountSuffix.
+telebirr	Required	transactionNumber or reference.
+mpesa	Required	transactionNumber or reference. Supported receipt URLs/SMS text can be parsed.
+cbebirr	Required	receiptNumber/reference plus phone/phoneNumber.
+dashen	Required	referenceNumber or reference.
+awash	Required	referenceNumber or reference. Universal detection supports configured receipt host or token.
+siinqee	Required	referenceNumber or reference. Universal detection supports configured receipt host or token.
+kaafiebirr	Required	referenceNumber or reference. Full receipt URLs auto-route; bare tokens require explicit bank. phone is optional.
+coopayebirr	Required	referenceNumber, reference, or receiptUrl: the receipt.ebirr.com/coopay/ link or its case-sensitive token (a full SMS also works). The SMS Ref number cannot be verified alone. phone is optional.
+zemen	Optional	Enum/status surface only. POST /api/verify returns unsupported for direct Zemen submissions.
+Universal smart-router fields
+
+You may omit bank and send reference. A CBE Receipt ID in that field needs no suffix. Use suffix (the last 8 digits of the CBE receiver's account, or the last 5 of the Bank of Abyssinia sender's account) only for an older FT reference, and phoneNumber for CBE Birr. Explicit bank payloads always win when bank is present. Full SMS or supported receipt URLs in identifier fields are best-effort sanitized to clean bank fields when the server can extract them confidently.
+Settlement Account Matching
+New Feature
+Settlement account matching verifies that a valid receipt was paid into the intended wallet or bank account. This protects checkout, fulfillment, and support workflows from accepting a real receipt that belongs to a different receiver.
+
+How matching works
+
+Send settlementAccount for a one-off receiver check. If it is omitted, Verify.ET checks the authenticated user's saved /api/bank-accounts records and registered business settlement accounts for the request bank. Wallet-like banks such as Telebirr and M-Pesa use Ethiopian phone canonicalization, while regular banks prefer normalized account-number matching.
+Field	Required	Description
+settlementAccount	Optional	Expected receiver account or phone number for this request. Manual values are checked before saved accounts.
+settlementAccountMatch	Optional	Stable response object returned on completed result items, including matched, confidence, source, candidate count, ambiguity, reason, and safe debug data.
+receiverAccount	Optional	Provider receiver field used for matching. Masked values such as 2519****0897 or 1****7441 are matched by visible digits.
+Manual settlementAccount
+{
+  "bank": "telebirr",
+  "transactionNumber": "DET8FJGUJ4",
+  "settlementAccount": "0939080897"
+}
+Saved-account fallback
+{
+  "bank": "telebirr",
+  "transactionNumber": "DET8FJGUJ4"
+}
+Matched Response Object
+{
+  "matched": true,
+  "matchType": "masked_pattern",
+  "matchConfidence": "high",
+  "source": "account_registry",
+  "bank": "telebirr",
+  "receiverAccount": "2519****0897",
+  "matchedSettlementAccount": "0939080897",
+  "matchedUserBankAccountId": "58807b8e-ff38-49c9-a836-304c6b88bc29",
+  "matchedBusinessBankAccountId": null,
+  "candidateCount": 1,
+  "ambiguous": false,
+  "reason": "receiver_mask_matches_visible_digits",
+  "debug": {
+    "receiverAccount": "2519****0897",
+    "candidateCount": 1,
+    "matchType": "masked_pattern",
+    "visiblePrefix": "2519",
+    "visibleSuffix": "0897",
+    "visibleCharacterCount": 8,
+    "matchedUserBankAccountId": "58807b8e-ff38-49c9-a836-304c6b88bc29",
+    "matchedBusinessBankAccountId": null
+  }
+}
+No Saved Account Response Object
+{
+  "matched": false,
+  "matchType": "unmatched",
+  "matchConfidence": "none",
+  "source": "account_registry",
+  "bank": "telebirr",
+  "matchedUserBankAccountId": null,
+  "matchedBusinessBankAccountId": null,
+  "candidateCount": 0,
+  "ambiguous": false,
+  "reason": "no_registered_accounts"
+}
+Stable Reason Codes
+
+receiver_account_exact_match
+receiver_mask_matches_visible_digits
+receiver_suffix_matches
+no_registered_accounts
+missing_receiver_account
+candidate_account_mismatch
+ambiguous_registered_accounts
+verification_not_successful
+Ambiguous masked matches return matched: false, ambiguous: true, and a safe candidate count instead of silently picking one saved account.
+
+Receipt Image Processing
+Optional
+Send multipart/form-data with one file named image. Verify.et reads a QR code, then the printed receipt, and continues the normal verification.
+
+1
+Turn it on
+
+The billing owner enables Image Processing. It starts off.
+Enable Image Processing
+2
+Add image credits
+
+An accepted photo spends one image credit. Verification credits are checked first and billed separately.
+Top up image credits
+3
+Send the photo
+
+Post x-api-key, Idempotency-Key, and the image file. Optional text fields fill a value the photo does not show. 200 and 202 include imageProcessing.
+Field	Required	Description
+image	Required	One JPEG, PNG, or WebP file, up to 8 MB. The part name is image. The declared type must match the file bytes, and the image must decode.
+Idempotency-Key	Required	Header, 1 to 255 characters. The same key with the same file, text fields, and webhook URL replays the attempt. A different file or field needs a new key.
+bank	Optional	Fills the bank when the image does not identify it.
+reference	Optional	Universal identifier. For CBE, this is the Receipt ID when the photo does not already contain it.
+referenceNumber	Optional	Same value as reference. For CBE, the Receipt ID, a CBE receipt link, or a legacy FT reference.
+transactionNumber	Optional	Wallet transaction number, such as Telebirr or M-Pesa.
+receiptNumber	Optional	CBE Birr receipt number. For CBE, an accepted alias of the Receipt ID. Prefer reference.
+accountNumber	Optional	Full account number. CBE older FT references: the receiver's 13-digit account. Bank of Abyssinia: the sender's account (8 to 16 digits). Verify.ET keeps only the last digits the bank needs and never stores the full number. Omit it for a CBE Receipt ID.
+accountSuffix	Optional	Last digits of the same account: 8 for CBE, 5 for Bank of Abyssinia. suffix is the same field. A full account number here is also accepted. Use either this or accountNumber.
+phone	Optional	Wallet or CBE Birr phone. phoneNumber is the same field.
+settlementAccount	Optional	Receiver account to match, using the same rules as a JSON verification.
+webhookUrl	Optional	Optional one-off callback. A dashboard webhook already receives the result when this is omitted. X-Webhook-Url is the header form.
+Receipt image cURL
+curl -X POST \
+  "https://verify.et/api/verify?waitMs=5000" \
+  -H "x-api-key: $VERIFY_ET_API_KEY" \
+  -H "Idempotency-Key: receipt-order-123" \
+  -F "image=@receipt.jpg;type=image/jpeg" \
+  -F "bank=cbe" \
+  -F "reference=fHCxyExampleRcpt1"
+Queued image response
+{
+  "success": true,
+  "message": "Verification queued.",
+  "data": [],
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "statusUrl": "/api/verify/550e8400-e29b-41d4-a716-446655440000",
+  "imageProcessing": {
+    "attemptId": "img_018f2c4e-9b1a-7d33-a6c0-e5b4c8d21a90",
+    "method": "qr",
+    "chargedCredits": 1
+  },
+  "verification": {
+    "requestId": "550e8400-e29b-41d4-a716-446655440000",
+    "bank": "cbe",
+    "processingStatus": "queued",
+    "status": "pending",
+    "verified": false
+  },
+  "links": {
+    "statusUrl": "/api/verify/550e8400-e29b-41d4-a716-446655440000",
+    "pollAfterMs": 1500
+  }
+}
+How a credit is spent
+
+The image credit is spent when the file is accepted: the right type, under 8 MB, decodable, Image Processing is on, and the image balance has at least one credit. QR, OCR, a field conflict, or a later verification failure does not refund it. A matching retry spends nothing more. A failed read stays tied to that key, so a corrected photo uses a new Idempotency-Key.
+Image errors
+HTTP	error.code	What to do
+400	IMAGE_IDEMPOTENCY_KEY_REQUIRED	Send Idempotency-Key, 1 to 255 characters.
+400	IMAGE_REQUIRED	Send exactly one file part named image.
+400	INVALID_IMAGE	The file is empty or cannot be decoded.
+400	INVALID_IMAGE_FIELDS	Each extra part is one unique text value, at most 2048 characters.
+400	INVALID_MULTIPART	The body is not valid multipart form data.
+413	IMAGE_TOO_LARGE	Keep the image at or under 8 MB.
+415	UNSUPPORTED_IMAGE	Use JPEG, PNG, or WebP, and match the file contents to that type.
+402	INSUFFICIENT_CREDITS	Verification credits are missing. No image credit is spent.
+402	INSUFFICIENT_IMAGE_CREDITS	Image credits are missing. The body includes error.balance and error.required.
+403	IMAGE_PROCESSING_DISABLED	The billing owner turns Image Processing on.
+409	IMAGE_IDEMPOTENCY_CONFLICT	This key already belongs to a different image or fields.
+409	IMAGE_PROCESSING_IN_PROGRESS	The same upload is still running. Retry after the Retry-After header.
+422	IMAGE_FIELD_CONFLICT	A text field disagrees with the image. The image credit was spent.
+422	IMAGE_EXTRACTION_INCOMPLETE	The image and text fields are still short of a verifiable request. The image credit was spent.
+422	IMAGE_UNREADABLE	QR and OCR could not read a payment. Send a clearer image with a new key.
+502	IMAGE_PROVIDER_FAILURE	OCR failed. The image credit was spent. Retry with a new key.
+504	IMAGE_OCR_TIMEOUT	OCR exceeded 30 seconds. The image credit was spent. Retry with a new key.
+503	IMAGE_PROCESSING_UNAVAILABLE	Image processing is temporarily unavailable. No image credit is spent.
+After verification starts, a metadata-stripped review image is kept only for a failed check, for 14 days, and only for the signed-in billing owner at GET /api/image-processing/attempts/:attemptId/review-image. A successful verification removes it. The original upload and the OCR document are not stored.
+
+Verification Endpoints
+POST
+/api/verify
+Submit a verification
+Queues a verification request. JSON sends typed bank fields. A receipt photo uses multipart/form-data with one image part, documented in Receipt Image Processing above. Leave the callback URL off when a dashboard webhook is active. If waitMs is present, the API waits briefly for completion and returns 200 when it finishes in time; otherwise it returns 202 with a status URL. Telebirr sometimes needs a second upstream attempt, which alone takes about 5 seconds, so send waitMs 8000 for Telebirr; if it still returns 202, the result follows through your webhook, the events stream, or polling.
+Requires verification:write
+Headers
+
+x-api-key
+content-type: application/json or multipart/form-data
+idempotency-key (required for an image)
+x-webhook-url (optional, older one-off callback)
+Query Parameters
+
+waitMs (optional; at most 5000, 8000 for Telebirr, lower when a callback URL is sent)
+Request Body
+{
+  "bank": "cbe",
+  "reference": "fHCxyExampleRcpt1"
+}
+Responses
+
+200
+Completed
+200 Completed
+{
+  "success": true,
+  "message": "Transaction verified successfully.",
+  "data": [
+    {
+      "bank": "cbe",
+      "status": "success",
+      "verified": true,
+      "amount": 1500,
+      "currency": "ETB",
+      "senderName": "Abebe Bikila",
+      "receiverName": "Acme Trading",
+      "receiverAccount": "1****7441",
+      "referenceNumber": "FT26EXAMPLE1",
+      "receiptNumber": "fHCxyExampleRcpt1",
+      "timestamp": "2026-02-20T12:00:00.000Z",
+      "confirmationHistory": {
+        "scope": "platform",
+        "isFirstConfirmation": true,
+        "confirmedBefore": false,
+        "firstConfirmedAt": "2026-02-20T12:00:00.000Z",
+        "lastConfirmedAt": "2026-02-20T12:00:00.000Z",
+        "confirmationCount": 1
+      },
+      "settlementAccountMatch": {
+        "matched": true,
+        "matchType": "masked_pattern",
+        "matchConfidence": "high",
+        "source": "account_registry",
+        "bank": "cbe",
+        "receiverAccount": "1****7441",
+        "matchedSettlementAccount": "1000303997441",
+        "matchedUserBankAccountId": "bank_account_123",
+        "matchedBusinessBankAccountId": null,
+        "candidateCount": 1,
+        "ambiguous": false,
+        "reason": "receiver_mask_matches_visible_digits"
+      }
+    }
+  ],
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "verification": {
+    "requestId": "550e8400-e29b-41d4-a716-446655440000",
+    "processingStatus": "completed",
+    "status": "success",
+    "verified": true
+  },
+  "links": {
+    "statusUrl": "/api/verify/550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+202
+Queued
+202 Queued
+{
+  "success": true,
+  "message": "Verification queued.",
+  "data": [],
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "statusUrl": "/api/verify/550e8400-e29b-41d4-a716-446655440000",
+  "estimatedWaitMs": 5000,
+  "verification": {
+    "requestId": "550e8400-e29b-41d4-a716-446655440000",
+    "bank": "cbe",
+    "processingStatus": "queued",
+    "status": "pending",
+    "verified": false
+  },
+  "links": {
+    "statusUrl": "/api/verify/550e8400-e29b-41d4-a716-446655440000",
+    "pollAfterMs": 1500
+  }
+}
+Examples
+
+Explicit Bank cURL
+curl -X POST \
+  "https://verify.et/api/verify?waitMs=5000" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $VERIFY_ET_API_KEY" \
+  -H "Idempotency-Key: verify-demo-001" \
+  -d '{
+  "bank": "cbe",
+  "reference": "fHCxyExampleRcpt1"
+}'
+Universal Request Body
+{
+  "reference": "fHCxyExampleRcpt1"
+}
+Manual Settlement Account Body
+{
+  "bank": "telebirr",
+  "transactionNumber": "DET8FJGUJ4",
+  "settlementAccount": "0939080897"
+}
+Receipt Image cURL
+curl -X POST \
+  "https://verify.et/api/verify?waitMs=5000" \
+  -H "x-api-key: $VERIFY_ET_API_KEY" \
+  -H "Idempotency-Key: receipt-order-123" \
+  -F "image=@receipt.jpg;type=image/jpeg" \
+  -F "bank=cbe" \
+  -F "reference=fHCxyExampleRcpt1"
+GET
+/api/verify/:requestId
+Fetch verification status
+Returns the latest status visible to the current session or API key scope.
+Requires verification:read
+Headers
+
+x-api-key
+Responses
+
+200
+Status
+200 Status
+{
+  "success": true,
+  "message": "Verification status.",
+  "data": {
+    "requestId": "550e8400-e29b-41d4-a716-446655440000",
+    "bank": "cbe",
+    "processingStatus": "completed",
+    "status": "success",
+    "verified": true,
+    "completedAt": "2026-02-20T12:00:02.340Z"
+  }
+}
+Examples
+
+cURL
+VERIFY_ET_BASE_URL="https://verify.et"
+VERIFY_ET_REQUEST_ID="replace-with-the-request-id-from-submit"
+
+curl \
+  -H "x-api-key: $VERIFY_ET_API_KEY" \
+  "$VERIFY_ET_BASE_URL/api/verify/$VERIFY_ET_REQUEST_ID"
+GET
+/api/verify/:requestId/events
+Stream verification status
+Server-sent events stream that emits status changes and closes with a done event.
+Requires verification:read
+Headers
+
+x-api-key
+accept: text/event-stream
+Responses
+
+200
+SSE Events
+200 SSE Events
+event: status
+data: {"requestId":"550e8400-e29b-41d4-a716-446655440000","processingStatus":"running","status":"pending","verified":false}
+
+event: status
+data: {"requestId":"550e8400-e29b-41d4-a716-446655440000","processingStatus":"completed","status":"success","verified":true}
+
+event: done
+data: {"requestId":"550e8400-e29b-41d4-a716-446655440000","reason":"terminal"}
+GET
+/api/verify/history
+Verification history
+Lists historical verification requests for the authenticated user or API key scope.
+Requires verification:read
+Headers
+
+x-api-key
+Query Parameters
+
+bank
+status
+processingStatus
+startDate
+endDate
+limit
+offset
+Responses
+
+200
+History
+200 History
+{
+  "success": true,
+  "message": "Verification history.",
+  "data": [
+    {
+      "requestId": "550e8400-e29b-41d4-a716-446655440000",
+      "bank": "cbe",
+      "processingStatus": "completed",
+      "status": "success",
+      "verified": true,
+      "durationMs": 2340,
+      "createdAt": "2026-02-20T12:00:00.000Z"
+    }
+  ],
+  "meta": {
+    "total": 120,
+    "limit": 50,
+    "offset": 0
+  }
+}
+503
+Busy. Safe to retry: wait for the Retry-After header (5 seconds), then send the same request.
+503 Busy. Safe to retry: wait for the Retry-After header (5 seconds), then send the same request.
+{
+  "success": false,
+  "message": "The service is busy and could not finish this request. Try again in a few seconds.",
+  "error": { "code": "DB_QUERY_TIMEOUT" }
+}
+POST
+/api/verify/test-webhook
+Test a one-off webhook URL
+Older check for a URL you have not saved in the dashboard. It signs the sample with the platform secret. New integrations should use Send test on the Webhooks tab instead. That test uses your endpoint secret and turns a pending endpoint active after a 2xx response.
+Requires verification:read
+Headers
+
+x-api-key
+content-type: application/json
+Request Body
+{
+  "webhookUrl": "https://your-app.com/webhooks/verify",
+  "scenario": "success"
+}
+Responses
+
+200
+Delivered or delivery attempted
+Webhooks
+Suggested
+Register one endpoint. Verify.et sends the finished verification to your server.
+Save up to 10 endpoints. An active endpoint receives the finished check.
+
+1
+Add the endpoint
+
+Add a public HTTPS URL and save the whsec_ secret. It is shown once.
+Open Webhooks
+2
+Send a test
+
+A 2xx response makes the endpoint active. Test pings set X-Webhook-Test: true. Reply 204.
+3
+Check the signature, then submit
+
+Sign the timestamp, a period, and the raw body with HMAC-SHA256. Call POST /api/verify and store requestId on 202.
+verification.completed payload
+{
+  "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "event": "verification.completed",
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2026-02-20T12:00:02.500Z",
+  "data": {
+    "processingStatus": "completed",
+    "status": "success",
+    "verified": true,
+    "bank": "cbe",
+    "amount": "1500",
+    "currency": "ETB",
+    "senderName": "Abebe Bikila",
+    "receiverName": "Acme Trading",
+    "referenceNumber": "FT26EXAMPLE1",
+    "receiptNumber": "fHCxyExampleRcpt1",
+    "durationMs": 2340,
+    "completedAt": "2026-02-20T12:00:02.340Z"
+  }
+}
+data.error is included when the check does not verify. links.webhookRegistered on the verify response is true only when that request sent webhookUrl or X-Webhook-Url. A dashboard endpoint still receives the event when that field is absent.
+
+Default event
+
+verification.completed for every finished check.
+
+Optional events
+
+verification.succeeded, verification.not_found, and verification.failed. Off unless you select them.
+
+Test event
+
+webhook.test is always enabled.
+
+Signature
+
+X-Webhook-Signature: sha256=<hex>, signed with your endpoint secret.
+
+Retries
+
+5 attempts: immediately, 30s, 2m, 8m, 30m. Same event id and JSON. New timestamp each attempt.
+
+Success
+
+Any 2xx. Return 204, then process the event.
+
+Rotate the secret
+
+Rotate it from the endpoint page when you need a new whsec_ value. The previous secret keeps working for 24 hours. During that window the signature header can list two sha256= values. Accept either one.
+Already sending a callback URL?
+
+webhookUrl and X-Webhook-Url still deliver once. That older delivery is signed with the platform secret when one is configured. If the URL matches a saved endpoint, Verify.et sends the dashboard delivery only. POST /api/verify/test-webhook checks an unsaved URL. It does not use your endpoint secret and does not activate a dashboard endpoint.
+Same actions over the API
+
+The dashboard is enough for almost every integration. These routes accept your dashboard session or x-api-key and manage endpoints for that same account. API-key reads require verification:read; creates, updates, tests, redeliveries, rotations, and deletes require verification:write.
+
+POST /api/webhook-endpoints creates an endpoint, returns the secret once, and queues a test.
+POST /api/webhook-endpoints/:endpointId/test sends another test. Disabled endpoints reject tests. A test already pending in the last 10 seconds returns 429.
+POST /api/webhook-endpoints/:endpointId/rotate-secret returns a new secret once.
+PATCH /api/webhook-endpoints/:endpointId updates the selected events, or moves an active endpoint to paused and back. A pending endpoint cannot be forced active.
+GET /api/webhook-endpoints/:endpointId/deliveries lists deliveries. limit is 1 to 100. Pass cursor for the next page.
+POST /api/webhook-endpoints/:endpointId/deliveries/:deliveryId/redeliver sends the same frozen event again.
+Rate Limits and Credits
+Several guardrails can reject a request before it enters a queue.
+API-key rate limits return 429 with Retry-After. Verification credit exhaustion is checked against the user's shared account balance and returns 402 with INSUFFICIENT_CREDITS. An image upload with an empty image balance returns 402 with INSUFFICIENT_IMAGE_CREDITS. Queue saturation returns 429, and queue unavailability returns 503 with a status URL when a request row was created.
+
+Common Error Cases
+401 Invalid API key
+403 Permission denied: verification:write required
+409 Idempotency key already used for a different verification request
+422 Invalid bank-specific payload
+429 API key rate limit exceeded or queue saturated
+503 Verification queue unavailable
+Permissions & API Keys
+API keys are scoped by resource and action.
+Endpoint	Permission
+POST /api/verify	verification:write
+GET /api/verify/:requestId	verification:read
+GET /api/verify/:requestId/events	verification:read
+GET /api/verify/history	verification:read
+POST /api/verify/test-webhook	verification:read
+GET /api/metrics	metrics:read
+GET /api/reports/*	metrics:read
+GET /api/uptime	uptime:read
+GET /api/uptime/client/*	public
+POST
+/api/api-keys
+Create API key
+Creates a user API key. The full secret is returned once.
+Headers
+
+session cookie
+content-type: application/json
+Request Body
+{
+  "name": "Production Key",
+  "expiresInDays": 365,
+  "permissions": {
+    "verification": ["read", "write"],
+    "metrics": ["read"],
+    "uptime": ["read"]
+  },
+  "metadata": {
+    "environment": "production",
+    "project": "checkout"
+  }
+}
+Responses
+
+201
+Created
+201 Created
+{
+  "success": true,
+  "message": "API key created. Save this key - it will not be shown again.",
+  "data": {
+    "key": "VERIFY_BANK_ET_your_key_here",
+    "apiKey": {
+      "id": "key_123",
+      "name": "Production Key",
+      "prefix": "VERIFY_BANK_ET_",
+      "enabled": true,
+      "permissions": {
+        "verification": ["read", "write"],
+        "metrics": ["read"],
+        "uptime": ["read"]
+      },
+      "requestCount": 0
+    }
+  }
+}
