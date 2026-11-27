@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useSyncExternalStore } from "react";
+import React, { Suspense, useState, useEffect, useSyncExternalStore } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,26 +52,38 @@ function getThemeServerSnapshot(): "dark" | "light" {
 }
 
 export default function ProfilePage() {
+  return (
+    <Suspense fallback={<FullPageLoading />}>
+      <ProfilePageContent />
+    </Suspense>
+  );
+}
+
+function ProfilePageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session, isPending } = useSession();
 
-  // Active section tab: general | password | devices | subscription | theme
-  const [activeTab, setActiveTab] = useState<ProfileTab>(() => {
-    if (typeof window === "undefined") return "general";
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const tabParam = params.get("tab");
-      if (
-        tabParam &&
+  const tabFromUrl = searchParams.get("tab");
+  const isValidTab = (v: string | null): v is ProfileTab =>
+    Boolean(
+      v &&
         ["general", "password", "devices", "subscription", "referrals", "solana", "theme"].includes(
-          tabParam
+          v
         )
-      ) {
-        return tabParam as ProfileTab;
-      }
-    } catch {}
-    return "general";
-  });
+    );
+
+  // Active section tab: general | solana | password | devices | subscription | referrals | theme
+  const [activeTab, setActiveTab] = useState<ProfileTab>(() =>
+    isValidTab(tabFromUrl) ? tabFromUrl : "general"
+  );
+  const [prevTabFromUrl, setPrevTabFromUrl] = useState<string | null>(tabFromUrl);
+  if (tabFromUrl !== prevTabFromUrl) {
+    setPrevTabFromUrl(tabFromUrl);
+    if (isValidTab(tabFromUrl)) {
+      setActiveTab(tabFromUrl);
+    }
+  }
 
   // Theme store
   const theme = useSyncExternalStore(
@@ -372,6 +384,26 @@ export default function ProfilePage() {
       ),
     },
     {
+      id: "solana",
+      label: "On-Chain & SBT",
+      badge: "Solana",
+      icon: (
+        <svg
+          className="w-4 h-4 shrink-0"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+          />
+        </svg>
+      ),
+    },
+    {
       id: "password",
       label: "Change Password",
       icon: (
@@ -451,26 +483,6 @@ export default function ProfilePage() {
       ),
     },
     {
-      id: "solana",
-      label: "On-Chain & SBT",
-      badge: "Solana",
-      icon: (
-        <svg
-          className="w-4 h-4 shrink-0"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-          />
-        </svg>
-      ),
-    },
-    {
       id: "theme",
       label: "Theme & Appearance",
       badge: theme === "dark" ? "Dark" : "Light",
@@ -519,6 +531,10 @@ export default function ProfilePage() {
                 setActiveTab(item.id);
                 setError(null);
                 setSuccessMessage(null);
+                router.replace(
+                  item.id === "general" ? "/profile" : `/profile?tab=${item.id}`,
+                  { scroll: false }
+                );
               }}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
                 isActive
@@ -604,6 +620,10 @@ export default function ProfilePage() {
                     setActiveTab(item.id);
                     setError(null);
                     setSuccessMessage(null);
+                    router.replace(
+                      item.id === "general" ? "/profile" : `/profile?tab=${item.id}`,
+                      { scroll: false }
+                    );
                   }}
                   className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
                     isActive
@@ -719,6 +739,35 @@ export default function ProfilePage() {
                     </Button>
                   </div>
                 </form>
+              </div>
+
+              {/* On-Chain & SBT Quick Access Card */}
+              <div className="rounded-2xl border border-purple-500/40 bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-extrabold text-text">
+                      Solana On-Chain Profile & Soulbound SBT
+                    </h3>
+                    <Badge variant="purple" size="sm">
+                      Devnet
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-text-secondary">
+                    Link Phantom or Solflare to inspect your verified on-chain skills and minted Token-2022 credentials.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  className="bg-purple-600 hover:bg-purple-500 font-semibold shrink-0"
+                  onClick={() => {
+                    setActiveTab("solana");
+                    router.replace("/profile?tab=solana", { scroll: false });
+                  }}
+                >
+                  Open On-Chain & SBT →
+                </Button>
               </div>
 
               {/* Danger Zone */}

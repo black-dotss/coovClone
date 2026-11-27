@@ -159,20 +159,19 @@ export const ProfileOnChainPanel: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-5">
+      <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-4">
           <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-text">
-                Solana Identity & On-Chain Profile PDA
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-xl font-extrabold text-text">
+                On-Chain Identity & Skill Registry
               </h2>
               <Badge variant="purple" size="sm">
                 Solana {clusterLabel}
               </Badge>
             </div>
             <p className="text-xs text-text-secondary mt-1">
-              Cryptographically link your Phantom/Solflare wallet to publish verified
-              scores, skill tags, and Token-2022 Soulbound credentials on-chain.
+              Link Phantom or Solflare to publish verified committee scores and mint Token-2022 Soulbound credentials.
             </p>
           </div>
           <Button
@@ -181,7 +180,7 @@ export const ProfileOnChainPanel: React.FC = () => {
             onClick={() => void loadWalletState()}
             disabled={loading}
           >
-            Refresh Chain State
+            Refresh
           </Button>
         </div>
 
@@ -203,20 +202,20 @@ export const ProfileOnChainPanel: React.FC = () => {
 
         {loading ? (
           <div className="py-10 flex justify-center">
-            <LoadingSpinner label="Querying Solana Devnet PDA & Token-2022 state..." />
+            <LoadingSpinner label="Querying Solana PDA & Token-2022 state..." />
           </div>
         ) : (
           <div className="space-y-5">
             {/* Wallet Linking Controls */}
-            <div className="p-4 rounded-xl bg-surface-elevated/60 border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="p-4 rounded-xl bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="space-y-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Linked Account Wallet
+                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-text-muted">
+                    Linked Wallet
                   </span>
                   {data?.linkedWallet ? (
-                    <Badge variant="success" size="sm">
-                      Ed25519 Verified
+                    <Badge variant="purple" size="sm">
+                      Verified
                     </Badge>
                   ) : (
                     <Badge variant="neutral" size="sm">
@@ -231,15 +230,20 @@ export const ProfileOnChainPanel: React.FC = () => {
                 ) : (
                   <p className="text-xs text-text-secondary">
                     {publicKey
-                      ? `Connected browser wallet: ${publicKey} — click below to sign & link.`
-                      : "Connect Phantom or Solflare first to verify ownership."}
+                      ? `Connected: ${publicKey} — click Sign & Link Wallet.`
+                      : "Connect Phantom or Solflare to verify wallet ownership."}
                   </p>
                 )}
               </div>
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
                 {!publicKey && (
-                  <Button variant="primary" size="sm" onClick={openConnectModal}>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="bg-purple-600 hover:bg-purple-500 font-semibold"
+                    onClick={openConnectModal}
+                  >
                     Connect Wallet
                   </Button>
                 )}
@@ -247,6 +251,7 @@ export const ProfileOnChainPanel: React.FC = () => {
                   <Button
                     variant="primary"
                     size="sm"
+                    className="bg-purple-600 hover:bg-purple-500 font-semibold"
                     isLoading={linking}
                     onClick={() => void handleLinkWallet()}
                   >
@@ -267,15 +272,15 @@ export const ProfileOnChainPanel: React.FC = () => {
             </div>
 
             {/* Candidate Profile PDA State */}
-            <div className="rounded-xl border border-border bg-surface-elevated/30 p-5 space-y-4">
+            <div className="rounded-xl border border-border bg-surface-elevated p-5 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-sm font-bold text-text">
-                    CandidateProfile PDA (`[b&quot;profile&quot;, wallet]`)
+                  <h3 className="text-sm font-extrabold text-text">
+                    CandidateProfile PDA
                   </h3>
                   {data?.profilePdaAddress && (
                     <p className="text-[11px] font-mono text-text-muted break-all mt-0.5">
-                      PDA: {data.profilePdaAddress}
+                      {data.profilePdaAddress}
                     </p>
                   )}
                 </div>
@@ -284,7 +289,7 @@ export const ProfileOnChainPanel: React.FC = () => {
                     href={data.explorerProfileUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-xs font-semibold text-purple-400 hover:underline shrink-0"
+                    className="text-xs font-bold text-purple-400 hover:underline shrink-0"
                   >
                     View on Explorer →
                   </a>
@@ -294,25 +299,25 @@ export const ProfileOnChainPanel: React.FC = () => {
               {data?.onChainProfile ? (
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="p-3 rounded-lg bg-surface border border-border">
+                    <div className="p-3.5 rounded-lg bg-surface border border-border">
                       <span className="text-[11px] text-text-muted uppercase font-mono">
-                        Highest Verified Score
+                        Highest Score
                       </span>
-                      <p className="text-2xl font-extrabold text-emerald-400 mt-1">
+                      <p className="text-2xl font-extrabold text-purple-400 mt-1">
                         {data.onChainProfile.highestScore}/100
                       </p>
                     </div>
-                    <div className="p-3 rounded-lg bg-surface border border-border">
+                    <div className="p-3.5 rounded-lg bg-surface border border-border">
                       <span className="text-[11px] text-text-muted uppercase font-mono">
-                        Anchored Evaluations
+                        Anchored Audits
                       </span>
                       <p className="text-2xl font-extrabold text-text mt-1">
                         {data.onChainProfile.evalCount}
                       </p>
                     </div>
-                    <div className="p-3 rounded-lg bg-surface border border-border">
+                    <div className="p-3.5 rounded-lg bg-surface border border-border">
                       <span className="text-[11px] text-text-muted uppercase font-mono">
-                        Latest Anchored Role
+                        Latest Role
                       </span>
                       <p className="text-sm font-bold text-text mt-2 truncate">
                         {data.onChainProfile.lastRoleTitle || "—"}
@@ -322,7 +327,7 @@ export const ProfileOnChainPanel: React.FC = () => {
 
                   <div>
                     <span className="text-[11px] font-mono uppercase text-text-muted block mb-2">
-                      On-Chain Verified Skill Registry ({data.onChainProfile.topSkills.length})
+                      Verified Skills ({data.onChainProfile.topSkills.length})
                     </span>
                     <div className="flex flex-wrap gap-1.5">
                       {data.onChainProfile.topSkills.map((skill) => (
@@ -336,13 +341,11 @@ export const ProfileOnChainPanel: React.FC = () => {
               ) : (
                 <div className="p-4 rounded-lg bg-surface border border-border text-xs text-text-secondary flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <span>
-                    No on-chain CandidateProfile PDA exists yet for this wallet. Open any
-                    completed evaluation report and click &ldquo;Anchor Proof On-Chain&rdquo; to
-                    create it atomically.
+                    No CandidateProfile PDA exists yet. Open any completed report’s On-Chain & SBT section to anchor it.
                   </span>
                   <Link href="/evaluations">
                     <Button variant="outline" size="sm" className="shrink-0">
-                      Go to Evaluations →
+                      Go to History →
                     </Button>
                   </Link>
                 </div>
@@ -356,15 +359,14 @@ export const ProfileOnChainPanel: React.FC = () => {
       <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border pb-4">
           <div>
-            <h2 className="text-lg font-bold text-text">
-              Soulbound Hiring-Committee Credentials (Token-2022 SBT)
+            <h2 className="text-xl font-extrabold text-text">
+              Soulbound Credentials (Token-2022 SBT)
             </h2>
             <p className="text-xs text-text-secondary mt-1">
-              Non-transferable credentials minted exclusively for evaluations scoring 85/100
-              or higher. Locked permanently to your wallet.
+              Permanent non-transferable credentials minted for evaluations scoring 85/100 or higher.
             </p>
           </div>
-          <Badge variant="neutral" size="sm">
+          <Badge variant="purple" size="sm">
             {data?.credentials.length || 0} Minted
           </Badge>
         </div>
@@ -374,11 +376,10 @@ export const ProfileOnChainPanel: React.FC = () => {
             <LoadingSpinner label="Scanning Token-2022 Non-Transferable mints..." />
           </div>
         ) : !data?.credentials || data.credentials.length === 0 ? (
-          <div className="p-6 rounded-xl bg-surface-elevated/40 border border-border text-center space-y-2">
-            <p className="text-sm font-semibold text-text">No Soulbound Credentials Yet</p>
+          <div className="p-6 rounded-xl bg-surface-elevated border border-border text-center space-y-2">
+            <p className="text-sm font-bold text-text">No Soulbound Credentials Yet</p>
             <p className="text-xs text-text-secondary max-w-lg mx-auto">
-              Score 85/100 or above on any COOV evaluation, anchor its proof on Solana Devnet,
-              and mint your non-transferable SBT credential from the report page.
+              Score 85/100+ on any COOV evaluation, open its On-Chain & SBT menu, anchor the proof, and mint your SBT credential.
             </p>
           </div>
         ) : (
@@ -386,7 +387,7 @@ export const ProfileOnChainPanel: React.FC = () => {
             {data.credentials.map((cred) => (
               <div
                 key={cred.mint}
-                className="p-4 rounded-xl border border-purple-500/30 bg-gradient-to-br from-purple-950/30 via-surface to-surface-elevated space-y-3"
+                className="p-5 rounded-xl border border-purple-500/40 bg-surface-elevated space-y-3"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
@@ -394,16 +395,16 @@ export const ProfileOnChainPanel: React.FC = () => {
                       <Badge variant="purple" size="sm">
                         {cred.symbol || "COOV-SBT"}
                       </Badge>
-                      <Badge variant="success" size="sm">
-                        Non-Transferable
+                      <Badge variant="neutral" size="sm">
+                        Soulbound
                       </Badge>
                     </div>
-                    <h4 className="text-sm font-bold text-text mt-2">
+                    <h4 className="text-base font-extrabold text-text mt-2">
                       {cred.roleTitle || cred.name}
                     </h4>
                   </div>
                   {cred.scoreTier && (
-                    <Badge variant="warning" size="sm">
+                    <Badge variant="purple" size="sm">
                       {cred.scoreTier}
                     </Badge>
                   )}
@@ -412,23 +413,23 @@ export const ProfileOnChainPanel: React.FC = () => {
                 <div className="space-y-1 text-[11px] font-mono text-text-muted">
                   <p className="truncate">Mint: {cred.mint}</p>
                   {cred.reportHash && (
-                    <p className="truncate">Proof SHA-256: {cred.reportHash}</p>
+                    <p className="truncate">SHA-256: {cred.reportHash}</p>
                   )}
                 </div>
 
-                <div className="pt-2 border-t border-border/60 flex items-center justify-between">
+                <div className="pt-2 border-t border-border/70 flex items-center justify-between">
                   <a
                     href={cred.explorerUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-xs font-semibold text-purple-400 hover:underline"
+                    className="text-xs font-bold text-purple-400 hover:underline"
                   >
-                    Inspect Token-2022 Mint →
+                    Inspect Mint →
                   </a>
                   {cred.evalId && (
                     <Link
                       href={`/evaluations/${cred.evalId}/report`}
-                      className="text-xs text-text-secondary hover:text-text"
+                      className="text-xs font-semibold text-text-secondary hover:text-text"
                     >
                       Report →
                     </Link>
