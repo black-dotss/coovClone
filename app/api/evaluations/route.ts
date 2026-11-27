@@ -2,7 +2,10 @@ import { createApiHandler, successResponse } from "@/lib/shared";
 import { requireAuth } from "@/lib/auth";
 import { createEvaluation, listUserEvaluations } from "@/lib/evaluations/service";
 import { CreateEvaluationInputSchema } from "@/lib/evaluations/validation";
-import { parseDeviceTokenFromCookie } from "@/lib/devices/tokens";
+import {
+  parseDeviceTokenFromCookie,
+  parseHardwareTokenFromCookie,
+} from "@/lib/devices/tokens";
 import { extractClientIp } from "@/lib/devices/fingerprint";
 import { dispatchEvaluationExecution } from "@/lib/evaluations/runner";
 
@@ -15,6 +18,7 @@ export const POST = createApiHandler(async (req: Request) => {
   const validated = CreateEvaluationInputSchema.parse(rawBody);
 
   const rawCookieToken = parseDeviceTokenFromCookie(req.headers.get("cookie"));
+  const rawHardwareToken = parseHardwareTokenFromCookie(req.headers.get("cookie"));
   const ipAddress = extractClientIp(req.headers);
 
   const evaluation = await createEvaluation({
@@ -23,6 +27,7 @@ export const POST = createApiHandler(async (req: Request) => {
     jobDescriptionId: validated.jobDescriptionId,
     tone: validated.tone,
     rawToken: rawCookieToken,
+    rawHardwareToken,
     ipAddress,
     headers: req.headers,
   });

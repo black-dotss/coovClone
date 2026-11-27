@@ -8,7 +8,9 @@ import { logger } from "@/lib/shared/logger";
 import { randomUUID } from "node:crypto";
 import {
   checkDeviceTrialEligibility,
-  recordDeviceTrialClaim,
+  reserveDeviceTrialSlot,
+  settleDeviceTrialSlot,
+  releaseDeviceTrialSlot,
 } from "@/lib/devices/trial-eligibility";
 import { getReferralBonusCredits } from "@/lib/referrals/service";
 
@@ -17,6 +19,8 @@ export interface ReserveCreditParams {
   evaluationId?: string;
   deviceId?: string;
   rawToken?: string | null;
+  hardwareId?: string | null;
+  rawHardwareToken?: string | null;
   ipAddress?: string | null;
   headers?: Headers;
 }
@@ -79,12 +83,18 @@ export async function reserveEvaluationCredit(
 
   if (!isPaid) {
     // --------------------------------------------------------------------------
-    // 1. DEVICE-AWARE FREE TRIAL ENFORCEMENT
+    // 1. COMBINED (DEVICE + ACCOUNT) FREE TRIAL ENFORCEMENT
     // --------------------------------------------------------------------------
+    const bonusCredits = await getReferralBonusCredits(params.userId);
+    const effectiveTrialAllowance = plan.trialAllowance + bonusCredits;
+
     const eligibility = await checkDeviceTrialEligibility({
       userId: params.userId,
       deviceId: params.deviceId,
       rawToken: params.rawToken,
+      hardwareId: params.hardwareId,
+      rawHardwareToken: params.rawHardwareToken,
+      trialAllowance: effectiveTrialAllowance,
       ipAddress: params.ipAddress,
       headers: params.headers,
     });
@@ -93,7 +103,7 @@ export async function reserveEvaluationCredit(
       if (eligibility.code === "DEVICE_TRIAL_ALREADY_CLAIMED") {
         throw new ForbiddenError(
           eligibility.reason ||
-            "This device has already claimed a free trial under another account. Each device can only claim one free trial."
+            "Free trial limit reached on this device. Upgrade to Pro to continue."
         );
       }
       if (
@@ -108,34 +118,15 @@ export async function reserveEvaluationCredit(
       }
       throw new QuotaExceededError(
         eligibility.reason ||
-          `Free trial limit reached (${plan.trialAllowance} lifetime evaluations). Upgrade to Pro to continue.`
+          `Free trial limit reached (${effectiveTrialAllowance} lifetime evaluations). Upgrade to Pro to continue.`
       );
     }
 
-    // Atomically claim the device for free trial if not yet recorded
-    if (!eligibility.deviceTrialClaimed && eligibility.device) {
-      try {
-        await recordDeviceTrialClaim({
-          deviceId: eligibility.device.deviceId,
-          userId: params.userId,
-          ipAddress: params.ipAddress,
-          riskScore: eligibility.riskScore,
-          riskOutcome: eligibility.riskOutcome,
-          metadata: {
-            riskReason: eligibility.riskReason,
-          },
-        });
-      } catch (claimErr) {
-        // Handle potential concurrency collision on deviceTrialClaims
-        logger.warn("Trial claim record collision or already claimed", {
-          deviceId: eligibility.device.deviceId,
-          userId: params.userId,
-          error: claimErr instanceof Error ? claimErr.message : String(claimErr),
-        });
-      }
-    }
-
     const trialPeriodKey = `trial:${params.userId}`;
+    const resolvedHardwareId =
+      eligibility.hardwareId ||
+      eligibility.device?.hardwareId ||
+      eligibility.device?.deviceId;
 
     const [trialCounter] = await db
       .select()
@@ -147,18 +138,42 @@ export async function reserveEvaluationCredit(
         )
       );
 
-    const used = trialCounter?.evaluationsUsed ?? 0;
-    const reserved = trialCounter?.evaluationsReserved ?? 0;
-    const bonusCredits = await getReferralBonusCredits(params.userId);
-    const effectiveTrialAllowance = plan.trialAllowance + bonusCredits;
+    const accountUsed =
+      (trialCounter?.evaluationsUsed ?? 0) + (trialCounter?.evaluationsReserved ?? 0);
+    const effectiveUsed = Math.max(accountUsed, eligibility.deviceUsed ?? 0);
 
-    if (used + reserved >= effectiveTrialAllowance) {
+    if (effectiveUsed >= effectiveTrialAllowance) {
       throw new QuotaExceededError(
         `Free trial limit reached (${effectiveTrialAllowance} lifetime evaluations). Invite friends to get +1 free review per invite, or upgrade to Pro to continue.`
       );
     }
 
-    // Atomically increment reserved count
+    // Reserve slot on shared hardware/device counter so switching accounts reflects remaining trials
+    if (resolvedHardwareId && eligibility.device) {
+      try {
+        await reserveDeviceTrialSlot({
+          deviceId: eligibility.device.deviceId,
+          hardwareId: resolvedHardwareId,
+          userId: params.userId,
+          ipAddress: params.ipAddress,
+          riskScore: eligibility.riskScore,
+          riskOutcome: eligibility.riskOutcome,
+          initialUsedFloor: eligibility.deviceUsed ?? 0,
+          metadata: {
+            riskReason: eligibility.riskReason,
+          },
+        });
+      } catch (claimErr) {
+        logger.warn("Device trial slot reservation warning", {
+          deviceId: eligibility.device.deviceId,
+          hardwareId: resolvedHardwareId,
+          userId: params.userId,
+          error: claimErr instanceof Error ? claimErr.message : String(claimErr),
+        });
+      }
+    }
+
+    // Atomically increment account reserved count
     if (!trialCounter) {
       await db.insert(usageCounters).values({
         userId: params.userId,
@@ -189,6 +204,7 @@ export async function reserveEvaluationCredit(
       userId: params.userId,
       reservationId,
       deviceId: eligibility.device?.deviceId,
+      hardwareId: resolvedHardwareId,
     });
 
     return {
@@ -197,6 +213,7 @@ export async function reserveEvaluationCredit(
       evaluationId: params.evaluationId,
       dailyPeriodKey: trialPeriodKey,
       monthlyPeriodKey: trialPeriodKey,
+      hardwareId: resolvedHardwareId,
       credits: 1,
       reservedAt: new Date(),
     };
@@ -346,6 +363,14 @@ export async function settleEvaluationCredit(params: {
     }
   }
 
+  if (params.reservation.hardwareId) {
+    try {
+      await settleDeviceTrialSlot(params.reservation.hardwareId);
+    } catch {
+      // Non-fatal if device claim table is mocked or absent
+    }
+  }
+
   await db.insert(usageLedger).values({
     userId: params.userId,
     evaluationId: params.evaluationId || params.reservation.evaluationId,
@@ -391,6 +416,14 @@ export async function releaseEvaluationCredit(params: {
           updatedAt: new Date(),
         })
         .where(eq(usageCounters.id, counter.id));
+    }
+  }
+
+  if (params.reservation.hardwareId) {
+    try {
+      await releaseDeviceTrialSlot(params.reservation.hardwareId);
+    } catch {
+      // Non-fatal if device claim table is mocked or absent
     }
   }
 

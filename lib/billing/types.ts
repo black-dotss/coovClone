@@ -40,6 +40,7 @@ export interface CreditReservation {
   evaluationId?: string;
   dailyPeriodKey?: string;
   monthlyPeriodKey?: string;
+  hardwareId?: string;
   credits: number;
   reservedAt: Date;
 }

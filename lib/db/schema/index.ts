@@ -523,6 +523,7 @@ export const devices = pgTable(
     deviceId: text("device_id").notNull().unique(),
     tokenHash: text("token_hash").notNull().unique(),
     fingerprintHash: text("fingerprint_hash"),
+    hardwareId: text("hardware_id"),
     label: text("label"),
     status: text("status").notNull().default("active"), // active, revoked
     trialClaimedAt: timestamp("trial_claimed_at", { withTimezone: true }),
@@ -535,6 +536,7 @@ export const devices = pgTable(
     uniqueIndex("devices_device_id_idx").on(table.deviceId),
     uniqueIndex("devices_token_hash_idx").on(table.tokenHash),
     index("devices_owner_user_id_idx").on(table.ownerUserId),
+    index("devices_hardware_id_idx").on(table.hardwareId),
   ]
 );
 
@@ -543,9 +545,10 @@ export const deviceTrialClaims = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     deviceId: text("device_id").notNull(),
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    hardwareId: text("hardware_id"),
+    userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+    evaluationsUsed: integer("evaluations_used").notNull().default(0),
+    evaluationsReserved: integer("evaluations_reserved").notNull().default(0),
     claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
     ipAddress: text("ip_address"),
     riskScore: integer("risk_score").notNull().default(0),
@@ -556,6 +559,7 @@ export const deviceTrialClaims = pgTable(
   (table) => [
     uniqueIndex("device_trial_claims_device_id_idx").on(table.deviceId),
     index("device_trial_claims_user_id_idx").on(table.userId),
+    index("device_trial_claims_hardware_id_idx").on(table.hardwareId),
   ]
 );
 
@@ -585,9 +589,11 @@ export const deviceTombstones = pgTable(
     deviceId: text("device_id").notNull().unique(),
     tokenHash: text("token_hash").notNull(),
     fingerprintHash: text("fingerprint_hash"),
+    hardwareId: text("hardware_id"),
     originalOwnerUserId: text("original_owner_user_id"),
     reason: text("reason").notNull().default("account_deleted"), // account_deleted, revoked_abandoned, abuse_block
     trialConsumed: boolean("trial_consumed").notNull().default(true),
+    trialsUsed: integer("trials_used").notNull().default(0),
     tombstonedAt: timestamp("tombstoned_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -595,6 +601,7 @@ export const deviceTombstones = pgTable(
     uniqueIndex("device_tombstones_device_id_idx").on(table.deviceId),
     index("device_tombstones_token_hash_idx").on(table.tokenHash),
     index("device_tombstones_fingerprint_hash_idx").on(table.fingerprintHash),
+    index("device_tombstones_hardware_id_idx").on(table.hardwareId),
   ]
 );
 

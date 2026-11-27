@@ -6,6 +6,7 @@ export interface DeviceRecord {
   deviceId: string;
   tokenHash: string;
   fingerprintHash?: string | null;
+  hardwareId?: string | null;
   label?: string | null;
   firstSeenAt: Date;
   lastSeenAt: Date;
@@ -29,7 +30,10 @@ export interface PublicDeviceDto {
 export interface DeviceTrialClaimRecord {
   id: string;
   deviceId: string;
-  userId: string;
+  hardwareId?: string | null;
+  userId: string | null;
+  evaluationsUsed?: number;
+  evaluationsReserved?: number;
   claimedAt: Date;
   ipAddress?: string | null;
   riskScore: number;
@@ -54,6 +58,10 @@ export interface DeviceTrialEligibilityResult {
   riskOutcome: "allowed" | "flagged_for_review" | "blocked";
   riskReason?: string;
   device?: DeviceRecord | null;
+  hardwareId?: string | null;
+  accountUsed?: number;
+  deviceUsed?: number;
+  effectiveUsed?: number;
   deviceTrialClaimed?: boolean;
   claimedByUserId?: string | null;
 }
@@ -63,9 +71,11 @@ export interface DeviceTombstoneRecord {
   deviceId: string;
   tokenHash: string;
   fingerprintHash?: string | null;
+  hardwareId?: string | null;
   originalOwnerUserId?: string | null;
   reason: string;
   trialConsumed: boolean;
+  trialsUsed?: number;
   tombstonedAt: Date;
   createdAt: Date;
 }
@@ -83,7 +93,9 @@ export interface DeviceEventRecord {
 export interface DeviceClaimResult {
   allowed: boolean;
   deviceId: string;
+  hardwareId?: string;
   rawToken?: string;
+  rawHardwareToken?: string;
   device?: DeviceRecord;
   reason?: string;
   isNewDevice?: boolean;
@@ -92,6 +104,8 @@ export interface DeviceClaimResult {
 export interface ClaimDeviceParams {
   userId: string;
   rawToken?: string | null;
+  rawHardwareToken?: string | null;
+  hardwareId?: string | null;
   fingerprintHash?: string | null;
   label?: string | null;
   ipAddress?: string | null;

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { getEnv } from "@/lib/env";
 
 export const DEVICE_COOKIE_NAME = "__cookmycv_device_token";
+export const HARDWARE_COOKIE_NAME = "__cookmycv_hw_id";
 export const DEVICE_TOKEN_MAX_AGE_SECONDS = 365 * 24 * 60 * 60; // 1 year
 
 /**
@@ -107,6 +108,51 @@ export function buildDeviceCookie(rawToken: string): string {
   const isProd = getEnv().NODE_ENV === "production";
   const secureFlag = isProd ? "Secure; " : "";
   return `${DEVICE_COOKIE_NAME}=${rawToken}; Path=/; Max-Age=${DEVICE_TOKEN_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax; ${secureFlag}`.trim();
+}
+
+/**
+ * Generates an HMAC-signed opaque token bound to a stable physical browser/hardware ID
+ * that persists across account switches on the same device.
+ */
+export function generateHardwareToken(existingHardwareId?: string): {
+  hardwareId: string;
+  rawToken: string;
+} {
+  const secret = getEnv().DEVICE_TOKEN_SECRET;
+  const hardwareId = existingHardwareId || `hw_${crypto.randomUUID()}`;
+  const randomEntropy = crypto.randomBytes(16).toString("hex");
+  const payload = `${hardwareId}.${randomEntropy}`;
+  const signature = signPayload(payload, secret);
+  return {
+    hardwareId,
+    rawToken: `${payload}.${signature}`,
+  };
+}
+
+export function verifyHardwareToken(rawToken: string | null): {
+  valid: boolean;
+  hardwareId: string | null;
+} {
+  if (!rawToken) return { valid: false, hardwareId: null };
+  const verified = verifyDeviceToken(rawToken);
+  return { valid: verified.valid, hardwareId: verified.deviceId };
+}
+
+export function parseHardwareTokenFromCookie(cookieHeader: string | null): string | null {
+  if (!cookieHeader) return null;
+  const match = cookieHeader
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith(`${HARDWARE_COOKIE_NAME}=`));
+  if (!match) return null;
+  const val = match.slice(HARDWARE_COOKIE_NAME.length + 1).trim();
+  return val || null;
+}
+
+export function buildHardwareCookie(rawToken: string): string {
+  const isProd = getEnv().NODE_ENV === "production";
+  const secureFlag = isProd ? "Secure; " : "";
+  return `${HARDWARE_COOKIE_NAME}=${rawToken}; Path=/; Max-Age=${DEVICE_TOKEN_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax; ${secureFlag}`.trim();
 }
 
 /**

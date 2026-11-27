@@ -39,6 +39,7 @@ interface MockDevice {
   deviceId: string;
   tokenHash: string;
   fingerprintHash: string | null;
+  hardwareId: string | null;
   label: string | null;
   status: "active" | "revoked";
   trialClaimedAt: Date | null;
@@ -51,7 +52,10 @@ interface MockDevice {
 interface MockDeviceTrialClaim {
   id: string;
   deviceId: string;
-  userId: string;
+  hardwareId: string | null;
+  userId: string | null;
+  evaluationsUsed: number;
+  evaluationsReserved: number;
   claimedAt: Date;
   ipAddress: string | null;
   riskScore: number;
@@ -64,9 +68,11 @@ interface MockDeviceTombstone {
   id: string;
   deviceId: string;
   tokenHash: string;
+  hardwareId?: string | null;
   originalOwnerUserId: string | null;
   reason: string;
   trialConsumed: boolean;
+  trialsUsed?: number;
   tombstonedAt: Date;
 }
 
@@ -148,7 +154,8 @@ vi.mock("@/lib/db", async (importOriginal) => {
             if (table === deviceTrialClaims) {
               const matched = inMemory.trialClaims.filter((c) => {
                 if (strings.includes(c.deviceId)) return true;
-                if (strings.includes(c.userId)) return true;
+                if (c.hardwareId && strings.includes(c.hardwareId)) return true;
+                if (c.userId && strings.includes(c.userId)) return true;
                 if (c.ipAddress && strings.includes(c.ipAddress)) return true;
                 return false;
               });
@@ -156,7 +163,11 @@ vi.mock("@/lib/db", async (importOriginal) => {
             }
 
             if (table === deviceTombstones) {
-              const matched = inMemory.tombstones.filter((t) => strings.includes(t.deviceId));
+              const matched = inMemory.tombstones.filter(
+                (t) =>
+                  strings.includes(t.deviceId) ||
+                  (t.hardwareId && strings.includes(t.hardwareId))
+              );
               return createMockQuery(matched);
             }
 
@@ -196,7 +207,10 @@ vi.mock("@/lib/db", async (importOriginal) => {
             const entry: MockDeviceTrialClaim = {
               id: `claim-${inMemory.trialClaims.length + 1}`,
               deviceId: val.deviceId as string,
-              userId: val.userId as string,
+              hardwareId: (val.hardwareId as string) || (val.deviceId as string),
+              userId: (val.userId as string) || null,
+              evaluationsUsed: (val.evaluationsUsed as number) ?? 0,
+              evaluationsReserved: (val.evaluationsReserved as number) ?? 0,
               claimedAt: (val.claimedAt as Date) || new Date(),
               ipAddress: (val.ipAddress as string) || null,
               riskScore: (val.riskScore as number) || 0,
@@ -218,6 +232,7 @@ vi.mock("@/lib/db", async (importOriginal) => {
               deviceId: val.deviceId as string,
               tokenHash: val.tokenHash as string,
               fingerprintHash: (val.fingerprintHash as string) || null,
+              hardwareId: (val.hardwareId as string) || (val.deviceId as string),
               label: (val.label as string) || null,
               status: (val.status as "active" | "revoked") || "active",
               trialClaimedAt: (val.trialClaimedAt as Date) || null,
@@ -274,13 +289,41 @@ vi.mock("@/lib/db", async (importOriginal) => {
             const strings = findStringsInClause(clause);
             if (table === devices) {
               for (const dev of inMemory.devices) {
-                if (strings.includes(dev.deviceId) || strings.includes(dev.id)) {
+                if (
+                  strings.includes(dev.deviceId) ||
+                  strings.includes(dev.id) ||
+                  (dev.hardwareId && strings.includes(dev.hardwareId))
+                ) {
                   if (updates.status !== undefined) dev.status = updates.status as "active" | "revoked";
                   if (updates.trialClaimedAt !== undefined) dev.trialClaimedAt = updates.trialClaimedAt as Date;
                   if (updates.lastSeenAt !== undefined) dev.lastSeenAt = updates.lastSeenAt as Date;
                   if (updates.revokedAt !== undefined) dev.revokedAt = updates.revokedAt as Date;
                 }
               }
+            }
+            if (table === deviceTrialClaims) {
+              const updatedRows: MockDeviceTrialClaim[] = [];
+              for (const claim of inMemory.trialClaims) {
+                if (
+                  strings.includes(claim.id) ||
+                  strings.includes(claim.deviceId) ||
+                  (claim.hardwareId && strings.includes(claim.hardwareId))
+                ) {
+                  if (updates.evaluationsUsed !== undefined) {
+                    claim.evaluationsUsed = updates.evaluationsUsed as number;
+                  }
+                  if (updates.evaluationsReserved !== undefined) {
+                    claim.evaluationsReserved = updates.evaluationsReserved as number;
+                  }
+                  if (updates.hardwareId !== undefined) {
+                    claim.hardwareId = updates.hardwareId as string;
+                  }
+                  updatedRows.push(claim);
+                }
+              }
+              return Object.assign(Promise.resolve(updatedRows), {
+                returning: () => Promise.resolve(updatedRows),
+              });
             }
             if (table === usageCounters) {
               for (const c of inMemory.counters) {
@@ -312,7 +355,7 @@ describe("Task 12: Device-Aware Trial Eligibility and Usage APIs", () => {
   });
 
   // Helper to register a mock active device for a user
-  function createTestDevice(userId: string, label = "Test Laptop") {
+  function createTestDevice(userId: string, label = "Test Laptop", sharedHardwareId?: string) {
     const { deviceId, rawToken, tokenHash } = generateDeviceToken();
     const dev: MockDevice = {
       id: `dev-uuid-${inMemory.devices.length + 1}`,
@@ -320,6 +363,7 @@ describe("Task 12: Device-Aware Trial Eligibility and Usage APIs", () => {
       deviceId,
       tokenHash,
       fingerprintHash: "fp_hash_12345",
+      hardwareId: sharedHardwareId || deviceId,
       label,
       status: "active",
       trialClaimedAt: null,
@@ -329,7 +373,7 @@ describe("Task 12: Device-Aware Trial Eligibility and Usage APIs", () => {
       createdAt: new Date(),
     };
     inMemory.devices.push(dev);
-    return { deviceId, rawToken, tokenHash, dev };
+    return { deviceId, hardwareId: dev.hardwareId!, rawToken, tokenHash, dev };
   }
 
   describe("1. Active Device Ownership Checks", () => {
@@ -374,7 +418,7 @@ describe("Task 12: Device-Aware Trial Eligibility and Usage APIs", () => {
 
       expect(result.eligible).toBe(false);
       expect(result.code).toBe("DEVICE_NOT_OWNED");
-      expect(result.reason).toContain("registered to another account");
+      expect(result.reason).toContain("bound to another account");
     });
 
     it("rejects trial when the user's device is revoked", async () => {
@@ -395,80 +439,113 @@ describe("Task 12: Device-Aware Trial Eligibility and Usage APIs", () => {
     });
   });
 
-  describe("2. Prevent Repeat Trial Claims on Already-Claimed Devices", () => {
-    it("successfully records device trial claim on first trial evaluation", async () => {
+  describe("2. Combined (Device + Account) Free Trial Sharing", () => {
+    it("allows a user to use trials across accounts on the same device carrying over remaining count", async () => {
       const userAlice = "user-alice";
-      const { deviceId, rawToken } = createTestDevice(userAlice);
+      const userBob = "user-bob";
+      const devAliceOnX = createTestDevice(userAlice, "Shared Laptop");
 
-      // Reserve credit for the first time
-      const reservation = await reserveEvaluationCredit({
+      // Alice uses 1 of 3 trials on Shared Laptop (Device X)
+      await reserveEvaluationCredit({
         userId: userAlice,
-        deviceId,
-        rawToken,
+        deviceId: devAliceOnX.deviceId,
+        rawToken: devAliceOnX.rawToken,
+        hardwareId: devAliceOnX.hardwareId,
         ipAddress: "196.188.1.100",
       });
 
-      expect(reservation.credits).toBe(1);
+      const summaryAlice = await getUserUsageSummary(userAlice, {
+        deviceId: devAliceOnX.deviceId,
+        rawToken: devAliceOnX.rawToken,
+        hardwareId: devAliceOnX.hardwareId,
+      });
+      expect(summaryAlice.quotas.trial.used).toBe(1);
+      expect(summaryAlice.quotas.trial.remaining).toBe(2);
 
-      // Device trial claim must now be persisted
-      const claim = await getDeviceTrialClaim(deviceId);
-      expect(claim).not.toBeNull();
-      expect(claim?.userId).toBe(userAlice);
-      expect(claim?.deviceId).toBe(deviceId);
-      expect(claim?.ipAddress).toBe("196.188.1.100");
+      // Now switch to User Bob on the SAME hardware (Shared Laptop)
+      const devBobOnX = createTestDevice(userBob, "Shared Laptop", devAliceOnX.hardwareId);
+      const summaryBob = await getUserUsageSummary(userBob, {
+        deviceId: devBobOnX.deviceId,
+        rawToken: devBobOnX.rawToken,
+        hardwareId: devBobOnX.hardwareId,
+      });
+      // Remaining must be 2 (NOT reset to 3, NOT blocked!)
+      expect(summaryBob.quotas.trial.used).toBe(1);
+      expect(summaryBob.quotas.trial.remaining).toBe(2);
+      expect(summaryBob.quotas.trial.eligible).toBe(true);
 
-      // Device record must have trialClaimedAt stamped
-      const updatedDev = inMemory.devices.find((d) => d.deviceId === deviceId);
-      expect(updatedDev?.trialClaimedAt).toBeDefined();
+      // Bob uses 1 trial on Shared Laptop -> 2 used on Device X, 1 remaining
+      await reserveEvaluationCredit({
+        userId: userBob,
+        deviceId: devBobOnX.deviceId,
+        rawToken: devBobOnX.rawToken,
+        hardwareId: devBobOnX.hardwareId,
+      });
+
+      const summaryBobAfter = await getUserUsageSummary(userBob, {
+        deviceId: devBobOnX.deviceId,
+        rawToken: devBobOnX.rawToken,
+        hardwareId: devBobOnX.hardwareId,
+      });
+      expect(summaryBobAfter.quotas.trial.used).toBe(2);
+      expect(summaryBobAfter.quotas.trial.remaining).toBe(1);
+
+      // Alice opening her email on a brand new Device Y STILL only sees her account's 2 remaining!
+      const devAliceOnY = createTestDevice(userAlice, "Second Laptop");
+      const summaryAliceOnY = await getUserUsageSummary(userAlice, {
+        deviceId: devAliceOnY.deviceId,
+        rawToken: devAliceOnY.rawToken,
+        hardwareId: devAliceOnY.hardwareId,
+      });
+      expect(summaryAliceOnY.quotas.trial.used).toBe(1);
+      expect(summaryAliceOnY.quotas.trial.remaining).toBe(2);
     });
 
-    it("rejects a second account attempting to obtain a free trial on an already-claimed device", async () => {
+    it("blocks additional free trials once all 3 evaluations are exhausted on a device across accounts", async () => {
       const userAlice = "user-alice";
       const userEve = "user-eve";
-      const { deviceId, rawToken } = createTestDevice(userAlice);
+      const devAlice = createTestDevice(userAlice, "Laptop 1");
+      const devEve = createTestDevice(userEve, "Laptop 1", devAlice.hardwareId);
 
-      // User Alice claims the trial on device 1
-      await recordDeviceTrialClaim({
-        deviceId,
-        userId: userAlice,
-        ipAddress: "196.188.1.100",
-      });
-
-      // User Eve attempts to claim or reserve trial on this same device
-      inMemory.devices.find((d) => d.deviceId === deviceId)!.ownerUserId = userEve;
+      // Exhaust all 3 device slots via recordDeviceTrialClaim
+      await recordDeviceTrialClaim({ deviceId: devAlice.deviceId, hardwareId: devAlice.hardwareId, userId: userAlice });
+      await recordDeviceTrialClaim({ deviceId: devAlice.deviceId, hardwareId: devAlice.hardwareId, userId: userAlice });
+      await recordDeviceTrialClaim({ deviceId: devAlice.deviceId, hardwareId: devAlice.hardwareId, userId: userAlice });
 
       const eligibility = await checkDeviceTrialEligibility({
         userId: userEve,
-        deviceId,
-        rawToken,
+        deviceId: devEve.deviceId,
+        rawToken: devEve.rawToken,
+        hardwareId: devEve.hardwareId,
       });
 
       expect(eligibility.eligible).toBe(false);
       expect(eligibility.code).toBe("DEVICE_TRIAL_ALREADY_CLAIMED");
-      expect(eligibility.reason).toContain("already claimed a free trial under another account");
 
-      // Attempting to reserve evaluation credit must throw ForbiddenError
       await expect(
         reserveEvaluationCredit({
           userId: userEve,
-          deviceId,
-          rawToken,
+          deviceId: devEve.deviceId,
+          rawToken: devEve.rawToken,
+          hardwareId: devEve.hardwareId,
         })
       ).rejects.toThrowError(ForbiddenError);
     });
 
-    it("rejects trial claim when device was tombstoned from a previously deleted account", async () => {
+    it("rejects trial claim when device was tombstoned after consuming all 3 trials", async () => {
       const userFrank = "user-frank";
-      const { deviceId, rawToken } = createTestDevice(userFrank);
+      const { deviceId, hardwareId, rawToken } = createTestDevice(userFrank);
 
-      // Tombstone the device (simulating previous account deletion)
+      // Tombstone the device (simulating deleted account that consumed all 3 trials)
       inMemory.tombstones.push({
         id: "tomb-1",
         deviceId,
+        hardwareId,
         tokenHash: "some_hash",
         originalOwnerUserId: "deleted-account-999",
         reason: "account_deleted",
         trialConsumed: true,
+        trialsUsed: 3,
         tombstonedAt: new Date(),
       });
 
@@ -476,11 +553,11 @@ describe("Task 12: Device-Aware Trial Eligibility and Usage APIs", () => {
         userId: userFrank,
         deviceId,
         rawToken,
+        hardwareId,
       });
 
       expect(eligibility.eligible).toBe(false);
       expect(eligibility.code).toBe("DEVICE_TRIAL_ALREADY_CLAIMED");
-      expect(eligibility.reason).toContain("previously registered to an account that consumed its free trial");
     });
   });
 

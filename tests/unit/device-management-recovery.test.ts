@@ -30,6 +30,7 @@ interface MockDevice {
   deviceId: string;
   tokenHash: string;
   fingerprintHash: string | null;
+  hardwareId?: string | null;
   label: string | null;
   status: "active" | "revoked";
   firstSeenAt: Date;
@@ -43,9 +44,11 @@ interface MockTombstone {
   deviceId: string;
   tokenHash: string;
   fingerprintHash: string | null;
+  hardwareId?: string | null;
   originalOwnerUserId: string | null;
   reason: string;
   trialConsumed: boolean;
+  trialsUsed?: number;
   tombstonedAt: Date;
   createdAt: Date;
 }
@@ -168,6 +171,7 @@ vi.mock("@/lib/db", () => ({
             deviceId: val.deviceId as string,
             tokenHash: val.tokenHash as string,
             fingerprintHash: (val.fingerprintHash as string) || null,
+            hardwareId: (val.hardwareId as string) || (val.deviceId as string),
             label: (val.label as string) || null,
             status: (val.status as "active" | "revoked") || "active",
             firstSeenAt: (val.firstSeenAt as Date) || new Date(),
@@ -203,9 +207,11 @@ vi.mock("@/lib/db", () => ({
             deviceId: val.deviceId as string,
             tokenHash: val.tokenHash as string,
             fingerprintHash: (val.fingerprintHash as string) || null,
+            hardwareId: (val.hardwareId as string) || (val.deviceId as string),
             originalOwnerUserId: (val.originalOwnerUserId as string) || null,
             reason: (val.reason as string) || "account_deleted",
             trialConsumed: true,
+            trialsUsed: (val.trialsUsed as number) ?? 0,
             tombstonedAt: new Date(),
             createdAt: new Date(),
           };
@@ -289,6 +295,8 @@ vi.mock("@/lib/db", () => ({
   devices: {},
   deviceEvents: {},
   deviceTombstones: {},
+  deviceTrialClaims: {},
+  usageCounters: {},
   verifications: {},
   users: {},
   auditEvents: {},
@@ -605,8 +613,8 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
     });
   });
 
-  describe("Revoked & Abandoned Device Anti-Abuse Rules", () => {
-    it("prevents an abandoned/revoked device from immediately registering a new trial account", async () => {
+  describe("Multi-Account Shared Hardware & Anti-Abuse Rules", () => {
+    it("allows a new account to share the same physical browser while preserving hardwareId linkage", async () => {
       const dev = generateDeviceToken("dev_abandoned");
       inMemoryDevices.push({
         id: "uuid-abandoned",
@@ -614,6 +622,7 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
         deviceId: dev.deviceId,
         tokenHash: dev.tokenHash,
         fingerprintHash: null,
+        hardwareId: dev.deviceId,
         label: "Abandoned Device",
         status: "revoked",
         firstSeenAt: new Date(),
@@ -622,17 +631,19 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
         createdAt: new Date(),
       });
 
-      // An attacker attempts to create a new trial account with this abandoned device
-      await expect(
-        claimDeviceForUser({
-          userId: "user-charlie-new",
-          rawToken: dev.rawToken,
-          isSignUp: true,
-        })
-      ).rejects.toThrowError(ForbiddenError);
+      const res = await claimDeviceForUser({
+        userId: "user-charlie-new",
+        rawToken: dev.rawToken,
+        isSignUp: true,
+      });
+
+      expect(res.allowed).toBe(true);
+      expect(res.isNewDevice).toBe(true);
+      expect(res.hardwareId).toBe(dev.deviceId);
+      expect(res.deviceId).not.toBe(dev.deviceId);
     });
 
-    it("blocks a different user from claiming an abandoned revoked device", async () => {
+    it("issues a separate per-account device session when another account signs in on a browser", async () => {
       const dev = generateDeviceToken("dev_revoked_1");
       inMemoryDevices.push({
         id: "uuid-revoked",
@@ -640,6 +651,7 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
         deviceId: dev.deviceId,
         tokenHash: dev.tokenHash,
         fingerprintHash: null,
+        hardwareId: dev.deviceId,
         label: "Revoked Device",
         status: "revoked",
         firstSeenAt: new Date(),
@@ -648,13 +660,17 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
         createdAt: new Date(),
       });
 
-      await expect(
-        claimDeviceForUser({
-          userId: "user-bob",
-          rawToken: dev.rawToken,
-          isSignUp: false,
-        })
-      ).rejects.toThrowError(ForbiddenError);
+      const res = await claimDeviceForUser({
+        userId: "user-bob",
+        rawToken: dev.rawToken,
+        isSignUp: false,
+      });
+
+      expect(res.allowed).toBe(true);
+      expect(res.hardwareId).toBe(dev.deviceId);
+      // Original owner's revoked device remains revoked and untouched
+      const aliceDev = inMemoryDevices.find((d) => d.id === "uuid-revoked");
+      expect(aliceDev?.status).toBe("revoked");
     });
 
     it("allows original owner to reactivate their own previously revoked device", async () => {
@@ -665,6 +681,7 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
         deviceId: dev.deviceId,
         tokenHash: dev.tokenHash,
         fingerprintHash: null,
+        hardwareId: dev.deviceId,
         label: "My Old Phone",
         status: "revoked",
         firstSeenAt: new Date(),
@@ -688,7 +705,7 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
   });
 
   describe("Account Deletion and Tombstoning Lifecycle", () => {
-    it("tombstones user devices upon account deletion to prevent trial reuse", async () => {
+    it("tombstones user devices upon account deletion while preserving hardwareId for trial history", async () => {
       const dev1 = generateDeviceToken("dev_alice_primary");
       inMemoryDevices.push({
         id: "uuid-alice-prim",
@@ -696,6 +713,7 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
         deviceId: dev1.deviceId,
         tokenHash: dev1.tokenHash,
         fingerprintHash: "fp_hash_123",
+        hardwareId: dev1.deviceId,
         label: "Alice Primary",
         status: "active",
         firstSeenAt: new Date(),
@@ -713,19 +731,20 @@ describe("Task 6: Device Management, Recovery, and Account Lifecycle", () => {
       // Verify device was inserted into deviceTombstones
       expect(inMemoryTombstones.length).toBe(1);
       expect(inMemoryTombstones[0].deviceId).toBe(dev1.deviceId);
+      expect(inMemoryTombstones[0].hardwareId).toBe(dev1.deviceId);
       expect(inMemoryTombstones[0].trialConsumed).toBe(true);
 
       const isTomb = await isDeviceTombstoned(dev1.deviceId);
       expect(isTomb).toBe(true);
 
-      // Now an attacker attempts to register a brand new account using Alice's deleted device
-      await expect(
-        claimDeviceForUser({
-          userId: "user-attacker-free-trial",
-          rawToken: dev1.rawToken,
-          isSignUp: true,
-        })
-      ).rejects.toThrowError(ForbiddenError);
+      // A new user signing in inherits the same hardwareId (without wiping consumed trials)
+      const res = await claimDeviceForUser({
+        userId: "user-charlie-shared",
+        rawToken: dev1.rawToken,
+        isSignUp: true,
+      });
+      expect(res.allowed).toBe(true);
+      expect(res.hardwareId).toBe(dev1.deviceId);
     });
   });
 });

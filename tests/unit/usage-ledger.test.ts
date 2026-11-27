@@ -114,11 +114,18 @@ vi.mock("@/lib/devices/trial-eligibility", () => ({
       eligible: true,
       riskScore: 0,
       riskOutcome: "allowed",
-      device: { deviceId: `dev_${params.userId}`, status: "active" },
-      deviceTrialClaimed: true,
+      device: { deviceId: `dev_${params.userId}`, hardwareId: `hw_${params.userId}`, status: "active" },
+      hardwareId: `hw_${params.userId}`,
+      accountUsed: used + reserved,
+      deviceUsed: 0,
+      effectiveUsed: used + reserved,
+      deviceTrialClaimed: used + reserved > 0,
     };
   }),
   recordDeviceTrialClaim: vi.fn().mockResolvedValue({ id: "claim-1" }),
+  reserveDeviceTrialSlot: vi.fn().mockResolvedValue({ id: "claim-1" }),
+  settleDeviceTrialSlot: vi.fn().mockResolvedValue(undefined),
+  releaseDeviceTrialSlot: vi.fn().mockResolvedValue(undefined),
 }));
 
 import {

@@ -26,7 +26,6 @@ function AuthForm() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [isGithubLoading, setIsGithubLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isDeviceConflict, setIsDeviceConflict] = useState(false);
 
   // OTP Verification State
   const [isOtpMode, setIsOtpMode] = useState(false);
@@ -48,28 +47,6 @@ function AuthForm() {
       } catch {}
     }
   }, [refParam]);
-
-  // Check if device is claimed by any account
-  const isDeviceAlreadyClaimed = () => {
-    try {
-      if (typeof window !== "undefined") {
-        if (localStorage.getItem("cookmycv_device_claimed") === "true") return true;
-        if (localStorage.getItem("cookmycv_device_claimed_user_id")) return true;
-      }
-      if (typeof document !== "undefined") {
-        if (document.cookie.includes("cookmycv_device_claimed=true")) return true;
-        if (document.cookie.includes("cookmycv_device_claimed_user_id=")) return true;
-      }
-    } catch {}
-    return false;
-  };
-
-  // One Account Per Device check for register mode
-  useEffect(() => {
-    if (isRegister && isDeviceAlreadyClaimed()) {
-      router.push("/device-limit");
-    }
-  }, [isRegister, router]);
 
   // Cooldown countdown for OTP resend
   useEffect(() => {
@@ -202,12 +179,6 @@ function AuthForm() {
         } catch {}
       }
 
-      // Claim device
-      try {
-        localStorage.setItem("cookmycv_device_claimed", "true");
-        localStorage.setItem("cookmycv_device_claimed_email", otpEmail.toLowerCase());
-      } catch {}
-
       // Auto-claim pending referral
       try {
         const rawRef =
@@ -239,14 +210,8 @@ function AuthForm() {
   };
 
   const handleGoogleSignIn = async () => {
-    if (isRegister && isDeviceAlreadyClaimed()) {
-      router.push("/device-limit");
-      return;
-    }
-
     setIsGoogleLoading(true);
     setErrorMessage(null);
-    setIsDeviceConflict(false);
 
     try {
       const targetPath = callbackUrlParam && callbackUrlParam.startsWith("/") ? callbackUrlParam : "/profile";
@@ -274,14 +239,8 @@ function AuthForm() {
   };
 
   const handleGithubSignIn = async () => {
-    if (isRegister && isDeviceAlreadyClaimed()) {
-      router.push("/device-limit");
-      return;
-    }
-
     setIsGithubLoading(true);
     setErrorMessage(null);
-    setIsDeviceConflict(false);
 
     try {
       const targetPath = callbackUrlParam && callbackUrlParam.startsWith("/") ? callbackUrlParam : "/profile";
@@ -311,16 +270,10 @@ function AuthForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
-    setIsDeviceConflict(false);
     setIsLoading(true);
 
     try {
       if (isRegister) {
-        if (isDeviceAlreadyClaimed()) {
-          router.push("/device-limit");
-          return;
-        }
-
         const res = await signUp.email({
           name: name.trim() || email.split("@")[0],
           email: email.trim(),
@@ -337,21 +290,6 @@ function AuthForm() {
             (res.error as any)?.statusText ||
             "Failed to create account";
           const code = rawErr?.code || res.error?.code || "";
-
-          if (
-            code === "DEVICE_CONFLICT" ||
-            msg.toLowerCase().includes("device") ||
-            msg.toLowerCase().includes("one account") ||
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (res.error as any)?.status === 403
-          ) {
-            try {
-              localStorage.setItem("cookmycv_device_claimed", "true");
-              document.cookie = "cookmycv_device_claimed=true; Path=/; Max-Age=31536000; SameSite=Lax";
-            } catch {}
-            router.push("/device-limit");
-            return;
-          }
 
           const isVerificationRequired =
             code === "EMAIL_NOT_VERIFIED" ||
@@ -384,10 +322,6 @@ function AuthForm() {
         }
 
         try {
-          localStorage.setItem("cookmycv_device_claimed", "true");
-          localStorage.setItem("cookmycv_device_claimed_email", email.trim().toLowerCase());
-          document.cookie = "cookmycv_device_claimed=true; Path=/; Max-Age=31536000; SameSite=Lax";
-          document.cookie = `cookmycv_device_claimed_email=${encodeURIComponent(email.trim().toLowerCase())}; Path=/; Max-Age=31536000; SameSite=Lax`;
           const rawRef =
             localStorage.getItem("cookmycv_pending_ref") ||
             (document.cookie.match(/cookmycv_ref=([^;]+)/) || [])[1] ||
@@ -411,16 +345,6 @@ function AuthForm() {
           router.push("/onboarding");
         }
       } else {
-        const claimedEmail =
-          (typeof window !== "undefined" ? localStorage.getItem("cookmycv_device_claimed_email") : null) ||
-          decodeURIComponent((document.cookie.match(/cookmycv_device_claimed_email=([^;]+)/) || [])[1] || "");
-
-        if (claimedEmail && email.trim() && claimedEmail.toLowerCase() !== email.trim().toLowerCase()) {
-          setErrorMessage(`You can only use one account on this device. This device is already linked to ${claimedEmail}.`);
-          router.push("/device-limit");
-          return;
-        }
-
         const res = await signIn.email({
           email: email.trim(),
           password,
@@ -436,21 +360,6 @@ function AuthForm() {
             (res.error as any)?.statusText ||
             "Invalid email or password";
           const code = rawErr?.code || res.error?.code || "";
-
-          if (
-            code === "DEVICE_CONFLICT" ||
-            msg.toLowerCase().includes("device") ||
-            msg.toLowerCase().includes("one account") ||
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (res.error as any)?.status === 403
-          ) {
-            try {
-              localStorage.setItem("cookmycv_device_claimed", "true");
-              document.cookie = "cookmycv_device_claimed=true; Path=/; Max-Age=31536000; SameSite=Lax";
-            } catch {}
-            router.push("/device-limit");
-            return;
-          }
 
           const isUnverified =
             code === "EMAIL_NOT_VERIFIED" ||
@@ -470,13 +379,6 @@ function AuthForm() {
           throw new Error(msg);
         }
 
-        try {
-          localStorage.setItem("cookmycv_device_claimed", "true");
-          localStorage.setItem("cookmycv_device_claimed_email", email.trim().toLowerCase());
-          document.cookie = "cookmycv_device_claimed=true; Path=/; Max-Age=31536000; SameSite=Lax";
-          document.cookie = `cookmycv_device_claimed_email=${encodeURIComponent(email.trim().toLowerCase())}; Path=/; Max-Age=31536000; SameSite=Lax`;
-        } catch {}
-
         if (callbackUrlParam && callbackUrlParam.startsWith("/")) {
           router.push(callbackUrlParam);
         } else {
@@ -485,13 +387,6 @@ function AuthForm() {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Authentication failed";
-      if (msg.toLowerCase().includes("device") || msg.toLowerCase().includes("one account")) {
-        try {
-          localStorage.setItem("cookmycv_device_claimed", "true");
-        } catch {}
-        router.push("/device-limit");
-        return;
-      }
       setErrorMessage(msg);
     } finally {
       setIsLoading(false);
@@ -659,7 +554,6 @@ function AuthForm() {
                     onClick={() => {
                       setUserSelectedMode(false);
                       setErrorMessage(null);
-                      setIsDeviceConflict(false);
                     }}
                     className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${
                       !isRegister
@@ -672,13 +566,8 @@ function AuthForm() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (isDeviceAlreadyClaimed()) {
-                        router.push("/device-limit");
-                        return;
-                      }
                       setUserSelectedMode(true);
                       setErrorMessage(null);
-                      setIsDeviceConflict(false);
                     }}
                     className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${
                       isRegister
@@ -697,18 +586,6 @@ function AuthForm() {
                     <Alert variant="danger" title="Authentication Notice">
                       {errorMessage}
                     </Alert>
-                  </div>
-                )}
-
-                {isDeviceConflict && (
-                  <div className="mb-4 p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200 text-xs flex flex-col gap-2">
-                    <span className="font-semibold">Device Already Registered</span>
-                    <span>
-                      This device is associated with another account. You can transfer account access using your email recovery code.
-                    </span>
-                    <Link href="/profile" className="font-semibold text-text hover:underline self-start">
-                      Go to Device Recovery
-                    </Link>
                   </div>
                 )}
 

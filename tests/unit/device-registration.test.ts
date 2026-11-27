@@ -11,8 +11,7 @@ import {
   claimDeviceForUser,
 } from "@/lib/devices/service";
 import { generateFingerprintHash, extractClientIp } from "@/lib/devices/fingerprint";
-import { ForbiddenError } from "@/lib/shared/errors";
-import { devices, deviceEvents } from "@/lib/db/schema";
+import { devices, deviceEvents, deviceTombstones } from "@/lib/db/schema";
 
 // In-memory mock database state for device testing
 interface MockDevice {
@@ -21,6 +20,7 @@ interface MockDevice {
   deviceId: string;
   tokenHash: string;
   fingerprintHash: string | null;
+  hardwareId: string | null;
   label: string | null;
   status: "active" | "revoked";
   firstSeenAt: Date;
@@ -72,15 +72,15 @@ function findStringsInClause(clause: unknown, seen = new Set<unknown>()): string
 }
 
 function findMatchingDevice(clause: unknown): MockDevice[] {
-  const active = inMemoryDevices.filter((d) => d.status === "active");
-  if (!clause) return active;
-  const strings = findStringsInClause(clause);
-  for (const d of active) {
-    if (strings.includes(d.deviceId) || strings.includes(d.tokenHash) || strings.includes(d.ownerUserId)) {
-      return [d];
-    }
-  }
-  return active;
+  const strings = clause ? findStringsInClause(clause) : [];
+  if (strings.length === 0) return inMemoryDevices;
+  return inMemoryDevices.filter(
+    (d) =>
+      strings.includes(d.deviceId) ||
+      strings.includes(d.tokenHash) ||
+      strings.includes(d.ownerUserId) ||
+      (d.hardwareId && strings.includes(d.hardwareId))
+  );
 }
 
 vi.mock("@/lib/db", () => ({
@@ -97,8 +97,11 @@ vi.mock("@/lib/db", () => ({
                 then: (resolve: (items: MockDevice[]) => void) => resolve(matched),
               };
             },
-            orderBy: () => createMockQuery(inMemoryDevices.filter((d) => d.status === "active")),
+            orderBy: () => createMockQuery(inMemoryDevices),
           };
+        }
+        if (table === deviceTombstones) {
+          return createMockQuery([]);
         }
         return createMockQuery([]);
       },
@@ -106,7 +109,6 @@ vi.mock("@/lib/db", () => ({
     insert: (table: unknown) => ({
       values: (val: Record<string, unknown>) => {
         if (table === devices) {
-          // Check for unique constraint violation on deviceId or tokenHash
           const conflict = inMemoryDevices.find(
             (d) => (d.deviceId === val.deviceId || d.tokenHash === val.tokenHash) && d.status === "active"
           );
@@ -120,6 +122,7 @@ vi.mock("@/lib/db", () => ({
             deviceId: val.deviceId as string,
             tokenHash: val.tokenHash as string,
             fingerprintHash: (val.fingerprintHash as string) || null,
+            hardwareId: (val.hardwareId as string) || (val.deviceId as string),
             label: (val.label as string) || null,
             status: (val.status as "active" | "revoked") || "active",
             firstSeenAt: (val.firstSeenAt as Date) || new Date(),
@@ -257,7 +260,7 @@ describe("Task 5: Device Registration and Ownership Enforcement", () => {
     });
   });
 
-  describe("One-Device-One-Account Registration Rule", () => {
+  describe("Multi-Account Shared Hardware Device Registration", () => {
     it("claims a new device successfully on signup", async () => {
       const result = await claimDeviceForUser({
         userId: "user-alice",
@@ -296,61 +299,67 @@ describe("Task 5: Device Registration and Ownership Enforcement", () => {
       expect(returnVisit.isNewDevice).toBe(false);
     });
 
-    it("rejects account creation if the device is already actively registered to a different account", async () => {
+    it("allows a second account on the same physical browser and links it to the shared hardwareId", async () => {
       // 1. User Alice registers device D
       const aliceClaim = await claimDeviceForUser({
         userId: "user-alice",
         isSignUp: true,
       });
 
-      // 2. Attacker Bob tries to sign up with Alice's device token
-      await expect(
-        claimDeviceForUser({
-          userId: "user-bob",
-          rawToken: aliceClaim.rawToken,
-          isSignUp: true,
-        })
-      ).rejects.toThrowError(ForbiddenError);
+      // 2. User Bob signs up in the same browser carrying Alice's device cookie
+      const bobClaim = await claimDeviceForUser({
+        userId: "user-bob",
+        rawToken: aliceClaim.rawToken,
+        isSignUp: true,
+      });
 
-      // 3. Verify rejection event was recorded
-      const rejectedEvent = inMemoryDeviceEvents.find(
-        (e) => e.eventType === "device.claim_rejected"
-      );
-      expect(rejectedEvent).toBeDefined();
-      expect(rejectedEvent?.riskOutcome).toBe("blocked");
-      expect(rejectedEvent?.metadata?.attemptedUserId).toBe("user-bob");
+      expect(bobClaim.allowed).toBe(true);
+      expect(bobClaim.isNewDevice).toBe(true);
+      expect(bobClaim.hardwareId).toBe(aliceClaim.hardwareId);
+      expect(bobClaim.deviceId).not.toBe(aliceClaim.deviceId);
+      expect(bobClaim.device?.ownerUserId).toBe("user-bob");
     });
 
-    it("blocks sign-in attempt from a device actively claimed by another account without takeover", async () => {
-      // 1. Device registered to Alice
+    it("preserves both accounts' device links when switching back and forth on the same browser", async () => {
       const aliceClaim = await claimDeviceForUser({
         userId: "user-alice",
         isSignUp: true,
       });
 
-      // 2. Bob tries to sign in from Alice's registered device
-      const bobAttempt = await claimDeviceForUser({
+      const bobClaim = await claimDeviceForUser({
         userId: "user-bob",
         rawToken: aliceClaim.rawToken,
         isSignUp: false,
       });
 
-      expect(bobAttempt.allowed).toBe(false);
-      expect(bobAttempt.reason).toContain("already associated with an existing CookMyCv account");
+      expect(bobClaim.allowed).toBe(true);
+      expect(bobClaim.hardwareId).toBe(aliceClaim.hardwareId);
+
+      // Now switch back to Alice while holding Bob's device token
+      const aliceReturn = await claimDeviceForUser({
+        userId: "user-alice",
+        rawToken: bobClaim.rawToken,
+        isSignUp: false,
+      });
+
+      expect(aliceReturn.allowed).toBe(true);
+      expect(aliceReturn.deviceId).toBe(aliceClaim.deviceId);
+      expect(aliceReturn.hardwareId).toBe(aliceClaim.hardwareId);
+      expect(aliceReturn.isNewDevice).toBe(false);
     });
   });
 
-  describe("Concurrency Safety", () => {
-    it("handles concurrent registration attempts on the same device safely", async () => {
+  describe("Hardware Isolation & Session Separation", () => {
+    it("issues separate per-user device tokens on shared hardware without hijacking ownership", async () => {
       const { deviceId, rawToken, tokenHash } = generateDeviceToken();
 
-      // Pre-seed the device in memory as claimed by User 1
       inMemoryDevices.push({
         id: "dev-seed-1",
         ownerUserId: "user-first",
         deviceId,
         tokenHash,
         fingerprintHash: null,
+        hardwareId: deviceId,
         label: null,
         status: "active",
         firstSeenAt: new Date(),
@@ -359,14 +368,16 @@ describe("Task 5: Device Registration and Ownership Enforcement", () => {
         createdAt: new Date(),
       });
 
-      // Simultaneous signup attempt with same device token by another user
-      await expect(
-        claimDeviceForUser({
-          userId: "user-second",
-          rawToken,
-          isSignUp: true,
-        })
-      ).rejects.toThrowError(ForbiddenError);
+      const secondClaim = await claimDeviceForUser({
+        userId: "user-second",
+        rawToken,
+        isSignUp: true,
+      });
+
+      expect(secondClaim.allowed).toBe(true);
+      expect(secondClaim.deviceId).not.toBe(deviceId);
+      expect(secondClaim.hardwareId).toBe(deviceId);
+      expect(inMemoryDevices.find((d) => d.id === "dev-seed-1")?.ownerUserId).toBe("user-first");
     });
   });
 

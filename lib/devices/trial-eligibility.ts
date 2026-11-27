@@ -1,8 +1,9 @@
 import { db } from "@/lib/db";
 import { devices, deviceTrialClaims, deviceTombstones, usageCounters } from "@/lib/db/schema";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, or } from "drizzle-orm";
 import {
   verifyDeviceToken,
+  verifyHardwareToken,
   hashDeviceToken,
 } from "./tokens";
 import {
@@ -17,18 +18,21 @@ import type {
 } from "./types";
 import { recordDeviceEvent } from "./service";
 import { recordAuditEvent } from "@/lib/operations/audit";
-import { logger } from "@/lib/shared/logger";
 
 export interface CheckTrialEligibilityParams {
   userId: string;
   deviceId?: string;
   rawToken?: string | null;
+  hardwareId?: string | null;
+  rawHardwareToken?: string | null;
+  trialAllowance?: number;
   ipAddress?: string | null;
   headers?: Headers;
 }
 
 export interface RecordTrialClaimParams {
   deviceId: string;
+  hardwareId?: string;
   userId: string;
   ipAddress?: string | null;
   riskScore?: number;
@@ -36,25 +40,55 @@ export interface RecordTrialClaimParams {
   metadata?: Record<string, unknown>;
 }
 
+function mapDeviceRow(record: typeof devices.$inferSelect): DeviceRecord {
+  return {
+    id: record.id,
+    ownerUserId: record.ownerUserId,
+    deviceId: record.deviceId,
+    tokenHash: record.tokenHash,
+    fingerprintHash: record.fingerprintHash,
+    hardwareId: record.hardwareId ?? record.deviceId,
+    label: record.label,
+    firstSeenAt: record.firstSeenAt,
+    lastSeenAt: record.lastSeenAt,
+    status: record.status as DeviceStatus,
+    trialClaimedAt: record.trialClaimedAt,
+    createdAt: record.createdAt,
+    revokedAt: record.revokedAt,
+  };
+}
+
 /**
- * Checks whether an incoming request from an account is eligible for a free-trial allowance.
+ * Checks whether an incoming request from an account is eligible for a free-trial evaluation
+ * using the combined (device + account) quota model:
  *
  * Rules:
- * 1. An active registered device owned by this user account is required to grant/claim a trial.
- * 2. If the device has already been claimed for a free trial by ANY OTHER account, the request is REJECTED.
- * 3. Tombstoned devices (from deleted accounts or abuse) are permanently ineligible.
- * 4. Account trial history is independent of device claims: changing devices never resets account trial history.
- * 5. Ambiguous fingerprint matches (e.g. shared IP address alone) trigger risk review, NOT hard blocking.
+ * 1. An active registered device owned by this user account is required.
+ * 2. Multiple accounts may share the same physical device (`hardwareId`).
+ * 3. Effective trial consumption is `Math.max(accountUsed, deviceUsed)`:
+ *    - Switching to another account on the same device continues from the device's remaining count.
+ *    - Opening an account on a new device continues from the account's remaining count.
+ * 4. Deleting an account preserves `deviceUsed` via tombstones / non-cascading claims.
+ * 5. Ambiguous fingerprint/IP signals trigger review logging, never hard blocks.
  */
 export async function checkDeviceTrialEligibility(
   params: CheckTrialEligibilityParams
 ): Promise<DeviceTrialEligibilityResult> {
   const { userId, deviceId: paramDeviceId, rawToken, headers } = params;
+  const trialAllowance = params.trialAllowance ?? 3;
   const ipAddress = params.ipAddress || (headers ? extractClientIp(headers) : null);
   const fingerprintHash = headers ? generateFingerprintHash(headers) : null;
 
-  // 1. Resolve Device
+  let resolvedHardwareId: string | null = params.hardwareId || null;
+  if (!resolvedHardwareId && params.rawHardwareToken) {
+    const hwRes = verifyHardwareToken(params.rawHardwareToken);
+    if (hwRes.valid && hwRes.hardwareId) {
+      resolvedHardwareId = hwRes.hardwareId;
+    }
+  }
+
   let targetDevice: DeviceRecord | null = null;
+  let presentedOtherDevice: DeviceRecord | null = null;
 
   // 1a. Try from verified rawToken
   if (rawToken) {
@@ -68,25 +102,18 @@ export async function checkDeviceTrialEligibility(
         .limit(1);
 
       if (record) {
-        targetDevice = {
-          id: record.id,
-          ownerUserId: record.ownerUserId,
-          deviceId: record.deviceId,
-          tokenHash: record.tokenHash,
-          fingerprintHash: record.fingerprintHash,
-          label: record.label,
-          firstSeenAt: record.firstSeenAt,
-          lastSeenAt: record.lastSeenAt,
-          status: record.status as DeviceStatus,
-          trialClaimedAt: record.trialClaimedAt,
-          createdAt: record.createdAt,
-          revokedAt: record.revokedAt,
-        };
+        const mapped = mapDeviceRow(record);
+        resolvedHardwareId = resolvedHardwareId || mapped.hardwareId || mapped.deviceId;
+        if (mapped.ownerUserId === userId) {
+          targetDevice = mapped;
+        } else {
+          presentedOtherDevice = mapped;
+        }
       }
     }
   }
 
-  // 1b. Try from deviceId parameter if not found by token
+  // 1b. Try from explicit deviceId parameter if still unresolved for this user
   if (!targetDevice && paramDeviceId) {
     const [record] = await db
       .select()
@@ -95,51 +122,65 @@ export async function checkDeviceTrialEligibility(
       .limit(1);
 
     if (record) {
-      targetDevice = {
-        id: record.id,
-        ownerUserId: record.ownerUserId,
-        deviceId: record.deviceId,
-        tokenHash: record.tokenHash,
-        fingerprintHash: record.fingerprintHash,
-        label: record.label,
-        firstSeenAt: record.firstSeenAt,
-        lastSeenAt: record.lastSeenAt,
-        status: record.status as DeviceStatus,
-        trialClaimedAt: record.trialClaimedAt,
-        createdAt: record.createdAt,
-        revokedAt: record.revokedAt,
-      };
+      const mapped = mapDeviceRow(record);
+      resolvedHardwareId = resolvedHardwareId || mapped.hardwareId || mapped.deviceId;
+      if (mapped.ownerUserId === userId) {
+        targetDevice = mapped;
+      } else {
+        presentedOtherDevice = presentedOtherDevice || mapped;
+      }
     }
   }
 
-  // 1c. If still not found, check the user's active devices
+  // 1c. Match user's device on this physical hardware (if known), or user's latest active device
   if (!targetDevice) {
-    const [userActiveDevice] = await db
+    const userDevices = await db
       .select()
       .from(devices)
-      .where(and(eq(devices.ownerUserId, userId), eq(devices.status, "active")))
-      .orderBy(desc(devices.lastSeenAt))
-      .limit(1);
+      .where(eq(devices.ownerUserId, userId))
+      .orderBy(desc(devices.lastSeenAt));
 
-    if (userActiveDevice) {
-      targetDevice = {
-        id: userActiveDevice.id,
-        ownerUserId: userActiveDevice.ownerUserId,
-        deviceId: userActiveDevice.deviceId,
-        tokenHash: userActiveDevice.tokenHash,
-        fingerprintHash: userActiveDevice.fingerprintHash,
-        label: userActiveDevice.label,
-        firstSeenAt: userActiveDevice.firstSeenAt,
-        lastSeenAt: userActiveDevice.lastSeenAt,
-        status: userActiveDevice.status as DeviceStatus,
-        trialClaimedAt: userActiveDevice.trialClaimedAt,
-        createdAt: userActiveDevice.createdAt,
-        revokedAt: userActiveDevice.revokedAt,
-      };
+    if (resolvedHardwareId) {
+      const matchForHw = userDevices.find(
+        (d) => (d.hardwareId || d.deviceId) === resolvedHardwareId
+      );
+      if (matchForHw) {
+        targetDevice = mapDeviceRow(matchForHw);
+      }
+    }
+
+    if (!targetDevice && !presentedOtherDevice) {
+      const activeDev = userDevices.find((d) => d.status === "active");
+      if (activeDev) {
+        targetDevice = mapDeviceRow(activeDev);
+        resolvedHardwareId =
+          resolvedHardwareId || targetDevice.hardwareId || targetDevice.deviceId;
+      }
     }
   }
 
-  // If no device could be resolved, fail device ownership requirement
+  // Reject if a foreign device was presented directly and user has no registered device for it
+  if (!targetDevice && presentedOtherDevice) {
+    await recordDeviceEvent({
+      deviceId: presentedOtherDevice.deviceId,
+      userId,
+      eventType: "trial.claim_rejected_unowned_device",
+      riskOutcome: "blocked",
+      metadata: { targetOwnerUserId: presentedOtherDevice.ownerUserId, ipAddress },
+    });
+
+    return {
+      eligible: false,
+      code: "DEVICE_NOT_OWNED",
+      reason:
+        "This device session is bound to another account. Sign in to register your session on this device.",
+      riskScore: 100,
+      riskOutcome: "blocked",
+      device: presentedOtherDevice,
+      claimedByUserId: presentedOtherDevice.ownerUserId,
+    };
+  }
+
   if (!targetDevice) {
     return {
       eligible: false,
@@ -152,21 +193,12 @@ export async function checkDeviceTrialEligibility(
     };
   }
 
-  // 2. Strict Device Ownership Check
+  // 2. Ownership & status check
   if (targetDevice.ownerUserId !== userId) {
-    await recordDeviceEvent({
-      deviceId: targetDevice.deviceId,
-      userId,
-      eventType: "trial.claim_rejected_unowned_device",
-      riskOutcome: "blocked",
-      metadata: { targetOwnerUserId: targetDevice.ownerUserId, ipAddress },
-    });
-
     return {
       eligible: false,
       code: "DEVICE_NOT_OWNED",
-      reason:
-        "This device is registered to another account. Free trials are limited to one per registered device.",
+      reason: "This device is registered to another account.",
       riskScore: 100,
       riskOutcome: "blocked",
       device: targetDevice,
@@ -174,7 +206,6 @@ export async function checkDeviceTrialEligibility(
     };
   }
 
-  // 3. Device Active Status Check
   if (targetDevice.status === "revoked") {
     return {
       eligible: false,
@@ -187,72 +218,10 @@ export async function checkDeviceTrialEligibility(
     };
   }
 
-  // 4. Tombstone Check (permanent block for deleted accounts or tombstoned hardware)
-  const [tombstone] = await db
-    .select()
-    .from(deviceTombstones)
-    .where(eq(deviceTombstones.deviceId, targetDevice.deviceId))
-    .limit(1);
+  const hardwareId =
+    resolvedHardwareId || targetDevice.hardwareId || targetDevice.deviceId;
 
-  if (tombstone) {
-    await recordDeviceEvent({
-      deviceId: targetDevice.deviceId,
-      userId,
-      eventType: "trial.claim_rejected_tombstone",
-      riskOutcome: "blocked",
-      metadata: { tombstoneReason: tombstone.reason, ipAddress },
-    });
-
-    return {
-      eligible: false,
-      code: "DEVICE_TRIAL_ALREADY_CLAIMED",
-      reason:
-        "This device was previously registered to an account that consumed its free trial. Devices cannot obtain repeat free trials.",
-      riskScore: 100,
-      riskOutcome: "blocked",
-      device: targetDevice,
-      deviceTrialClaimed: true,
-      claimedByUserId: tombstone.originalOwnerUserId || undefined,
-    };
-  }
-
-  // 5. Existing Device Trial Claim Check
-  const [existingDeviceClaim] = await db
-    .select()
-    .from(deviceTrialClaims)
-    .where(eq(deviceTrialClaims.deviceId, targetDevice.deviceId))
-    .limit(1);
-
-  if (existingDeviceClaim) {
-    // If claimed by a DIFFERENT account: hard block
-    if (existingDeviceClaim.userId !== userId) {
-      await recordDeviceEvent({
-        deviceId: targetDevice.deviceId,
-        userId,
-        eventType: "trial.claim_rejected_device_already_claimed",
-        riskOutcome: "blocked",
-        metadata: {
-          originalClaimant: existingDeviceClaim.userId,
-          ipAddress,
-        },
-      });
-
-      return {
-        eligible: false,
-        code: "DEVICE_TRIAL_ALREADY_CLAIMED",
-        reason:
-          "This device has already claimed a free trial under another account. Each device is eligible for only one free trial.",
-        riskScore: 100,
-        riskOutcome: "blocked",
-        device: targetDevice,
-        deviceTrialClaimed: true,
-        claimedByUserId: existingDeviceClaim.userId,
-      };
-    }
-  }
-
-  // 6. Account Lifetime Quota Check
-  // Account trial history is independent of device: check if account used its 3 evaluations
+  // 3. Read Account Trial Counter
   const trialPeriodKey = `trial:${userId}`;
   const [trialCounter] = await db
     .select()
@@ -262,46 +231,93 @@ export async function checkDeviceTrialEligibility(
     )
     .limit(1);
 
-  const used = trialCounter?.evaluationsUsed ?? 0;
-  const reserved = trialCounter?.evaluationsReserved ?? 0;
-  if (used + reserved >= 3) {
+  const accountUsed =
+    (trialCounter?.evaluationsUsed ?? 0) + (trialCounter?.evaluationsReserved ?? 0);
+
+  // 4. Read Shared Device/Hardware Trial Counter + Tombstone floor
+  const [existingDeviceClaim] = await db
+    .select()
+    .from(deviceTrialClaims)
+    .where(
+      or(
+        eq(deviceTrialClaims.deviceId, hardwareId),
+        eq(deviceTrialClaims.hardwareId, hardwareId)
+      )
+    )
+    .limit(1);
+
+  let tombstoneUsed = 0;
+  const tombstones = await db
+    .select()
+    .from(deviceTombstones)
+    .where(
+      or(
+        eq(deviceTombstones.hardwareId, hardwareId),
+        eq(deviceTombstones.deviceId, hardwareId),
+        eq(deviceTombstones.deviceId, targetDevice.deviceId)
+      )
+    );
+
+  for (const tomb of tombstones) {
+    const val =
+      typeof tomb.trialsUsed === "number" && tomb.trialsUsed > 0
+        ? tomb.trialsUsed
+        : tomb.trialConsumed
+        ? 3
+        : 0;
+    if (val > tombstoneUsed) tombstoneUsed = val;
+  }
+
+  const claimCounted = existingDeviceClaim
+    ? Math.max(
+        (existingDeviceClaim.evaluationsUsed ?? 0) +
+          (existingDeviceClaim.evaluationsReserved ?? 0),
+        0
+      )
+    : 0;
+
+  const deviceUsed = Math.max(claimCounted, tombstoneUsed);
+
+  // 5. Combined Device + Account Usage Calculation
+  const effectiveUsed = Math.max(accountUsed, deviceUsed);
+
+  if (effectiveUsed >= trialAllowance) {
+    const hitByDevice = deviceUsed >= trialAllowance && accountUsed < trialAllowance;
     return {
       eligible: false,
-      code: "TRIAL_LIMIT_EXCEEDED",
-      reason:
-        "Free trial limit reached (3 lifetime evaluations). Please upgrade to Pro to continue evaluating CVs.",
-      riskScore: 0,
+      code: hitByDevice ? "DEVICE_TRIAL_ALREADY_CLAIMED" : "TRIAL_LIMIT_EXCEEDED",
+      reason: hitByDevice
+        ? `Free trial limit reached (${trialAllowance} evaluations used on this device). Upgrade to Pro to continue.`
+        : `Free trial limit reached (${trialAllowance} lifetime evaluations). Please upgrade to Pro to continue evaluating CVs.`,
+      riskScore: hitByDevice ? 60 : 0,
       riskOutcome: "allowed",
       device: targetDevice,
-      deviceTrialClaimed: Boolean(existingDeviceClaim || targetDevice.trialClaimedAt),
-      claimedByUserId: userId,
+      hardwareId,
+      accountUsed,
+      deviceUsed,
+      effectiveUsed,
+      deviceTrialClaimed: deviceUsed > 0,
+      claimedByUserId: existingDeviceClaim?.userId ?? null,
     };
   }
 
-  // 7. Ambiguous Fingerprint / Shared IP Evaluation
-  // Rule: Shared IP alone or partial fingerprint match MUST NOT block users.
-  // Ambiguous signals trigger risk review and logging, rather than an unsupported claim of certainty.
+  // 6. Ambiguous Fingerprint / Shared IP Risk Evaluation (logging only, never hard blocking)
   let riskScore = 0;
   let riskOutcome: "allowed" | "flagged_for_review" | "blocked" = "allowed";
   let riskReason: string | undefined;
 
   if (ipAddress) {
-    // Check if other accounts have claimed trials from this exact IP
     const otherClaimsOnSameIp = await db
       .select({ id: deviceTrialClaims.id, userId: deviceTrialClaims.userId })
       .from(deviceTrialClaims)
-      .where(
-        and(
-          eq(deviceTrialClaims.ipAddress, ipAddress),
-          // Exclude this user
-          // Note: we check other claimants on this IP
-        )
-      )
+      .where(eq(deviceTrialClaims.ipAddress, ipAddress))
       .limit(5);
 
-    const hasOtherUserOnIp = otherClaimsOnSameIp.some((c) => c.userId !== userId);
+    const hasOtherUserOnIp = otherClaimsOnSameIp.some(
+      (c) => c.userId && c.userId !== userId
+    );
     if (hasOtherUserOnIp) {
-      riskScore = 30; // Elevated risk, but well below blocking threshold
+      riskScore = 30;
       riskOutcome = "flagged_for_review";
       riskReason = "shared_ip_address_detected";
 
@@ -313,15 +329,10 @@ export async function checkDeviceTrialEligibility(
         metadata: {
           ipAddress,
           fingerprintHash,
+          hardwareId,
           reason: "shared_ip_address_detected",
           claimCountOnIp: otherClaimsOnSameIp.length,
         },
-      });
-
-      logger.info("Ambiguous trial match flagged for review (shared IP allowed)", {
-        userId,
-        deviceId: targetDevice.deviceId,
-        ipAddress,
       });
     }
   }
@@ -332,53 +343,92 @@ export async function checkDeviceTrialEligibility(
     riskOutcome,
     riskReason,
     device: targetDevice,
-    deviceTrialClaimed: Boolean(existingDeviceClaim || targetDevice.trialClaimedAt),
-    claimedByUserId: existingDeviceClaim ? existingDeviceClaim.userId : null,
+    hardwareId,
+    accountUsed,
+    deviceUsed,
+    effectiveUsed,
+    deviceTrialClaimed: deviceUsed > 0,
+    claimedByUserId: existingDeviceClaim?.userId ?? null,
   };
 }
 
 /**
- * Atomically records a device trial claim.
- * Ensures the device claim is independently auditable and persists across device revocations.
+ * Reserves 1 trial slot on the shared physical hardware record.
  */
-export async function recordDeviceTrialClaim(
-  params: RecordTrialClaimParams
+export async function reserveDeviceTrialSlot(
+  params: RecordTrialClaimParams & { initialUsedFloor?: number }
 ): Promise<DeviceTrialClaimRecord> {
-  const { deviceId, userId, ipAddress, riskScore = 0, riskOutcome = "allowed", metadata = {} } = params;
+  const {
+    deviceId,
+    userId,
+    ipAddress,
+    riskScore = 0,
+    riskOutcome = "allowed",
+    metadata = {},
+    initialUsedFloor = 0,
+  } = params;
+  const hwId = params.hardwareId || deviceId;
   const now = new Date();
 
-  // Insert into device_trial_claims table
-  const [created] = await db
-    .insert(deviceTrialClaims)
-    .values({
-      deviceId,
-      userId,
-      ipAddress: ipAddress || null,
-      riskScore,
-      riskOutcome,
-      metadata,
-      claimedAt: now,
-      createdAt: now,
-    })
-    .returning();
+  const [existing] = await db
+    .select()
+    .from(deviceTrialClaims)
+    .where(
+      or(
+        eq(deviceTrialClaims.deviceId, hwId),
+        eq(deviceTrialClaims.hardwareId, hwId)
+      )
+    )
+    .limit(1);
 
-  // Stamp trialClaimedAt on devices table
+  let record: typeof deviceTrialClaims.$inferSelect;
+  if (existing) {
+    const [updated] = await db
+      .update(deviceTrialClaims)
+      .set({
+        evaluationsUsed: existing.evaluationsUsed ?? 0,
+        evaluationsReserved: (existing.evaluationsReserved ?? 0) + 1,
+        hardwareId: hwId,
+        ipAddress: ipAddress || existing.ipAddress,
+      })
+      .where(eq(deviceTrialClaims.id, existing.id))
+      .returning();
+    record = updated;
+  } else {
+    const [created] = await db
+      .insert(deviceTrialClaims)
+      .values({
+        deviceId: hwId,
+        hardwareId: hwId,
+        userId,
+        evaluationsUsed: initialUsedFloor,
+        evaluationsReserved: 1,
+        ipAddress: ipAddress || null,
+        riskScore,
+        riskOutcome,
+        metadata,
+        claimedAt: now,
+        createdAt: now,
+      })
+      .returning();
+    record = created;
+  }
+
   await db
     .update(devices)
     .set({
       trialClaimedAt: now,
       lastSeenAt: now,
     })
-    .where(eq(devices.deviceId, deviceId));
+    .where(or(eq(devices.deviceId, deviceId), eq(devices.hardwareId, hwId)));
 
-  // Record audit events
   await recordAuditEvent({
     userId,
     action: "trial.claimed",
-    targetId: deviceId,
+    targetId: hwId,
     targetType: "device_trial_claim",
     ipAddress: ipAddress || undefined,
-    metadata: { riskScore, riskOutcome },
+    metadata: { riskScore, riskOutcome, hardwareId: hwId },
   });
 
   await recordDeviceEvent({
@@ -386,46 +436,16 @@ export async function recordDeviceTrialClaim(
     userId,
     eventType: "trial.claimed",
     riskOutcome,
-    metadata: { ipAddress, riskScore },
+    metadata: { ipAddress, riskScore, hardwareId: hwId },
   });
-
-  logger.info("Recorded device trial claim", {
-    deviceId,
-    userId,
-    riskOutcome,
-  });
-
-  return {
-    id: created.id,
-    deviceId: created.deviceId,
-    userId: created.userId,
-    claimedAt: created.claimedAt,
-    ipAddress: created.ipAddress,
-    riskScore: created.riskScore,
-    riskOutcome: created.riskOutcome as "allowed" | "flagged_for_review" | "blocked",
-    metadata: created.metadata,
-    createdAt: created.createdAt,
-  };
-}
-
-/**
- * Retrieves the trial claim record for a given deviceId.
- */
-export async function getDeviceTrialClaim(
-  deviceId: string
-): Promise<DeviceTrialClaimRecord | null> {
-  const [record] = await db
-    .select()
-    .from(deviceTrialClaims)
-    .where(eq(deviceTrialClaims.deviceId, deviceId))
-    .limit(1);
-
-  if (!record) return null;
 
   return {
     id: record.id,
     deviceId: record.deviceId,
+    hardwareId: record.hardwareId ?? hwId,
     userId: record.userId,
+    evaluationsUsed: record.evaluationsUsed ?? 0,
+    evaluationsReserved: record.evaluationsReserved ?? 0,
     claimedAt: record.claimedAt,
     ipAddress: record.ipAddress,
     riskScore: record.riskScore,
@@ -436,8 +456,167 @@ export async function getDeviceTrialClaim(
 }
 
 /**
- * Retrieves the full trial history for an account, maintaining independent auditability
- * between account usage history and hardware device claims.
+ * Settles a reserved slot on the physical device upon evaluation completion.
+ */
+export async function settleDeviceTrialSlot(hardwareId: string): Promise<void> {
+  const [existing] = await db
+    .select()
+    .from(deviceTrialClaims)
+    .where(
+      or(
+        eq(deviceTrialClaims.deviceId, hardwareId),
+        eq(deviceTrialClaims.hardwareId, hardwareId)
+      )
+    )
+    .limit(1);
+
+  if (!existing) return;
+
+  await db
+    .update(deviceTrialClaims)
+    .set({
+      evaluationsReserved: Math.max(0, (existing.evaluationsReserved ?? 0) - 1),
+      evaluationsUsed: (existing.evaluationsUsed ?? 0) + 1,
+    })
+    .where(eq(deviceTrialClaims.id, existing.id));
+}
+
+/**
+ * Releases a reserved slot on the physical device when an evaluation fails before completion.
+ */
+export async function releaseDeviceTrialSlot(hardwareId: string): Promise<void> {
+  const [existing] = await db
+    .select()
+    .from(deviceTrialClaims)
+    .where(
+      or(
+        eq(deviceTrialClaims.deviceId, hardwareId),
+        eq(deviceTrialClaims.hardwareId, hardwareId)
+      )
+    )
+    .limit(1);
+
+  if (!existing) return;
+
+  await db
+    .update(deviceTrialClaims)
+    .set({
+      evaluationsReserved: Math.max(0, (existing.evaluationsReserved ?? 0) - 1),
+    })
+    .where(eq(deviceTrialClaims.id, existing.id));
+}
+
+/**
+ * Records/increments a settled trial claim directly on a device (used in manual scripts/tests).
+ */
+export async function recordDeviceTrialClaim(
+  params: RecordTrialClaimParams
+): Promise<DeviceTrialClaimRecord> {
+  const hwId = params.hardwareId || params.deviceId;
+  const now = new Date();
+
+  const [existing] = await db
+    .select()
+    .from(deviceTrialClaims)
+    .where(
+      or(
+        eq(deviceTrialClaims.deviceId, hwId),
+        eq(deviceTrialClaims.hardwareId, hwId)
+      )
+    )
+    .limit(1);
+
+  let record: typeof deviceTrialClaims.$inferSelect;
+  if (existing) {
+    const [updated] = await db
+      .update(deviceTrialClaims)
+      .set({
+        evaluationsUsed: (existing.evaluationsUsed ?? 0) + 1,
+      })
+      .where(eq(deviceTrialClaims.id, existing.id))
+      .returning();
+    record = updated;
+  } else {
+    const [created] = await db
+      .insert(deviceTrialClaims)
+      .values({
+        deviceId: hwId,
+        hardwareId: hwId,
+        userId: params.userId,
+        evaluationsUsed: 1,
+        evaluationsReserved: 0,
+        ipAddress: params.ipAddress || null,
+        riskScore: params.riskScore ?? 0,
+        riskOutcome: params.riskOutcome ?? "allowed",
+        metadata: params.metadata ?? {},
+        claimedAt: now,
+        createdAt: now,
+      })
+      .returning();
+    record = created;
+  }
+
+  await db
+    .update(devices)
+    .set({
+      trialClaimedAt: now,
+      lastSeenAt: now,
+    })
+    .where(or(eq(devices.deviceId, params.deviceId), eq(devices.hardwareId, hwId)));
+
+  return {
+    id: record.id,
+    deviceId: record.deviceId,
+    hardwareId: record.hardwareId ?? hwId,
+    userId: record.userId,
+    evaluationsUsed: record.evaluationsUsed ?? 0,
+    evaluationsReserved: record.evaluationsReserved ?? 0,
+    claimedAt: record.claimedAt,
+    ipAddress: record.ipAddress,
+    riskScore: record.riskScore,
+    riskOutcome: record.riskOutcome as "allowed" | "flagged_for_review" | "blocked",
+    metadata: record.metadata,
+    createdAt: record.createdAt,
+  };
+}
+
+/**
+ * Retrieves the trial claim record for a given deviceId or hardwareId.
+ */
+export async function getDeviceTrialClaim(
+  deviceId: string
+): Promise<DeviceTrialClaimRecord | null> {
+  const [record] = await db
+    .select()
+    .from(deviceTrialClaims)
+    .where(
+      or(
+        eq(deviceTrialClaims.deviceId, deviceId),
+        eq(deviceTrialClaims.hardwareId, deviceId)
+      )
+    )
+    .limit(1);
+
+  if (!record) return null;
+
+  return {
+    id: record.id,
+    deviceId: record.deviceId,
+    hardwareId: record.hardwareId ?? record.deviceId,
+    userId: record.userId,
+    evaluationsUsed: record.evaluationsUsed ?? 0,
+    evaluationsReserved: record.evaluationsReserved ?? 0,
+    claimedAt: record.claimedAt,
+    ipAddress: record.ipAddress,
+    riskScore: record.riskScore,
+    riskOutcome: record.riskOutcome as "allowed" | "flagged_for_review" | "blocked",
+    metadata: record.metadata,
+    createdAt: record.createdAt,
+  };
+}
+
+/**
+ * Retrieves the full trial history for an account.
  */
 export async function getAccountTrialHistory(userId: string): Promise<{
   userId: string;
@@ -470,7 +649,10 @@ export async function getAccountTrialHistory(userId: string): Promise<{
   const claims: DeviceTrialClaimRecord[] = claimRecords.map((c) => ({
     id: c.id,
     deviceId: c.deviceId,
+    hardwareId: c.hardwareId ?? c.deviceId,
     userId: c.userId,
+    evaluationsUsed: c.evaluationsUsed ?? 0,
+    evaluationsReserved: c.evaluationsReserved ?? 0,
     claimedAt: c.claimedAt,
     ipAddress: c.ipAddress,
     riskScore: c.riskScore,
