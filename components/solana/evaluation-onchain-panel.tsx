@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { ErrorPopup } from "@/components/ui/error-popup";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { SolanaIdentityCard } from "@/components/solana/solana-identity-card";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 
@@ -265,10 +266,10 @@ export const EvaluationOnChainPanel: React.FC<{
             </span>
           </div>
           <Link
-            href={`/bounties?fromEval=${encodeURIComponent(state.evaluationId)}&bountyId=${encodeURIComponent(state.bountyContext.bountyId)}`}
+            href={`/bounties/${encodeURIComponent(state.bountyContext.bountyId)}/result?evalId=${encodeURIComponent(state.evaluationId)}`}
             className="text-purple-400 hover:underline font-semibold shrink-0"
           >
-            Go to Bounty →
+            View Bounty Result →
           </Link>
         </div>
       )}
@@ -371,83 +372,118 @@ export const EvaluationOnChainPanel: React.FC<{
       )}
 
       {!compact && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-3">
-            <div className="flex items-center justify-between border-b border-border pb-2.5">
-              <span className="text-xs font-mono uppercase tracking-wider text-text-muted">
-                Verified Score
-              </span>
-              <span className="text-xl font-extrabold text-purple-400">
-                {state.overallScore}/100
-                <span className="ml-2 text-xs font-mono font-semibold text-text-secondary">
-                  {state.scoreTier}
-                </span>
-              </span>
-            </div>
-
-            <div className="space-y-1.5 text-xs font-mono">
-              {state.evalPdaAddress && (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-text-muted shrink-0">Eval PDA</span>
-                  <a
-                    href={state.evalPdaUrl || "#"}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-purple-400 hover:underline truncate"
-                  >
-                    {state.evalPdaAddress}
-                  </a>
-                </div>
-              )}
-              {state.evalTxUrl && (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-text-muted shrink-0">Anchor Tx</span>
-                  <a
-                    href={state.evalTxUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-purple-400 hover:underline truncate"
-                  >
-                    {state.evalTxSignature}
-                  </a>
-                </div>
-              )}
-              {state.sbtMintUrl && (
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-text-muted shrink-0">SBT Mint</span>
-                  <a
-                    href={state.sbtMintUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-purple-400 hover:underline truncate"
-                  >
-                    {state.sbtMintAddress}
-                  </a>
-                </div>
-              )}
-            </div>
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+          {/* Portrait A4-shaped Solana Identity Card with enlarged sol.png doll + Download button */}
+          <div className="xl:col-span-5">
+            <SolanaIdentityCard
+              badgeLabel={
+                isSbtMinted
+                  ? "SBT MINTED"
+                  : isAnchored
+                  ? "PROOF ANCHORED"
+                  : "EVALUATION ID"
+              }
+              clusterLabel={clusterLabel}
+              roleTitle={state.roleTitle || "Candidate Role"}
+              score={state.overallScore}
+              scoreTier={state.scoreTier}
+              subtitle={state.modelVersion}
+              walletAddress={state.linkedWallet || publicKey}
+              primaryIdLabel="Eval PDA"
+              primaryIdValue={state.evalPdaAddress}
+              secondaryIdLabel="SBT Mint"
+              secondaryIdValue={
+                state.sbtMintAddress ||
+                (state.sbtEligible ? "Eligible (>= 85/100)" : "Requires 85/100+")
+              }
+              hashLabel="Report SHA-256"
+              hashValue={state.canonicalReportHash}
+              verifiedSkills={state.verifiedSkills}
+              issuedLabel={isAnchored ? `ANCHORED · ${clusterLabel.toUpperCase()}` : "OFF-CHAIN PREVIEW"}
+              downloadFileName={`coov-solana-id-${state.evaluationId.slice(0, 8)}.png`}
+              onDownloadError={(msg) => setError(msg)}
+            />
           </div>
 
-          <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-3">
-            <div className="flex items-center justify-between text-[11px] font-mono text-text-muted border-b border-border pb-2">
-              <span>Canonical Report SHA-256</span>
-              <span>{state.modelVersion}</span>
-            </div>
-            <p className="font-mono text-xs text-text break-all leading-relaxed">
-              {state.canonicalReportHash || "Pending completion"}
-            </p>
-            {state.verifiedSkills.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pt-1">
-                {state.verifiedSkills.map((skill) => (
-                  <span
-                    key={skill}
-                    className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface border border-border text-text-secondary"
-                  >
-                    {skill}
+          {/* Right Column: Verification Details & PDA Links */}
+          <div className="xl:col-span-7 space-y-4">
+            <div className="p-4 sm:p-5 rounded-xl bg-surface-elevated border border-border space-y-3">
+              <div className="flex items-center justify-between border-b border-border pb-2.5">
+                <span className="text-xs font-mono uppercase tracking-wider text-text-muted">
+                  Verified Score
+                </span>
+                <span className="text-xl font-extrabold text-purple-400">
+                  {state.overallScore}/100
+                  <span className="ml-2 text-xs font-mono font-semibold text-text-secondary">
+                    {state.scoreTier}
                   </span>
-                ))}
+                </span>
               </div>
-            )}
+
+              <div className="space-y-2 text-xs font-mono">
+                {state.evalPdaAddress && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-text-muted shrink-0">Eval PDA</span>
+                    <a
+                      href={state.evalPdaUrl || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-purple-400 hover:underline truncate"
+                    >
+                      {state.evalPdaAddress}
+                    </a>
+                  </div>
+                )}
+                {state.evalTxUrl && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-text-muted shrink-0">Anchor Tx</span>
+                    <a
+                      href={state.evalTxUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-purple-400 hover:underline truncate"
+                    >
+                      {state.evalTxSignature}
+                    </a>
+                  </div>
+                )}
+                {state.sbtMintUrl && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-text-muted shrink-0">SBT Mint</span>
+                    <a
+                      href={state.sbtMintUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-purple-400 hover:underline truncate"
+                    >
+                      {state.sbtMintAddress}
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="p-4 sm:p-5 rounded-xl bg-surface-elevated border border-border space-y-3">
+              <div className="flex items-center justify-between text-[11px] font-mono text-text-muted border-b border-border pb-2">
+                <span>Canonical Report SHA-256</span>
+                <span>{state.modelVersion}</span>
+              </div>
+              <p className="font-mono text-xs text-text break-all leading-relaxed">
+                {state.canonicalReportHash || "Pending completion"}
+              </p>
+              {state.verifiedSkills.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {state.verifiedSkills.map((skill) => (
+                    <span
+                      key={skill}
+                      className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface border border-border text-text-secondary"
+                    >
+                      {skill}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

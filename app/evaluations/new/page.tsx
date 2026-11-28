@@ -113,6 +113,7 @@ export default function NewEvaluationPage() {
           setCompany(match.company);
           setJobTitle(match.title);
           setJobDescriptionText(match.rawText);
+          setTone("brutal_roast");
           const rest = res?.myRestrictions?.find((r) => r.bountyId === bountyId);
           setBountyRestriction(rest ? { reason: rest.reason, details: rest.details } : null);
         }
@@ -462,17 +463,22 @@ export default function NewEvaluationPage() {
 
             {/* Tone Selector */}
             <Card className="bg-surface border-border">
-              <CardHeader className="pb-3 border-b border-border">
+              <CardHeader className="pb-3 border-b border-border flex flex-row items-center justify-between gap-2">
                 <CardTitle className="text-base font-bold text-text">
                   2. Review Style
                 </CardTitle>
+                {activeBounty && (
+                  <span className="text-[11px] font-mono text-purple-400">
+                    Bounty Default: Very Strict
+                  </span>
+                )}
               </CardHeader>
               <CardContent className="pt-4">
                 <div className="grid grid-cols-3 gap-2">
                   {[
+                    { id: "brutal_roast" as const, label: activeBounty ? "Very Strict" : "Roast" },
                     { id: "strict" as const, label: "Strict" },
                     { id: "friendly" as const, label: "Coach" },
-                    { id: "brutal_roast" as const, label: "Roast" },
                   ].map((t) => (
                     <button
                       key={t.id}

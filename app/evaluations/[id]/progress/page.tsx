@@ -183,12 +183,12 @@ export default function LiveDebateProgressPage() {
           redirectTimeout = setTimeout(() => {
             if (data.bountyContext?.bountyId) {
               router.push(
-                `/bounties?fromEval=${encodeURIComponent(evaluationId)}&bountyId=${encodeURIComponent(data.bountyContext.bountyId)}`
+                `/bounties/${encodeURIComponent(data.bountyContext.bountyId)}/result?evalId=${encodeURIComponent(evaluationId)}`
               );
             } else {
               router.push(`/evaluations/${evaluationId}/report`);
             }
-          }, 2000);
+          }, 1500);
         }
       }
     };
@@ -270,6 +270,19 @@ export default function LiveDebateProgressPage() {
 
   const completedRoleSet = new Set<string>(completedAgents.map((a) => a.role));
   const isActiveRun = status === "queued" || status === "processing";
+  const responseProgressPct =
+    status === "completed"
+      ? 100
+      : Math.min(
+          96,
+          Math.max(
+            4,
+            Math.round(
+              (completedAgents.length / 6) * 76 +
+                (Math.min(4, debateMessages.length) / 4) * 20
+            )
+          )
+        );
 
   const activeThinkingAgents = isActiveRun
     ? COMMITTEE_PERSONAS.filter(
@@ -349,10 +362,10 @@ export default function LiveDebateProgressPage() {
                   View Report
                 </Link>
                 <Link
-                  href={`/bounties?fromEval=${encodeURIComponent(evaluationId)}&bountyId=${encodeURIComponent(bountyContext.bountyId)}`}
-                  className="inline-flex items-center justify-center px-4 py-2 bg-zinc-950 text-white dark:bg-white dark:text-zinc-950 text-xs font-semibold rounded-lg transition-colors"
+                  href={`/bounties/${encodeURIComponent(bountyContext.bountyId)}/result?evalId=${encodeURIComponent(evaluationId)}`}
+                  className="inline-flex items-center justify-center px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg transition-colors"
                 >
-                  Go to Bounty →
+                  View Bounty Result →
                 </Link>
               </div>
             ) : (
@@ -364,6 +377,24 @@ export default function LiveDebateProgressPage() {
               </Link>
             )
           )}
+        </div>
+      </div>
+
+      {/* Minimal Step-Filling Progress Bar */}
+      <div className="space-y-1.5">
+        <div className="w-full h-1.5 rounded-full bg-surface-elevated border border-border overflow-hidden">
+          <div
+            className="h-full bg-purple-500 transition-all duration-500 ease-out"
+            style={{ width: `${responseProgressPct}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-[11px] font-mono text-text-muted">
+          <span>
+            {status === "completed"
+              ? "All 6 agents finished"
+              : `${completedAgents.length}/6 agents responded`}
+          </span>
+          <span className="text-purple-400 font-semibold">{responseProgressPct}%</span>
         </div>
       </div>
 
