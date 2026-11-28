@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/ui/progress-bar";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { executeBountyClaimFlow } from "@/lib/solana/client-claim";
@@ -281,11 +281,19 @@ export default function BountiesPage() {
   };
 
   const handleOpenNewBounty = () => {
+    if (!data?.currentUserId) {
+      router.push("/auth?callbackUrl=/bounties/new");
+      return;
+    }
     setNavigatingToNew(true);
     router.push("/bounties/new");
   };
 
   const handleCopyScoutLink = async (bounty: BountyItem) => {
+    if (!data?.currentUserId) {
+      router.push(`/auth?callbackUrl=${encodeURIComponent(`/bounties/${bounty.id}`)}`);
+      return;
+    }
     if (!publicKey) {
       openConnectModal();
       return;
@@ -704,6 +712,11 @@ export default function BountiesPage() {
         message={error}
         onDismiss={() => setError(null)}
       />
+      <SuccessPopup
+        title="Confirmed"
+        message={notice}
+        onDismiss={() => setNotice(null)}
+      />
       {capturedScoutRef && !notice && (
         <div className="rounded-xl border border-border bg-surface p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div className="space-y-0.5">
@@ -715,18 +728,6 @@ export default function BountiesPage() {
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => setCapturedScoutRef(null)}>
-            Dismiss
-          </Button>
-        </div>
-      )}
-
-      {notice && (
-        <div className="rounded-xl border border-border bg-surface p-5 flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-bold text-purple-400">Confirmed</h3>
-            <p className="text-xs sm:text-sm text-text leading-relaxed">{notice}</p>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => setNotice(null)}>
             Dismiss
           </Button>
         </div>
@@ -1166,39 +1167,47 @@ export default function BountiesPage() {
                       <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-text-muted">
                         Slots Filled
                       </span>
-                    ) : bounty.status === "active" && !isExpired ? (
-                      <Link
-                        href={
-                          meetsMinStreak
-                            ? `/evaluations/new?bountyId=${bounty.id}${
-                                activeReferrer
-                                  ? `&ref=${encodeURIComponent(activeReferrer)}`
-                                  : ""
-                              }`
-                            : "#"
-                        }
-                        aria-disabled={!meetsMinStreak}
-                        onClick={(e) => {
-                          if (!meetsMinStreak) {
-                            e.preventDefault();
-                            showError(
-                              new Error(
-                                `This bounty requires a ${requiredStreak}+ active verified streak (within 30 days, 0 fraud flags). Your current active streak is ${activeStreak}.`
-                              ),
-                              "Minimum Streak Not Met"
-                            );
-                          }
-                        }}
-                      >
-                        <Button variant="primary" size="sm" disabled={!meetsMinStreak}>
-                          {isZeroStakeVip
-                            ? "Apply (VIP 0 USDC) →"
-                            : !meetsMinStreak
-                            ? `Requires ${requiredStreak}+ Streak`
-                            : `Apply · ${standardStakeUsdc.toFixed(2)} USDC Stake →`}
-                        </Button>
-                      </Link>
-                    ) : null}
+                    ) : bounty.status === "active" && !isExpired ? (() => {
+                      const applyTarget = `/evaluations/new?bountyId=${bounty.id}${
+                        activeReferrer
+                          ? `&ref=${encodeURIComponent(activeReferrer)}`
+                          : ""
+                      }`;
+                      const applyHref = !data?.currentUserId
+                        ? `/auth?callbackUrl=${encodeURIComponent(applyTarget)}`
+                        : meetsMinStreak
+                        ? applyTarget
+                        : "#";
+                      return (
+                        <Link
+                          href={applyHref}
+                          aria-disabled={Boolean(data?.currentUserId && !meetsMinStreak)}
+                          onClick={(e) => {
+                            if (data?.currentUserId && !meetsMinStreak) {
+                              e.preventDefault();
+                              showError(
+                                new Error(
+                                  `This bounty requires a ${requiredStreak}+ active verified streak (within 30 days, 0 fraud flags). Your current active streak is ${activeStreak}.`
+                                ),
+                                "Minimum Streak Not Met"
+                              );
+                            }
+                          }}
+                        >
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            disabled={Boolean(data?.currentUserId && !meetsMinStreak)}
+                          >
+                            {isZeroStakeVip
+                              ? "Apply (VIP 0 USDC) →"
+                              : data?.currentUserId && !meetsMinStreak
+                              ? `Requires ${requiredStreak}+ Streak`
+                              : `Apply · ${standardStakeUsdc.toFixed(2)} USDC Stake →`}
+                          </Button>
+                        </Link>
+                      );
+                    })() : null}
                   </div>
 
                   <div className="flex items-center gap-3 text-[11px] font-mono shrink-0">

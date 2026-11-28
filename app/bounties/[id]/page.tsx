@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/ui/progress-bar";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -321,6 +321,11 @@ export default function BountyDetailPage() {
         message={error}
         onDismiss={() => setError(null)}
       />
+      <SuccessPopup
+        title="Confirmed"
+        message={disputeNotice}
+        onDismiss={() => setDisputeNotice(null)}
+      />
 
       <div className="flex items-center justify-between">
         <Link
@@ -485,10 +490,6 @@ export default function BountyDetailPage() {
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-border">
           <div className="flex flex-wrap items-center gap-2.5">
-            {disputeNotice && (
-              <p className="text-xs font-mono text-purple-400">{disputeNotice}</p>
-            )}
-
             {isCreator ? (
               <Link href={`/bounties/${bounty.id}/review`}>
                 <Button variant="primary" size="md">
@@ -512,19 +513,23 @@ export default function BountyDetailPage() {
               >
                 Open On-Chain Jury Dispute ({disputeEval.overallScore}/100) →
               </Button>
-            ) : bounty.status === "active" && !bounty.isExpired && bounty.availableSlots > 0 ? (
-              <Link
-                href={`/evaluations/new?bountyId=${bounty.id}${
-                  scoutRef ? `&ref=${encodeURIComponent(scoutRef)}` : ""
-                }`}
-              >
-                <Button variant="primary" size="md">
-                  {isZeroStakeVip
-                    ? "Apply with 0 USDC Stake (Verified Streak Perk) →"
-                    : `Apply & Stake ${standardStakeUsdc.toFixed(2)} USDC →`}
-                </Button>
-              </Link>
-            ) : (
+            ) : bounty.status === "active" && !bounty.isExpired && bounty.availableSlots > 0 ? (() => {
+              const applyTarget = `/evaluations/new?bountyId=${bounty.id}${
+                scoutRef ? `&ref=${encodeURIComponent(scoutRef)}` : ""
+              }`;
+              const applyHref = !currentUserId
+                ? `/auth?callbackUrl=${encodeURIComponent(applyTarget)}`
+                : applyTarget;
+              return (
+                <Link href={applyHref}>
+                  <Button variant="primary" size="md">
+                    {isZeroStakeVip
+                      ? "Apply with 0 USDC Stake (Verified Streak Perk) →"
+                      : `Apply & Stake ${standardStakeUsdc.toFixed(2)} USDC →`}
+                  </Button>
+                </Link>
+              );
+            })() : (
               <span className="px-3 py-1.5 text-xs font-mono rounded-md bg-surface-elevated border border-border text-text-muted">
                 {bounty.isExpired ? "Bounty Expired" : "All Slots Filled / Closed"}
               </span>
