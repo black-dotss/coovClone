@@ -12,6 +12,10 @@ import {
   bountySubmissions,
 } from "@/lib/db/schema";
 import {
+  notifyBountyRejected,
+  notifyBountyWinnerSettled,
+} from "@/lib/notifications/service";
+import {
   BadRequestError,
   createApiHandler,
   ForbiddenError,
@@ -253,6 +257,19 @@ export const PATCH = createApiHandler(
           updatedAt: now,
         })
         .where(eq(bounties.id, bounty.id));
+
+      await notifyBountyWinnerSettled({
+        bountyId: bounty.id,
+        bountyTitle: bounty.title,
+        company: bounty.company,
+        rewardPerWinnerMicros: bounty.rewardPerWinnerMicros,
+        candidateUserId: dispute.candidateUserId,
+        referrerWallet,
+        candidatePaidMicros: paidMicros.toString(),
+        scoutPaidMicros: scoutCutMicros.toString(),
+        evaluationId: dispute.evaluationId,
+        isSettledOnChain: true,
+      });
     } else if (onChainTicket.status === "resolved_recruiter") {
       slashedAmountUsdc = stakeRes.stake
         ? Number(stakeRes.stake.amountStakedMicros) / 1_000_000
@@ -281,6 +298,15 @@ export const PATCH = createApiHandler(
           updatedAt: now,
         })
         .where(eq(bounties.id, bounty.id));
+
+      await notifyBountyRejected({
+        bountyId: bounty.id,
+        bountyTitle: bounty.title,
+        company: bounty.company,
+        candidateUserId: dispute.candidateUserId,
+        evaluationId: dispute.evaluationId,
+        reason: "Peer Dispute Jury upheld publisher decision.",
+      });
     }
 
     try {

@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { bounties, bountyClaims, bountySubmissions, evaluations } from "@/lib/db/schema";
 import { requireAuth } from "@/lib/auth";
 import { assertCandidateEligibleToClaimOnChain } from "@/lib/bounties/service";
+import { notifyBountyWinnerSettled } from "@/lib/notifications/service";
 import {
   BadRequestError,
   ConflictError,
@@ -266,6 +267,19 @@ export const PATCH = createApiHandler(
           eq(bountySubmissions.evaluationId, evalRow.id)
         )
       );
+
+    await notifyBountyWinnerSettled({
+      bountyId: bounty.id,
+      bountyTitle: bounty.title,
+      company: bounty.company,
+      rewardPerWinnerMicros: bounty.rewardPerWinnerMicros,
+      candidateUserId: session.user.id,
+      referrerWallet,
+      candidatePaidMicros: claimRes.claim.amountPaidMicros,
+      scoutPaidMicros: scoutCutMicros.toString(),
+      evaluationId: evalRow.id,
+      isSettledOnChain: true,
+    });
 
     return successResponse({
       confirmed: true,

@@ -43,6 +43,12 @@ import {
   fetchOnChainConvictionStake,
   fetchOnChainReputation,
 } from "@/lib/solana/oracle";
+import {
+  notifyBountyQualifiedAndPending,
+  notifyBountyRejected,
+  notifyBountyWinnerSettled,
+  notifyScoutReferralEntered,
+} from "@/lib/notifications/service";
 
 export const BOUNTY_REVIEW_WINDOW_HOURS = 24;
 export const BOUNTY_REVIEW_WINDOW_MS = BOUNTY_REVIEW_WINDOW_HOURS * 60 * 60 * 1000;
@@ -383,6 +389,7 @@ export async function validatePreBountySubmission(params: {
   resumeHash: string;
   fingerprint: number[];
   detectorReport: FakeResumeDetectorReport;
+  deepAuditPending: boolean;
   candidateWallet: string | null;
   stakePdaAddress: string | null;
   stakeTxSignature: string | null;
@@ -422,13 +429,29 @@ export async function validatePreBountySubmission(params: {
       ? params.referrerWallet
       : null;
 
-  if ((bounty.minStreak ?? 0) > 0) {
-    if (!candidateWallet) {
-      throw new BadRequestError(
-        `This bounty requires a verified Solana streak of at least ${bounty.minStreak}. Connect your Solana wallet to verify.`
-      );
-    }
-    const repRes = await fetchOnChainReputation(candidateWallet);
+  if ((bounty.minStreak ?? 0) > 0 && !candidateWallet) {
+    throw new BadRequestError(
+      `This bounty requires a verified Solana streak of at least ${bounty.minStreak}. Connect your Solana wallet to verify.`
+    );
+  }
+  if ((params.requireOnChainStake || params.stakeTxSignature) && !candidateWallet) {
+    throw new BadRequestError(
+      `Connect your Solana wallet and lock the ${stakeMetrics.stakePerCandidateUsdc} USDC (${stakeMetrics.stakePercent}%) Conviction Stake before entering this bounty.`
+    );
+  }
+
+  // Run signature confirmation + streak check + normalized resume hashing in parallel
+  const [repRes, , hashInfo] = await Promise.all([
+    (bounty.minStreak ?? 0) > 0 && candidateWallet
+      ? fetchOnChainReputation(candidateWallet)
+      : Promise.resolve(null),
+    params.stakeTxSignature
+      ? confirmSubmittedSignature(params.stakeTxSignature)
+      : Promise.resolve(null),
+    computeNormalizedResumeHash(params.cvText),
+  ]);
+
+  if (repRes) {
     const rep = repRes.reputation;
     const activeStreak = rep && rep.fraudFlags === 0 && rep.isFresh ? rep.verifiedStreak : 0;
     if (activeStreak < bounty.minStreak) {
@@ -439,19 +462,9 @@ export async function validatePreBountySubmission(params: {
   }
 
   if (params.requireOnChainStake || params.stakeTxSignature) {
-    if (!candidateWallet) {
-      throw new BadRequestError(
-        `Connect your Solana wallet and lock the ${stakeMetrics.stakePerCandidateUsdc} USDC (${stakeMetrics.stakePercent}%) Conviction Stake before entering this bounty.`
-      );
-    }
-
-    if (params.stakeTxSignature) {
-      await confirmSubmittedSignature(params.stakeTxSignature);
-    }
-
     const stakeRes = await fetchOnChainConvictionStake(
       bounty.jobDescriptionId,
-      candidateWallet
+      candidateWallet!
     );
     if (!stakeRes.stake) {
       throw new BadRequestError(
@@ -477,7 +490,7 @@ export async function validatePreBountySubmission(params: {
     }
   }
 
-  const { resumeHash, fingerprint } = await computeNormalizedResumeHash(params.cvText);
+  const { resumeHash, fingerprint } = hashInfo;
 
   const restriction = await getActiveRestriction({
     bountyId: bounty.id,
@@ -553,18 +566,26 @@ export async function validatePreBountySubmission(params: {
     );
   }
 
-  const [jd] = await db
-    .select({ rawText: jobDescriptions.rawText })
-    .from(jobDescriptions)
-    .where(eq(jobDescriptions.id, bounty.jobDescriptionId))
-    .limit(1);
+  const runDeepSync = Boolean(params.provider || params.forceLlm);
+  let jdRawText = "";
+  if (runDeepSync) {
+    const [jd] = await db
+      .select({ rawText: jobDescriptions.rawText })
+      .from(jobDescriptions)
+      .where(eq(jobDescriptions.id, bounty.jobDescriptionId))
+      .limit(1);
+    jdRawText = jd?.rawText ?? "";
+  }
 
+  // Run instant (<5ms) heuristic forensics synchronously so HTTP submit never stalls on LLM;
+  // full LLM Fake Resume Detector executes concurrently in background evaluation worker.
   const detectorReport = await runFakeResumeDetectorAgent({
     cvText: params.cvText,
-    jdText: jd?.rawText ?? "",
+    jdText: jdRawText,
     bountyTitle: bounty.title,
     provider: params.provider,
     forceLlm: params.forceLlm,
+    heuristicsOnly: !runDeepSync,
   });
 
   if (detectorReport.isFlagged) {
@@ -601,6 +622,7 @@ export async function validatePreBountySubmission(params: {
     resumeHash,
     fingerprint,
     detectorReport,
+    deepAuditPending: !runDeepSync,
     candidateWallet,
     stakePdaAddress,
     stakeTxSignature: params.stakeTxSignature ?? null,
@@ -720,6 +742,7 @@ export async function syncEvaluationToBountySubmission(params: {
   requireOnChainStake?: boolean;
   provider?: LLMProvider;
   forceLlm?: boolean;
+  detectorReport?: FakeResumeDetectorReport | null;
 }) {
   try {
     const [evalRow] = await db
@@ -888,78 +911,83 @@ export async function syncEvaluationToBountySubmission(params: {
     let detectorReport =
       (existing?.fakeDetectorReport as Record<string, unknown> | null) ?? null;
 
-    if (!existing) {
-      // Legacy or pre-existing evaluation entering bounty: enforce duplicate + Fake Detector now!
-      const dup = await detectDuplicateResumeOnBounty({
-        bountyId: bounty.id,
-        candidateUserId: evalRow.ownerUserId,
-        walletAddress: candidateWallet,
-        resumeHash,
-        fingerprint,
-        cvText,
-        excludeEvaluationId: evalRow.id,
-      });
-
-      if (dup.isDuplicate) {
-        const details = `Duplicate or near-identical resume (${Math.round(dup.similarity * 100)}% similarity) detected before bounty entry.`;
-        if (stakeStatus === "pending" && candidateWallet) {
-          const slashRes = await trySlashPendingStakeOnFraud({
-            bounty,
-            candidateWallet,
-            reasonCode: 1,
-          });
-          if (slashRes?.slashed) {
-            stakeStatus = "slashed";
-            slashTxSignature = slashRes.txSignature ?? slashTxSignature;
-          }
-        }
-        const createdRestriction = await recordBountyRestriction({
+    if (!existing || existing.fakeDetectorStatus === "pending") {
+      if (!existing) {
+        // Legacy or pre-existing evaluation entering bounty: enforce duplicate gate now!
+        const dup = await detectDuplicateResumeOnBounty({
           bountyId: bounty.id,
-          jobDescriptionId: bounty.jobDescriptionId,
-          userId: evalRow.ownerUserId,
+          candidateUserId: evalRow.ownerUserId,
           walletAddress: candidateWallet,
           resumeHash,
-          reason: "duplicate_resume",
-          details,
-          createdByUserId: "system",
+          fingerprint,
+          cvText,
+          excludeEvaluationId: evalRow.id,
         });
-        const [blocked] = await db
-          .insert(bountySubmissions)
-          .values({
+
+        if (dup.isDuplicate) {
+          const details = `Duplicate or near-identical resume (${Math.round(dup.similarity * 100)}% similarity) detected before bounty entry.`;
+          if (stakeStatus === "pending" && candidateWallet) {
+            const slashRes = await trySlashPendingStakeOnFraud({
+              bounty,
+              candidateWallet,
+              reasonCode: 1,
+            });
+            if (slashRes?.slashed) {
+              stakeStatus = "slashed";
+              slashTxSignature = slashRes.txSignature ?? slashTxSignature;
+            }
+          }
+          const createdRestriction = await recordBountyRestriction({
             bountyId: bounty.id,
             jobDescriptionId: bounty.jobDescriptionId,
-            candidateUserId: evalRow.ownerUserId,
-            candidateWallet,
-            evaluationId: evalRow.id,
-            cvVersionId: evalRow.cvVersionId,
+            userId: evalRow.ownerUserId,
+            walletAddress: candidateWallet,
             resumeHash,
-            resumeFingerprint: fingerprint,
-            fakeDetectorStatus: "passed",
-            reviewStatus: "blocked_duplicate",
-            recruiterNotes: details,
-            stakePdaAddress,
-            stakeTxSignature,
-            stakeAmountMicros,
-            stakeStatus,
-            slashTxSignature,
-          })
-          .returning();
-        return { submission: blocked, restriction: createdRestriction, bounty };
+            reason: "duplicate_resume",
+            details,
+            createdByUserId: "system",
+          });
+          const [blocked] = await db
+            .insert(bountySubmissions)
+            .values({
+              bountyId: bounty.id,
+              jobDescriptionId: bounty.jobDescriptionId,
+              candidateUserId: evalRow.ownerUserId,
+              candidateWallet,
+              evaluationId: evalRow.id,
+              cvVersionId: evalRow.cvVersionId,
+              resumeHash,
+              resumeFingerprint: fingerprint,
+              fakeDetectorStatus: "passed",
+              reviewStatus: "blocked_duplicate",
+              recruiterNotes: details,
+              stakePdaAddress,
+              stakeTxSignature,
+              stakeAmountMicros,
+              stakeStatus,
+              slashTxSignature,
+            })
+            .returning();
+          return { submission: blocked, restriction: createdRestriction, bounty };
+        }
       }
 
-      const [jd] = await db
-        .select({ rawText: jobDescriptions.rawText })
-        .from(jobDescriptions)
-        .where(eq(jobDescriptions.id, bounty.jobDescriptionId))
-        .limit(1);
+      let report = params.detectorReport ?? null;
+      if (!report) {
+        const [jd] = await db
+          .select({ rawText: jobDescriptions.rawText })
+          .from(jobDescriptions)
+          .where(eq(jobDescriptions.id, bounty.jobDescriptionId))
+          .limit(1);
 
-      const report = await runFakeResumeDetectorAgent({
-        cvText,
-        jdText: jd?.rawText ?? "",
-        bountyTitle: bounty.title,
-        provider: params.provider,
-        forceLlm: params.forceLlm,
-      });
+        report = await runFakeResumeDetectorAgent({
+          cvText,
+          jdText: jd?.rawText ?? "",
+          bountyTitle: bounty.title,
+          provider: params.provider,
+          forceLlm: params.forceLlm,
+        });
+      }
 
       detectorStatus = report.isFlagged ? "flagged" : "passed";
       detectorScore = report.riskScore;
@@ -988,6 +1016,29 @@ export async function syncEvaluationToBountySubmission(params: {
           details,
           createdByUserId: "system",
         });
+
+        if (existing) {
+          const [blocked] = await db
+            .update(bountySubmissions)
+            .set({
+              candidateWallet: candidateWallet ?? existing.candidateWallet,
+              fakeDetectorStatus: "flagged",
+              fakeDetectorScore: report.riskScore,
+              fakeDetectorReport: detectorReport,
+              reviewStatus: "blocked_fake",
+              recruiterNotes: details,
+              stakePdaAddress,
+              stakeTxSignature,
+              stakeAmountMicros,
+              stakeStatus,
+              slashTxSignature,
+              updatedAt: new Date(),
+            })
+            .where(eq(bountySubmissions.id, existing.id))
+            .returning();
+          return { submission: blocked, restriction: createdRestriction, bounty };
+        }
+
         const [blocked] = await db
           .insert(bountySubmissions)
           .values({
@@ -1067,6 +1118,21 @@ export async function syncEvaluationToBountySubmission(params: {
         })
         .where(eq(bountySubmissions.id, existing.id))
         .returning();
+
+      if (nextStatus === "pending_review" && existing.reviewStatus !== "pending_review") {
+        await notifyBountyQualifiedAndPending({
+          bountyId: bounty.id,
+          bountyTitle: bounty.title,
+          company: bounty.company,
+          rewardPerWinnerMicros: bounty.rewardPerWinnerMicros,
+          recruiterUserId: bounty.recruiterUserId,
+          candidateUserId: evalRow.ownerUserId,
+          score: evalRow.overallScore ?? 0,
+          referrerWallet,
+          evaluationId: evalRow.id,
+        });
+      }
+
       return { submission: updated, restriction: null, bounty };
     }
 
@@ -1097,6 +1163,20 @@ export async function syncEvaluationToBountySubmission(params: {
       })
       .returning();
 
+    if (nextStatus === "pending_review") {
+      await notifyBountyQualifiedAndPending({
+        bountyId: bounty.id,
+        bountyTitle: bounty.title,
+        company: bounty.company,
+        rewardPerWinnerMicros: bounty.rewardPerWinnerMicros,
+        recruiterUserId: bounty.recruiterUserId,
+        candidateUserId: evalRow.ownerUserId,
+        score: evalRow.overallScore ?? 0,
+        referrerWallet,
+        evaluationId: evalRow.id,
+      });
+    }
+
     return { submission: created, restriction: null, bounty };
   } catch (err) {
     if (params.requireOnChainStake && (err instanceof BadRequestError || err instanceof ForbiddenError)) {
@@ -1119,6 +1199,7 @@ export async function persistInitialBountySubmission(params: {
   resumeHash: string;
   fingerprint: number[];
   detectorReport: FakeResumeDetectorReport;
+  deepAuditPending?: boolean;
   stakePdaAddress?: string | null;
   stakeTxSignature?: string | null;
   stakeAmountMicros?: string | null;
@@ -1138,7 +1219,7 @@ export async function persistInitialBountySubmission(params: {
         cvVersionId: params.cvVersionId,
         resumeHash: params.resumeHash,
         resumeFingerprint: params.fingerprint,
-        fakeDetectorStatus: "passed",
+        fakeDetectorStatus: params.deepAuditPending ? "pending" : "passed",
         fakeDetectorScore: params.detectorReport.riskScore,
         fakeDetectorReport: params.detectorReport as unknown as Record<string, unknown>,
         reviewStatus: "evaluating",
@@ -1150,6 +1231,18 @@ export async function persistInitialBountySubmission(params: {
         referrerWallet: params.referrerWallet ?? null,
       })
       .onConflictDoNothing();
+
+    if (params.referrerWallet) {
+      await notifyScoutReferralEntered({
+        bountyId: params.bounty.id,
+        bountyTitle: params.bounty.title,
+        company: params.bounty.company,
+        rewardPerWinnerMicros: params.bounty.rewardPerWinnerMicros,
+        candidateUserId: params.candidateUserId,
+        referrerWallet: params.referrerWallet,
+        evaluationId: params.evaluationId,
+      });
+    }
   } catch (err) {
     logger.warn("Could not persist initial bounty submission record", {
       evaluationId: params.evaluationId,
@@ -1490,6 +1583,19 @@ export async function reviewBountySubmissionDecision(params: {
         .onConflictDoNothing();
     }
 
+    await notifyBountyWinnerSettled({
+      bountyId: bounty.id,
+      bountyTitle: bounty.title,
+      company: bounty.company,
+      rewardPerWinnerMicros: bounty.rewardPerWinnerMicros,
+      candidateUserId: sub.candidateUserId,
+      referrerWallet: resolvedReferrer ?? null,
+      candidatePaidMicros: params.amountPaidMicros ?? bounty.rewardPerWinnerMicros,
+      scoutPaidMicros: resolvedScoutCutMicros ?? null,
+      evaluationId: sub.evaluationId,
+      isSettledOnChain,
+    });
+
     await recordBountyAudit({
       userId: params.recruiterUserId,
       action: isSettledOnChain
@@ -1544,6 +1650,15 @@ export async function reviewBountySubmissionDecision(params: {
     reason: "recruiter_rejected",
     details: rejectDetails,
     createdByUserId: params.recruiterUserId,
+  });
+
+  await notifyBountyRejected({
+    bountyId: bounty.id,
+    bountyTitle: bounty.title,
+    company: bounty.company,
+    candidateUserId: sub.candidateUserId,
+    evaluationId: sub.evaluationId,
+    reason: rejectDetails,
   });
 
   await recordBountyAudit({

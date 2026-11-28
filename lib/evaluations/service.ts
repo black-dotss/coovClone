@@ -186,6 +186,7 @@ export async function createEvaluation(input: CreateEvaluationInput) {
         resumeHash: preBountyGate.resumeHash,
         fingerprint: preBountyGate.fingerprint,
         detectorReport: preBountyGate.detectorReport,
+        deepAuditPending: preBountyGate.deepAuditPending,
         stakePdaAddress: preBountyGate.stakePdaAddress,
         stakeTxSignature: preBountyGate.stakeTxSignature,
         stakeAmountMicros: preBountyGate.stakeAmountMicros,

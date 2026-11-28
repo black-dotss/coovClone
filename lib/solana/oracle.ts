@@ -13,6 +13,7 @@ import {
   createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
   getTokenMetadata,
+  unpackAccount,
 } from "@solana/spl-token";
 import {
   confirmSignatureViaPolling,
@@ -579,19 +580,28 @@ export async function prepareMintCredentialTx(params: {
   }
 }
 
+const usdcTokenProgramCache = new Map<string, PublicKey>();
+
 async function resolveUsdcTokenProgram(
   connection: Connection,
   usdcMint: PublicKey
 ): Promise<PublicKey> {
+  const cacheKey = `${connection.rpcEndpoint}:${usdcMint.toBase58()}`;
+  const cached = usdcTokenProgramCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
   const mintInfo = await connection.getAccountInfo(usdcMint, "confirmed");
   if (!mintInfo) {
     throw new BadRequestError(
       `USDC mint account (${usdcMint.toBase58()}) was not found on Solana Devnet.`
     );
   }
-  return mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
+  const resolved = mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
     ? TOKEN_2022_PROGRAM_ID
     : TOKEN_PROGRAM_ID;
+  usdcTokenProgramCache.set(cacheKey, resolved);
+  return resolved;
 }
 
 function wrapSolanaRpcError(err: unknown, contextLabel: string): BadRequestError {
@@ -780,12 +790,25 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
       const [escrowPda] = deriveEscrowPda(params.jobId, programId);
       const [stakePda] = deriveConvictionStakePda(escrowPda, candidatePubkey, programId);
       const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
+      const candidateAta = getAssociatedTokenAddressSync(
+        usdcMint,
+        candidatePubkey,
+        false,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
 
-      const [escrowInfo, existingStake, reputationInfo] = await Promise.all([
-        connection.getAccountInfo(escrowPda, "confirmed"),
-        connection.getAccountInfo(stakePda, "confirmed"),
-        connection.getAccountInfo(reputationPda, "confirmed"),
+      // Batch all required PDA accounts, SOL balance, ATA balance, and blockhash into one RPC wave
+      const [accountInfos, solBalance, latestBlockhash] = await Promise.all([
+        connection.getMultipleAccountsInfo(
+          [escrowPda, stakePda, reputationPda, candidateAta],
+          "confirmed"
+        ),
+        connection.getBalance(candidatePubkey, "confirmed"),
+        connection.getLatestBlockhash("confirmed"),
       ]);
+
+      const [escrowInfo, existingStake, reputationInfo, ataInfo] = accountInfos;
 
       if (!escrowInfo) {
         throw new BadRequestError("On-chain bounty escrow account was not found.");
@@ -823,22 +846,13 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
         ? BigInt(0)
         : computeConvictionStakeMicros(escrow.rewardPerWinnerMicros, escrow.stakeBps);
 
-      const solBalance = await connection.getBalance(candidatePubkey, "confirmed");
       if (solBalance < 2_500_000) {
         throw new BadRequestError(
           `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for stake PDA rent and fees. Need at least 0.003 SOL.`
         );
       }
 
-      const candidateAta = getAssociatedTokenAddressSync(
-        usdcMint,
-        candidatePubkey,
-        false,
-        tokenProgramId,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
       if (!isZeroStakeVip) {
-        const ataInfo = await connection.getAccountInfo(candidateAta, "confirmed");
         const stakeUsdcLabel = (Number(stakeMicros) / 1_000_000).toFixed(2);
         if (!ataInfo) {
           throw new BadRequestError(
@@ -846,8 +860,8 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
           );
         }
 
-        const balance = await connection.getTokenAccountBalance(candidateAta, "confirmed");
-        const availableMicros = BigInt(balance.value.amount || "0");
+        const decodedAta = unpackAccount(candidateAta, ataInfo, tokenProgramId);
+        const availableMicros = decodedAta.amount;
         if (availableMicros < stakeMicros) {
           const haveUsdc = (Number(availableMicros) / 1_000_000).toFixed(2);
           throw new BadRequestError(
@@ -856,7 +870,7 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
         }
       }
 
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+      const { blockhash, lastValidBlockHeight } = latestBlockhash;
       const tx = new Transaction({
         feePayer: candidatePubkey,
         blockhash,

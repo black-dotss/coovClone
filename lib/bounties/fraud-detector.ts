@@ -299,9 +299,26 @@ export async function runFakeResumeDetectorAgent(params: {
   bountyTitle?: string;
   provider?: LLMProvider;
   forceLlm?: boolean;
+  heuristicsOnly?: boolean;
 }): Promise<FakeResumeDetectorReport> {
   const checkedAt = new Date().toISOString();
   const heuristics = runHeuristicFraudChecks(params.cvText);
+
+  if (params.heuristicsOnly && !params.forceLlm) {
+    const flagged = heuristics.riskScore >= FAKE_RESUME_RISK_THRESHOLD;
+    return {
+      isFlagged: flagged,
+      riskScore: heuristics.riskScore,
+      verdict: heuristics.riskScore >= 75 ? "fabricated" : flagged ? "suspicious" : "authentic",
+      summary:
+        heuristics.signals.length > 0
+          ? heuristics.signals.map((s) => s.finding).join("; ")
+          : "Passed fast forensic pre-screen; deep semantic audit queued with committee.",
+      signals: heuristics.signals,
+      modelVersion: "forensic-heuristic-v1",
+      checkedAt,
+    };
+  }
 
   const provider = params.provider ?? getAIProvider();
   const isMock = provider instanceof MockLLMProvider;

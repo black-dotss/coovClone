@@ -13,7 +13,6 @@ import { ProgressBar } from "@/components/ui/progress-bar";
 import { LoadingSpinner, FullPageLoading } from "@/components/ui/loading-spinner";
 import { authClient, useSession, signOut } from "@/lib/auth/auth-client";
 import { apiFetch } from "@/lib/client/api";
-import { ProfileOnChainPanel } from "@/components/solana/profile-onchain-panel";
 import type { UsageSummary } from "@/lib/billing/types";
 
 export type ProfileTab =
@@ -22,7 +21,6 @@ export type ProfileTab =
   | "devices"
   | "subscription"
   | "referrals"
-  | "solana"
   | "theme";
 
 interface UserDevice {
@@ -69,12 +67,19 @@ function ProfilePageContent() {
   const isValidTab = (v: string | null): v is ProfileTab =>
     Boolean(
       v &&
-        ["general", "password", "devices", "subscription", "referrals", "solana", "theme"].includes(
+        ["general", "password", "devices", "subscription", "referrals", "theme"].includes(
           v
         )
     );
 
-  // Active section tab: general | solana | password | devices | subscription | referrals | theme
+  // Redirect legacy /profile?tab=solana links to standalone /on-chain page
+  useEffect(() => {
+    if (tabFromUrl === "solana") {
+      router.replace("/on-chain");
+    }
+  }, [router, tabFromUrl]);
+
+  // Active section tab: general | password | devices | subscription | referrals | theme
   const [activeTab, setActiveTab] = useState<ProfileTab>(() =>
     isValidTab(tabFromUrl) ? tabFromUrl : "general"
   );
@@ -380,26 +385,6 @@ function ProfilePageContent() {
             strokeLinecap="round"
             strokeLinejoin="round"
             d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-          />
-        </svg>
-      ),
-    },
-    {
-      id: "solana",
-      label: "On-Chain & SBT",
-      badge: "Solana",
-      icon: (
-        <svg
-          className="w-4 h-4 shrink-0"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
           />
         </svg>
       ),
@@ -762,12 +747,9 @@ function ProfilePageContent() {
                   variant="outline"
                   size="sm"
                   className="shrink-0"
-                  onClick={() => {
-                    setActiveTab("solana");
-                    router.replace("/profile?tab=solana", { scroll: false });
-                  }}
+                  onClick={() => router.push("/on-chain")}
                 >
-                  Open On-Chain & SBT →
+                  Open On-Chain &amp; SBT →
                 </Button>
               </div>
 
@@ -1419,9 +1401,6 @@ function ProfilePageContent() {
               </div>
             </div>
           )}
-
-          {/* TAB 6: SOLANA ON-CHAIN & SBT */}
-          {activeTab === "solana" && <ProfileOnChainPanel />}
         </main>
       </div>
 

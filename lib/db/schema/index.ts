@@ -862,3 +862,29 @@ export const bountyDisputes = pgTable(
     index("bounty_disputes_bounty_idx").on(table.bountyId),
   ]
 );
+
+// ==============================================================================
+// 15. User Notifications (Scout Referrals & Bounty Lifecycle Events)
+// ==============================================================================
+
+export const userNotifications = pgTable(
+  "user_notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    message: text("message").notNull(),
+    href: text("href"),
+    dedupeKey: text("dedupe_key"),
+    isRead: boolean("is_read").notNull().default(false),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("user_notifications_user_created_idx").on(table.userId, table.createdAt),
+    uniqueIndex("user_notifications_user_dedupe_idx").on(table.userId, table.dedupeKey),
+  ]
+);
