@@ -837,7 +837,7 @@ export default function BountiesPage() {
             return (
               <div
                 key={bounty.id}
-                className="rounded-xl border border-border hover:border-purple-500/40 transition-colors bg-surface p-5 sm:p-6 space-y-4 flex flex-col justify-between"
+                className="rounded-xl border border-purple-300/60 dark:border-purple-500/20 hover:border-purple-500/45 transition-colors bg-purple-50/45 dark:bg-purple-500/[0.045] p-5 sm:p-6 space-y-4 flex flex-col justify-between"
               >
                 <div className="space-y-4">
                   {/* Header */}
@@ -862,13 +862,13 @@ export default function BountiesPage() {
                         </h3>
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-text-secondary shrink-0">
+                    <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-purple-100/60 dark:bg-purple-500/[0.08] border border-purple-200/70 dark:border-purple-500/20 text-text-secondary shrink-0">
                       {bounty.status.toUpperCase()}
                     </span>
                   </div>
 
                   {/* Single Clean 3-Stat Bar */}
-                  <div className="grid grid-cols-3 divide-x divide-border rounded-lg bg-surface-elevated border border-border">
+                  <div className="grid grid-cols-3 divide-x divide-purple-200/70 dark:divide-purple-500/15 rounded-lg bg-purple-100/45 dark:bg-purple-500/[0.06] border border-purple-200/70 dark:border-purple-500/20">
                     <div className="px-3 py-2.5">
                       <span className="text-[10px] font-mono text-text-muted uppercase block">
                         Reward
