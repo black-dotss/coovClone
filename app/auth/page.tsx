@@ -228,7 +228,10 @@ function AuthForm() {
       });
 
       if (res?.error) {
-        throw new Error(res.error.message || "Failed to start Google sign-in");
+        const errObj = res.error as { message?: string; error?: string; statusText?: string };
+        throw new Error(
+          errObj.message || errObj.error || errObj.statusText || "Failed to start Google sign-in"
+        );
       }
       if (res?.data?.url) {
         window.location.href = res.data.url;
@@ -257,7 +260,10 @@ function AuthForm() {
       });
 
       if (res?.error) {
-        throw new Error(res.error.message || "Failed to start GitHub sign-in");
+        const errObj = res.error as { message?: string; error?: string; statusText?: string };
+        throw new Error(
+          errObj.message || errObj.error || errObj.statusText || "Failed to start GitHub sign-in"
+        );
       }
       if (res?.data?.url) {
         window.location.href = res.data.url;

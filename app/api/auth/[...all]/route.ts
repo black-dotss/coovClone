@@ -26,13 +26,14 @@ async function proxyAuth(req: Request): Promise<Response> {
   // 1. Prepare request for Neon Auth proxy
   let requestToForward = req;
 
-  // For social sign in, ensure callbackURL is an absolute URL
+  // For social sign in, ensure callbackURL is an absolute URL matching the active request origin
   if (subpath.includes("sign-in/social") && req.method === "POST") {
     try {
       const cloned = req.clone();
       const body = await cloned.json();
       if (body && typeof body === "object") {
-        const appUrl = getEnv().NEXT_PUBLIC_APP_URL || url.origin;
+        const requestOrigin = req.headers.get("origin") || url.origin;
+        const appUrl = requestOrigin || getEnv().NEXT_PUBLIC_APP_URL || url.origin;
         let modified = false;
 
         if (
@@ -62,10 +63,10 @@ async function proxyAuth(req: Request): Promise<Response> {
     }
   }
 
-  // Ensure origin header is set
+  // Ensure origin header is set using actual request origin before NEXT_PUBLIC_APP_URL fallback
   if (!requestToForward.headers.get("origin")) {
     const newHeaders = new Headers(requestToForward.headers);
-    newHeaders.set("origin", getEnv().NEXT_PUBLIC_APP_URL || url.origin);
+    newHeaders.set("origin", url.origin || getEnv().NEXT_PUBLIC_APP_URL);
     requestToForward = new Request(requestToForward.url, {
       method: requestToForward.method,
       headers: newHeaders,
