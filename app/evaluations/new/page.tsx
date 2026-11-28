@@ -22,6 +22,10 @@ import { preloadAgentAvatars } from "@/components/ui/avatar";
 import { useSession } from "@/lib/auth/auth-client";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
+import {
+  captureScoutReferralFromSearch,
+  getStoredScoutReferral,
+} from "@/lib/solana/scout-referral";
 
 type BenchmarkPreset = FamousRolePreset;
 
@@ -65,13 +69,25 @@ interface ActiveBountyTarget {
   company: string;
   companyLogoUrl?: string | null;
   minScore: number;
+  minStreak?: number;
   rewardPerWinnerUsdc: number;
+  candidate90Usdc?: number;
+  scout10Usdc?: number;
   stakePercent?: number;
   stakePerCandidateUsdc?: number;
   slashedPoolUsdc?: number;
   proRataBonusUsdc?: number;
   rawText: string;
   availableSlots?: number;
+}
+
+interface CandidateReputationInfo {
+  effectiveStreak: number;
+  fraudFlags: number;
+  totalEarnedUsdc: number;
+  isFresh: boolean;
+  isZeroStakeVip: boolean;
+  daysUntilDecay: number | null;
 }
 
 export default function NewEvaluationPage() {
@@ -95,6 +111,8 @@ export default function NewEvaluationPage() {
   const [showAllBenchmarks, setShowAllBenchmarks] = useState(false);
   const [recentJobs, setRecentJobs] = useState<RecentJobPreset[]>([]);
   const [activeBounty, setActiveBounty] = useState<ActiveBountyTarget | null>(null);
+  const [candidateReputation, setCandidateReputation] = useState<CandidateReputationInfo | null>(null);
+  const [scoutReferrer, setScoutReferrer] = useState<string | null>(null);
   const [bountyRestriction, setBountyRestriction] = useState<{
     reason: string;
     details: string;
@@ -103,23 +121,35 @@ export default function NewEvaluationPage() {
   useEffect(() => {
     async function loadBountyTarget() {
       if (typeof window === "undefined") return;
-      const bountyId = new URLSearchParams(window.location.search).get("bountyId");
+      const params = new URLSearchParams(window.location.search);
+      const bountyId = params.get("bountyId");
+      captureScoutReferralFromSearch(
+        params,
+        bountyId ? [bountyId] : []
+      );
       if (!bountyId) return;
       try {
         const query = publicKey ? `?wallet=${encodeURIComponent(publicKey)}` : "";
         const res = await apiFetch<{
           bounties?: ActiveBountyTarget[];
           myRestrictions?: Array<{ bountyId: string; reason: string; details: string }>;
+          candidateReputation?: CandidateReputationInfo | null;
         }>(`/api/solana/bounties${query}`);
-        const match = res?.bounties?.find((b) => b.id === bountyId);
+        setCandidateReputation(res?.candidateReputation ?? null);
+        const match = res?.bounties?.find(
+          (b) => b.id === bountyId || b.jobDescriptionId === bountyId
+        );
         if (match) {
           setActiveBounty(match);
           setCompany(match.company);
           setJobTitle(match.title);
           setJobDescriptionText(match.rawText);
           setTone("brutal_roast");
-          const rest = res?.myRestrictions?.find((r) => r.bountyId === bountyId);
+          const rest = res?.myRestrictions?.find((r) => r.bountyId === match.id);
           setBountyRestriction(rest ? { reason: rest.reason, details: rest.details } : null);
+          const ids = [match.id, match.jobDescriptionId, bountyId];
+          captureScoutReferralFromSearch(window.location.search, ids);
+          setScoutReferrer(getStoredScoutReferral(ids, publicKey));
         }
       } catch {
         // Ignore if unreachable
@@ -279,16 +309,22 @@ export default function NewEvaluationPage() {
         throw new Error("Could not process CV version. Please try uploading again.");
       }
 
-      // Lock mandatory Conviction Stake in Devnet USDC before entering bounty evaluation/review
+      // Lock Conviction Stake (or record 0 USDC Zero-Stake VIP PDA + Scout Referrer) before entering bounty
       let stakeTxSignature: string | undefined;
+      const effectiveReferrer = activeBounty
+        ? scoutReferrer ??
+          getStoredScoutReferral([activeBounty.id, activeBounty.jobDescriptionId], publicKey)
+        : null;
       if (activeBounty && publicKey) {
         const preparedStake = await apiFetch<{
           serializedTxBase64: string;
           stakeUsdc: number;
+          isZeroStakeVip?: boolean;
         }>(`/api/solana/bounties/${activeBounty.id}/stake`, {
           method: "POST",
           body: JSON.stringify({
             walletAddress: publicKey,
+            referrerWallet: effectiveReferrer,
           }),
         });
         stakeTxSignature = await signAndSubmitTx(preparedStake.serializedTxBase64);
@@ -328,6 +364,7 @@ export default function NewEvaluationPage() {
             ? {
                 walletAddress: publicKey,
                 stakeTxSignature,
+                ...(effectiveReferrer ? { referrerWallet: effectiveReferrer } : {}),
               }
             : {}),
         }),
@@ -397,10 +434,22 @@ export default function NewEvaluationPage() {
 
       {activeBounty && !bountyRestriction && (() => {
         const stakePct = activeBounty.stakePercent ?? 10;
-        const stakeUsdc =
+        const standardStakeUsdc =
           activeBounty.stakePerCandidateUsdc ??
           (activeBounty.rewardPerWinnerUsdc * stakePct) / 100;
+        const isZeroStakeVip = Boolean(candidateReputation?.isZeroStakeVip);
+        const requiredStreak = activeBounty.minStreak ?? 0;
+        const activeStreak = candidateReputation?.effectiveStreak ?? 0;
+        const missingMinStreak =
+          requiredStreak > 0 &&
+          (!candidateReputation ||
+            candidateReputation.fraudFlags > 0 ||
+            !candidateReputation.isFresh ||
+            activeStreak < requiredStreak);
         const slashedBonus = activeBounty.proRataBonusUsdc ?? 0;
+        const activeReferrer =
+          scoutReferrer ??
+          getStoredScoutReferral([activeBounty.id, activeBounty.jobDescriptionId], publicKey);
 
         return (
           <div className="rounded-xl border border-border bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -413,18 +462,33 @@ export default function NewEvaluationPage() {
               <div className="space-y-1.5 min-w-0">
                 <div className="text-sm font-bold text-purple-400">
                   Solana USDC Bounty Mode · {activeBounty.rewardPerWinnerUsdc} USDC Reward ·{" "}
-                  {stakeUsdc} USDC Stake ({stakePct}%)
+                  {isZeroStakeVip
+                    ? "0 USDC Stake (Verified Streak Perk)"
+                    : `${standardStakeUsdc} USDC Stake (${stakePct}%)`}
                 </div>
                 <p className="text-xs sm:text-sm text-text-secondary leading-relaxed">
                   Targeting <strong className="text-text">{activeBounty.title}</strong> at{" "}
-                  <strong className="text-text">{activeBounty.company}</strong>. Locking{" "}
-                  <strong className="text-text">{stakeUsdc} USDC</strong> gets refunded 100% +{" "}
+                  <strong className="text-text">{activeBounty.company}</strong>.{" "}
+                  {isZeroStakeVip
+                    ? "Your 2+ active verified streak waives the Conviction Stake deposit cleanly while still earning "
+                    : `Locking ${standardStakeUsdc} USDC gets refunded 100% + `}
                   {slashedBonus > 0
                     ? `+${slashedBonus.toFixed(2)} USDC slashed spam yield `
                     : "slashed spam yield "}
                   upon approval ({activeBounty.minScore}/100+ bar). Duplicate or fake resumes
-                  automatically slash stake into the spam yield pool.
+                  permanently reset verified streak &amp; slash stake.
                 </p>
+                {activeReferrer && (
+                  <p className="text-xs font-mono text-purple-400">
+                    Scout Split Active: Referred by {activeReferrer.slice(0, 6)}...
+                    {activeReferrer.slice(-4)} (90% Candidate / 10% Scout on reward).
+                  </p>
+                )}
+                {missingMinStreak && (
+                  <p className="text-xs font-mono text-red-400">
+                    Minimum Streak Gate: This bounty requires {requiredStreak}+ active streak (30d fresh, 0 fraud flags). Your active streak is {activeStreak}.
+                  </p>
+                )}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -600,11 +664,12 @@ export default function NewEvaluationPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-end gap-3 pt-2">
           {activeBounty && (
             <span className="text-xs font-mono text-text-muted">
-              {(
-                activeBounty.stakePerCandidateUsdc ??
-                (activeBounty.rewardPerWinnerUsdc * (activeBounty.stakePercent ?? 10)) / 100
-              ).toFixed(2)}{" "}
-              USDC stake → get stake back + slashed spam yield on approval
+              {candidateReputation?.isZeroStakeVip
+                ? "0 USDC Stake (Verified Streak Perk) · streak waives USDC lock"
+                : `${(
+                    activeBounty.stakePerCandidateUsdc ??
+                    (activeBounty.rewardPerWinnerUsdc * (activeBounty.stakePercent ?? 10)) / 100
+                  ).toFixed(2)} USDC stake → get stake back + slashed spam yield on approval`}
             </span>
           )}
           <Button
@@ -616,12 +681,14 @@ export default function NewEvaluationPage() {
             className="w-full sm:w-auto min-w-[220px] h-11 text-sm font-bold"
           >
             {activeBounty
-              ? publicKey
-                ? `Lock ${(
+              ? !publicKey
+                ? "Connect Wallet & Start Review →"
+                : candidateReputation?.isZeroStakeVip
+                ? "Start Review (0 USDC Streak Perk) →"
+                : `Lock ${(
                     activeBounty.stakePerCandidateUsdc ??
                     (activeBounty.rewardPerWinnerUsdc * (activeBounty.stakePercent ?? 10)) / 100
                   ).toFixed(2)} USDC Stake & Start Review →`
-                : "Connect Wallet & Lock Stake →"
               : "Start Review →"}
           </Button>
         </div>

@@ -76,6 +76,9 @@ interface SubmissionItem {
   stakePdaAddress?: string | null;
   stakeAmountUsdc?: number;
   stakeStatus?: string;
+  isZeroStakeVip?: boolean;
+  referrerWallet?: string | null;
+  scoutCutUsdc?: number;
   bonusPaidUsdc?: number;
   payoutTxSignature?: string | null;
   slashTxSignature?: string | null;
@@ -276,6 +279,8 @@ export default function BountyPublisherReviewPage() {
         const confirmed = await apiFetch<{
           totalPaidUsdc?: number;
           bonusPaidUsdc?: number;
+          scoutPaidUsdc?: number;
+          referrerWallet?: string | null;
           slashedAmountUsdc?: number;
           newSlashedPoolUsdc?: number;
         }>(`/api/solana/bounties/${bountyId}/review`, {
@@ -291,7 +296,7 @@ export default function BountyPublisherReviewPage() {
 
         setNotice(
           action === "approve"
-            ? `Approved & paid ${(confirmed.totalPaidUsdc ?? data?.bounty.rewardPerWinnerUsdc ?? 0).toFixed(2)} USDC on Solana ${clusterLabel}${(confirmed.bonusPaidUsdc ?? 0) > 0 ? ` (includes +${confirmed.bonusPaidUsdc?.toFixed(2)} USDC slashed spam bonus)` : ""}! Tx: ${txSignature}`
+            ? `Approved & paid ${(confirmed.totalPaidUsdc ?? data?.bounty.rewardPerWinnerUsdc ?? 0).toFixed(2)} USDC on Solana ${clusterLabel}${(confirmed.bonusPaidUsdc ?? 0) > 0 ? ` (+${confirmed.bonusPaidUsdc?.toFixed(2)} USDC spam bonus)` : ""}${(confirmed.scoutPaidUsdc ?? 0) > 0 ? ` + ${confirmed.scoutPaidUsdc?.toFixed(2)} USDC (10% Scout cut) to ${confirmed.referrerWallet?.slice(0, 6)}...` : ""}! Tx: ${txSignature}`
             : `Flagged fraud & slashed ${confirmed.slashedAmountUsdc?.toFixed(2) ?? ""} USDC stake into Slashed Spam Yield pool (now ${confirmed.newSlashedPoolUsdc?.toFixed(2) ?? ""} USDC). Winner slot freed!`
         );
       } else {
@@ -637,16 +642,29 @@ export default function BountyPublisherReviewPage() {
                     </div>
                     <div className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1">
                       <span className="text-[10px] text-text-muted uppercase">
-                        Conviction Stake
+                        Conviction Stake &amp; Scout Split
                       </span>
                       <p className="text-purple-400 font-bold uppercase">
-                        {selected.stakeStatus && selected.stakeStatus !== "none"
+                        {selected.isZeroStakeVip
+                          ? `Zero-Stake VIP (${selected.stakeStatus ?? "pending"})`
+                          : selected.stakeStatus && selected.stakeStatus !== "none"
                           ? `${selected.stakeStatus} (${selected.stakeAmountUsdc ?? 0} USDC)`
                           : "Unstaked (Legacy)"}
                       </p>
                       {(selected.bonusPaidUsdc ?? 0) > 0 && (
                         <p className="text-[11px] text-text-secondary">
                           +{selected.bonusPaidUsdc} USDC spam yield paid
+                        </p>
+                      )}
+                      {selected.referrerWallet ? (
+                        <p className="text-[11px] text-purple-400">
+                          90/10 Scout Cut: {(data.bounty.rewardPerWinnerUsdc * 0.9).toFixed(2)} USDC candidate ·{" "}
+                          {(data.bounty.rewardPerWinnerUsdc * 0.1).toFixed(2)} USDC to{" "}
+                          {selected.referrerWallet.slice(0, 6)}...{selected.referrerWallet.slice(-4)}
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-text-muted">
+                          Direct (100% Candidate Reward)
                         </p>
                       )}
                     </div>

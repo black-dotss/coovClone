@@ -3,7 +3,9 @@ import { z } from "zod";
 import { BadRequestError, createApiHandler, successResponse } from "@/lib/shared";
 import {
   decodeEvaluationRecord,
+  decodeReputationState,
   deriveEvaluationPda,
+  deriveReputationPda,
   getExplorerAddressUrl,
   getSolanaCluster,
   getSolanaConnection,
@@ -15,8 +17,8 @@ const QuerySchema = z.object({
 });
 
 /**
- * Public read-only endpoint returning live on-chain EvaluationRecord PDA bytes and
- * decoded proof fields via server RPC so public /share/[token] pages never hit 429 limits.
+ * Public read-only endpoint returning live on-chain EvaluationRecord and ReputationState
+ * PDA bytes and decoded proof fields via server RPC so public /share/[token] pages never hit 429 limits.
  */
 export const GET = createApiHandler(async (req: Request) => {
   const url = new URL(req.url);
@@ -34,24 +36,34 @@ export const GET = createApiHandler(async (req: Request) => {
 
   const connection = getSolanaConnection();
   const [evalPda] = deriveEvaluationPda(walletPubkey, parsed.evalId);
-  const info = await connection.getAccountInfo(evalPda, "confirmed");
+  const [reputationPda] = deriveReputationPda(walletPubkey);
+  const [evalInfo, repInfo] = await connection.getMultipleAccountsInfo(
+    [evalPda, reputationPda],
+    "confirmed"
+  );
 
-  if (!info) {
+  const reputation = repInfo ? decodeReputationState(repInfo.data) : null;
+
+  if (!evalInfo) {
     return successResponse({
       exists: false,
       cluster: getSolanaCluster(),
       evalPda: evalPda.toBase58(),
       evalPdaUrl: getExplorerAddressUrl(evalPda.toBase58()),
+      reputationPda: reputationPda.toBase58(),
+      reputation,
       record: null,
     });
   }
 
-  const record = decodeEvaluationRecord(info.data);
+  const record = decodeEvaluationRecord(evalInfo.data);
   return successResponse({
     exists: true,
     cluster: getSolanaCluster(),
     evalPda: evalPda.toBase58(),
     evalPdaUrl: getExplorerAddressUrl(evalPda.toBase58()),
+    reputationPda: reputationPda.toBase58(),
+    reputation,
     record,
   });
 });

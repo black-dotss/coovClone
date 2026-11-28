@@ -13,7 +13,9 @@ import {
 import {
   buildWalletLinkMessage,
   deriveProfilePda,
+  deriveReputationPda,
   fetchOnChainProfile,
+  fetchOnChainReputation,
   fetchWalletCredentials,
   getExplorerAddressUrl,
   getSolanaCluster,
@@ -60,20 +62,26 @@ export const GET = createApiHandler(async (req: Request) => {
 
   const targetWallet = previewWallet || profile?.walletAddress || null;
   let onChainProfile = null;
+  let onChainReputation = null;
   let credentials: Awaited<ReturnType<typeof fetchWalletCredentials>> = [];
   let onChainError: string | null = null;
   let derivedProfilePda: string | null = null;
+  let derivedReputationPda: string | null = null;
 
   if (targetWallet) {
     try {
       const pubkey = assertValidPubkey(targetWallet);
       derivedProfilePda = deriveProfilePda(pubkey)[0].toBase58();
-      const [profileRes, sbtRes] = await Promise.all([
+      derivedReputationPda = deriveReputationPda(pubkey)[0].toBase58();
+      const [profileRes, repRes, sbtRes] = await Promise.all([
         fetchOnChainProfile(targetWallet),
+        fetchOnChainReputation(targetWallet),
         fetchWalletCredentials(targetWallet),
       ]);
       onChainProfile = profileRes.profile;
       derivedProfilePda = profileRes.profilePda;
+      onChainReputation = repRes.reputation;
+      derivedReputationPda = repRes.reputationPda;
       credentials = sbtRes;
     } catch (err) {
       onChainError =
@@ -86,11 +94,13 @@ export const GET = createApiHandler(async (req: Request) => {
     linkedWallet: profile?.walletAddress ?? null,
     walletVerifiedAt: profile?.walletVerifiedAt ?? null,
     profilePdaAddress: profile?.profilePdaAddress ?? derivedProfilePda,
+    reputationPdaAddress: derivedReputationPda,
     profileTxSignature: profile?.profileTxSignature ?? null,
     explorerProfileUrl: (profile?.profilePdaAddress ?? derivedProfilePda)
       ? getExplorerAddressUrl((profile?.profilePdaAddress ?? derivedProfilePda)!)
       : null,
     onChainProfile,
+    onChainReputation,
     credentials,
     onChainError,
   });
@@ -158,7 +168,9 @@ export const POST = createApiHandler(async (req: Request) => {
   }
 
   const [derivedProfilePda] = deriveProfilePda(pubkey);
+  const [derivedReputationPda] = deriveReputationPda(pubkey);
   const profilePdaAddress = derivedProfilePda.toBase58();
+  const reputationPdaAddress = derivedReputationPda.toBase58();
   const now = new Date();
 
   const [existingProfile] = await db
@@ -188,13 +200,16 @@ export const POST = createApiHandler(async (req: Request) => {
   }
 
   let onChainProfile = null;
+  let onChainReputation = null;
   let credentials: Awaited<ReturnType<typeof fetchWalletCredentials>> = [];
   try {
-    const [profileRes, sbtRes] = await Promise.all([
+    const [profileRes, repRes, sbtRes] = await Promise.all([
       fetchOnChainProfile(canonicalWallet),
+      fetchOnChainReputation(canonicalWallet),
       fetchWalletCredentials(canonicalWallet),
     ]);
     onChainProfile = profileRes.profile;
+    onChainReputation = repRes.reputation;
     credentials = sbtRes;
   } catch {
     // Non-fatal on link
@@ -204,8 +219,10 @@ export const POST = createApiHandler(async (req: Request) => {
     linkedWallet: canonicalWallet,
     walletVerifiedAt: now,
     profilePdaAddress,
+    reputationPdaAddress,
     explorerProfileUrl: getExplorerAddressUrl(profilePdaAddress),
     onChainProfile,
+    onChainReputation,
     credentials,
   });
 });

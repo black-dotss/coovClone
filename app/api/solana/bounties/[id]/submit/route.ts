@@ -17,6 +17,7 @@ const SubmitToBountySchema = z.object({
   evaluationId: z.string().uuid(),
   walletAddress: z.string().min(32).max(64).optional(),
   stakeTxSignature: z.string().min(32).max(128).optional(),
+  referrerWallet: z.string().min(32).max(64).optional().nullable(),
 });
 
 export const POST = createApiHandler(
@@ -68,6 +69,7 @@ export const POST = createApiHandler(
       evaluationId: evalRow.id,
       walletAddress: walletAddress ?? evalRow.candidateWallet,
       stakeTxSignature: parsed.stakeTxSignature,
+      referrerWallet: parsed.referrerWallet ?? null,
       requireOnChainStake: true,
     });
 

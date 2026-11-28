@@ -30,6 +30,7 @@ export const POST = createApiHandler(async (req: Request) => {
     tone: validated.tone,
     walletAddress: validated.walletAddress,
     stakeTxSignature: validated.stakeTxSignature,
+    referrerWallet: validated.referrerWallet,
     rawToken: rawCookieToken,
     rawHardwareToken,
     ipAddress,

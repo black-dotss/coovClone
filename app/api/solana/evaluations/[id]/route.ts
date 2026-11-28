@@ -24,10 +24,12 @@ import {
   confirmSubmittedSignature,
   deriveEvaluationPda,
   deriveProfilePda,
+  deriveReputationPda,
   extractVerifiedSkills,
   fetchOnChainConfig,
   fetchOnChainEvaluation,
   fetchOnChainProfile,
+  fetchOnChainReputation,
   getExplorerAddressUrl,
   getExplorerTxUrl,
   getScoreTierLabel,
@@ -168,18 +170,23 @@ export const GET = createApiHandler(
     let onChainConfig = null;
     let onChainEval = null;
     let onChainProfile = null;
+    let onChainReputation = null;
     let evalPdaAddress = ctx.evalRow.evalPdaAddress ?? null;
     let profilePdaAddress = ctx.profileRow?.profilePdaAddress ?? null;
+    let reputationPdaAddress: string | null = null;
     let rpcError: string | null = null;
 
     try {
-      const [cfgRes, evalRes, profRes] = await Promise.all([
+      const [cfgRes, evalRes, profRes, repRes] = await Promise.all([
         fetchOnChainConfig(),
         targetWallet
           ? fetchOnChainEvaluation(targetWallet, ctx.evalRow.id)
           : Promise.resolve(null),
         targetWallet
           ? fetchOnChainProfile(targetWallet)
+          : Promise.resolve(null),
+        targetWallet
+          ? fetchOnChainReputation(targetWallet)
           : Promise.resolve(null),
       ]);
 
@@ -191,6 +198,10 @@ export const GET = createApiHandler(
       if (profRes) {
         profilePdaAddress = profRes.profilePda;
         onChainProfile = profRes.profile;
+      }
+      if (repRes) {
+        reputationPdaAddress = repRes.reputationPda;
+        onChainReputation = repRes.reputation;
       }
     } catch (err) {
       rpcError = err instanceof Error ? err.message : "Failed to reach Solana Devnet RPC";
@@ -232,6 +243,7 @@ export const GET = createApiHandler(
       linkedWallet: ctx.profileRow?.walletAddress ?? null,
       candidateWallet: targetWallet,
       profilePdaAddress,
+      reputationPdaAddress,
       evalPdaAddress,
       evalTxSignature: ctx.evalRow.evalTxSignature ?? null,
       evalTxUrl: ctx.evalRow.evalTxSignature
@@ -253,6 +265,7 @@ export const GET = createApiHandler(
       needsDefenseSync,
       onChainEval,
       onChainProfile,
+      onChainReputation,
       rpcError,
     });
   }
@@ -341,9 +354,10 @@ export const PATCH = createApiHandler(
     const ctx = await loadEvaluationSolanaContext(id, session.user.id);
     await confirmSubmittedSignature(parsed.txSignature);
 
-    const [evalRes, profRes] = await Promise.all([
+    const [evalRes, profRes, repRes] = await Promise.all([
       fetchOnChainEvaluation(candidateWallet, ctx.evalRow.id),
       fetchOnChainProfile(candidateWallet),
+      fetchOnChainReputation(candidateWallet),
     ]);
 
     if (!evalRes.record) {
@@ -354,6 +368,7 @@ export const PATCH = createApiHandler(
 
     const [, ] = deriveEvaluationPda(candidatePubkey, ctx.evalRow.id);
     const [profilePda] = deriveProfilePda(candidatePubkey);
+    const [reputationPda] = deriveReputationPda(candidatePubkey);
 
     await db
       .update(evaluations)
@@ -396,8 +411,10 @@ export const PATCH = createApiHandler(
       explorerTxUrl: getExplorerTxUrl(parsed.txSignature),
       evalPdaAddress: evalRes.evalPda,
       profilePdaAddress: profilePda.toBase58(),
+      reputationPdaAddress: reputationPda.toBase58(),
       onChainEval: evalRes.record,
       onChainProfile: profRes.profile,
+      onChainReputation: repRes.reputation,
     });
   }
 );

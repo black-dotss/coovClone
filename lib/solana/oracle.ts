@@ -29,6 +29,7 @@ import {
   buildClaimBountyIx,
   buildCreateBountyEscrowIx,
   buildInitProfileIx,
+  buildInitReputationIx,
   buildInitializeConfigIx,
   buildMigrateEscrowIx,
   buildMintCredentialIx,
@@ -39,12 +40,14 @@ import {
   buildUpdateEvaluationAfterDefenseIx,
   buildWithdrawExpiredEscrowIx,
   computeConvictionStakeMicros,
+  computeScoutSplitMicros,
   decodeBountyClaim,
   decodeBountyEscrow,
   decodeCandidateProfile,
   decodeConvictionStake,
   decodeEvaluationRecord,
   decodeProgramConfig,
+  decodeReputationState,
   DEFAULT_STAKE_BPS,
   deriveClaimReceiptPda,
   deriveConfigPda,
@@ -53,13 +56,16 @@ import {
   deriveEscrowVaultPda,
   deriveEvaluationPda,
   deriveProfilePda,
+  deriveReputationPda,
   LEGACY_ESCROW_SPACE,
+  V3_ESCROW_SPACE,
   type DecodedBountyClaim,
   type DecodedBountyEscrow,
   type DecodedCandidateProfile,
   type DecodedConvictionStake,
   type DecodedEvaluationRecord,
   type DecodedProgramConfig,
+  type DecodedReputationState,
 } from "./codec";
 import { bytesToBase64 } from "./signature";
 
@@ -289,8 +295,10 @@ export async function prepareAnchorEvaluationTx(params: {
 }): Promise<{
   serializedTxBase64: string;
   profilePda: string;
+  reputationPda: string;
   evalPda: string;
   includesInitProfile: boolean;
+  includesInitReputation: boolean;
   oraclePublicKey: string;
   recentBlockhash: string;
   lastValidBlockHeight: number;
@@ -301,10 +309,12 @@ export async function prepareAnchorEvaluationTx(params: {
       const candidatePubkey = new PublicKey(params.candidateWallet);
 
       const [profilePda] = deriveProfilePda(candidatePubkey, programId);
+      const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
       const [evalPda] = deriveEvaluationPda(candidatePubkey, params.evalId, programId);
 
-      const [profileInfo, evalInfo] = await Promise.all([
+      const [profileInfo, reputationInfo, evalInfo] = await Promise.all([
         connection.getAccountInfo(profilePda, "confirmed"),
+        connection.getAccountInfo(reputationPda, "confirmed"),
         connection.getAccountInfo(evalPda, "confirmed"),
       ]);
 
@@ -330,6 +340,16 @@ export async function prepareAnchorEvaluationTx(params: {
         );
       }
 
+      if (!reputationInfo) {
+        tx.add(
+          buildInitReputationIx({
+            payer: candidatePubkey,
+            candidate: candidatePubkey,
+            programId,
+          })
+        );
+      }
+
       tx.add(
         buildRecordEvaluationIx({
           oracleAuthority: oracleKeypair.publicKey,
@@ -345,6 +365,7 @@ export async function prepareAnchorEvaluationTx(params: {
             .map((s) => clampUtf8(s, 24))
             .filter(Boolean)
             .slice(0, 8),
+          includeReputation: true,
           programId,
         })
       );
@@ -358,8 +379,10 @@ export async function prepareAnchorEvaluationTx(params: {
       return {
         serializedTxBase64: bytesToBase64(serialized),
         profilePda: profilePda.toBase58(),
+        reputationPda: reputationPda.toBase58(),
         evalPda: evalPda.toBase58(),
         includesInitProfile: !profileInfo,
+        includesInitReputation: !reputationInfo,
         oraclePublicKey: oracleKeypair.publicKey.toBase58(),
         recentBlockhash: blockhash,
         lastValidBlockHeight,
@@ -382,6 +405,7 @@ export async function prepareDefenseUpdateTx(params: {
 }): Promise<{
   serializedTxBase64: string;
   profilePda: string;
+  reputationPda: string;
   evalPda: string;
   oraclePublicKey: string;
   recentBlockhash: string;
@@ -393,9 +417,13 @@ export async function prepareDefenseUpdateTx(params: {
       const candidatePubkey = new PublicKey(params.candidateWallet);
 
       const [profilePda] = deriveProfilePda(candidatePubkey, programId);
+      const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
       const [evalPda] = deriveEvaluationPda(candidatePubkey, params.evalId, programId);
 
-      const evalInfo = await connection.getAccountInfo(evalPda, "confirmed");
+      const [evalInfo, reputationInfo] = await Promise.all([
+        connection.getAccountInfo(evalPda, "confirmed"),
+        connection.getAccountInfo(reputationPda, "confirmed"),
+      ]);
       if (!evalInfo) {
         throw new BadRequestError(
           `Evaluation proof PDA (${evalPda.toBase58()}) has not been anchored on-chain yet.`
@@ -414,13 +442,26 @@ export async function prepareDefenseUpdateTx(params: {
         feePayer: candidatePubkey,
         blockhash,
         lastValidBlockHeight,
-      }).add(
+      });
+
+      if (!reputationInfo) {
+        tx.add(
+          buildInitReputationIx({
+            payer: candidatePubkey,
+            candidate: candidatePubkey,
+            programId,
+          })
+        );
+      }
+
+      tx.add(
         buildUpdateEvaluationAfterDefenseIx({
           oracleAuthority: oracleKeypair.publicKey,
           candidate: candidatePubkey,
           evalId: params.evalId,
           newReportHashHex: params.newReportHashHex,
           newCompositeScore: params.newCompositeScore,
+          includeReputation: true,
           programId,
         })
       );
@@ -434,6 +475,7 @@ export async function prepareDefenseUpdateTx(params: {
       return {
         serializedTxBase64: bytesToBase64(serialized),
         profilePda: profilePda.toBase58(),
+        reputationPda: reputationPda.toBase58(),
         evalPda: evalPda.toBase58(),
         oraclePublicKey: oracleKeypair.publicKey.toBase58(),
         recentBlockhash: blockhash,
@@ -575,12 +617,14 @@ export async function prepareCreateBountyEscrowTx(params: {
   maxWinners: number;
   expiresAtUnix: number;
   stakeBps?: number;
+  minStreak?: number;
 }): Promise<{
   serializedTxBase64: string;
   escrowPda: string;
   vaultPda: string;
   usdcMint: string;
   stakeBps: number;
+  minStreak: number;
   stakePerWinnerMicros: string;
   recentBlockhash: string;
   lastValidBlockHeight: number;
@@ -595,6 +639,7 @@ export async function prepareCreateBountyEscrowTx(params: {
         params.stakeBps && params.stakeBps > 0
           ? Math.min(10_000, Math.round(params.stakeBps))
           : DEFAULT_STAKE_BPS;
+      const minStreak = Math.max(0, Math.min(255, Math.round(params.minStreak ?? 0)));
       const stakePerWinnerMicros = computeConvictionStakeMicros(
         params.rewardPerWinnerMicros,
         stakeBps
@@ -654,6 +699,7 @@ export async function prepareCreateBountyEscrowTx(params: {
           maxWinners: params.maxWinners,
           expiresAtUnix: params.expiresAtUnix,
           stakeBps,
+          minStreak,
           tokenProgramId,
           programId,
         })
@@ -670,6 +716,7 @@ export async function prepareCreateBountyEscrowTx(params: {
         vaultPda: vaultPda.toBase58(),
         usdcMint: usdcMint.toBase58(),
         stakeBps,
+        minStreak,
         stakePerWinnerMicros: stakePerWinnerMicros.toString(),
         recentBlockhash: blockhash,
         lastValidBlockHeight,
@@ -682,19 +729,26 @@ export async function prepareCreateBountyEscrowTx(params: {
 
 /**
  * Prepares `submit_with_conviction_stake` for a candidate entering a bounty:
- * locks `(reward_per_winner * stake_bps) / 10_000` Devnet USDC in the Escrow Vault PDA
- * before evaluation/review. Automatically prepends `migrate_escrow` for legacy 144B PDAs.
+ * - Enforces `escrow.min_streak` if configured
+ * - Waives USDC transfer when `verified_streak >= 2`, `fraud_flags == 0`, active <= 30d
+ * - Records optional Scout/Referrer wallet (90/10 split) preventing self-referral
  */
 export async function prepareSubmitWithConvictionStakeTx(params: {
   candidateWallet: string;
   jobId: string;
+  referrerWallet?: string | null;
 }): Promise<{
   serializedTxBase64: string;
   escrowPda: string;
   stakePda: string;
+  reputationPda: string;
   usdcMint: string;
   stakeBps: number;
   stakeMicros: string;
+  isZeroStakeVip: boolean;
+  referrerWallet: string | null;
+  verifiedStreak: number;
+  minStreak: number;
   recentBlockhash: string;
   lastValidBlockHeight: number;
 }> {
@@ -705,12 +759,27 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
       const candidatePubkey = new PublicKey(params.candidateWallet);
       const tokenProgramId = await resolveUsdcTokenProgram(connection, usdcMint);
 
+      let referrerPubkey: PublicKey | null = null;
+      if (params.referrerWallet && params.referrerWallet.trim()) {
+        try {
+          referrerPubkey = new PublicKey(params.referrerWallet.trim());
+        } catch {
+          throw new BadRequestError("Invalid Scout referrer Solana wallet address.");
+        }
+        if (referrerPubkey.equals(candidatePubkey)) {
+          // Strip accidental self-referrals cleanly rather than failing
+          referrerPubkey = null;
+        }
+      }
+
       const [escrowPda] = deriveEscrowPda(params.jobId, programId);
       const [stakePda] = deriveConvictionStakePda(escrowPda, candidatePubkey, programId);
+      const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
 
-      const [escrowInfo, existingStake] = await Promise.all([
+      const [escrowInfo, existingStake, reputationInfo] = await Promise.all([
         connection.getAccountInfo(escrowPda, "confirmed"),
         connection.getAccountInfo(stakePda, "confirmed"),
+        connection.getAccountInfo(reputationPda, "confirmed"),
       ]);
 
       if (!escrowInfo) {
@@ -734,10 +803,20 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
         );
       }
 
-      const stakeMicros = computeConvictionStakeMicros(
-        escrow.rewardPerWinnerMicros,
-        escrow.stakeBps
-      );
+      const reputation = reputationInfo ? decodeReputationState(reputationInfo.data) : null;
+      const isCleanFresh = Boolean(reputation && reputation.fraudFlags === 0 && reputation.isFresh);
+      const activeStreak = isCleanFresh && reputation ? reputation.verifiedStreak : 0;
+
+      if ((escrow.minStreak ?? 0) > 0 && (!isCleanFresh || activeStreak < escrow.minStreak)) {
+        throw new BadRequestError(
+          `This bounty requires an active verified streak of at least ${escrow.minStreak} (within 30 days, 0 fraud flags). Your current active streak is ${activeStreak}.`
+        );
+      }
+
+      const isZeroStakeVip = Boolean(reputation && reputation.isZeroStakeVip);
+      const stakeMicros = isZeroStakeVip
+        ? BigInt(0)
+        : computeConvictionStakeMicros(escrow.rewardPerWinnerMicros, escrow.stakeBps);
 
       const solBalance = await connection.getBalance(candidatePubkey, "confirmed");
       if (solBalance < 2_500_000) {
@@ -753,21 +832,23 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
         tokenProgramId,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
-      const ataInfo = await connection.getAccountInfo(candidateAta, "confirmed");
-      const stakeUsdcLabel = (Number(stakeMicros) / 1_000_000).toFixed(2);
-      if (!ataInfo) {
-        throw new BadRequestError(
-          `Your wallet (${params.candidateWallet.slice(0, 6)}...${params.candidateWallet.slice(-4)}) has 0 Devnet USDC. You need ${stakeUsdcLabel} USDC for the refundable Conviction Stake.`
-        );
-      }
+      if (!isZeroStakeVip) {
+        const ataInfo = await connection.getAccountInfo(candidateAta, "confirmed");
+        const stakeUsdcLabel = (Number(stakeMicros) / 1_000_000).toFixed(2);
+        if (!ataInfo) {
+          throw new BadRequestError(
+            `Your wallet (${params.candidateWallet.slice(0, 6)}...${params.candidateWallet.slice(-4)}) has 0 Devnet USDC. You need ${stakeUsdcLabel} USDC for the refundable Conviction Stake.`
+          );
+        }
 
-      const balance = await connection.getTokenAccountBalance(candidateAta, "confirmed");
-      const availableMicros = BigInt(balance.value.amount || "0");
-      if (availableMicros < stakeMicros) {
-        const haveUsdc = (Number(availableMicros) / 1_000_000).toFixed(2);
-        throw new BadRequestError(
-          `Insufficient Devnet USDC: locking the Conviction Stake requires ${stakeUsdcLabel} USDC, but your wallet only holds ${haveUsdc} USDC.`
-        );
+        const balance = await connection.getTokenAccountBalance(candidateAta, "confirmed");
+        const availableMicros = BigInt(balance.value.amount || "0");
+        if (availableMicros < stakeMicros) {
+          const haveUsdc = (Number(availableMicros) / 1_000_000).toFixed(2);
+          throw new BadRequestError(
+            `Insufficient Devnet USDC: locking the Conviction Stake requires ${stakeUsdcLabel} USDC, but your wallet only holds ${haveUsdc} USDC.`
+          );
+        }
       }
 
       const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
@@ -777,11 +858,21 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length === LEGACY_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: candidatePubkey,
             jobId: params.jobId,
+            programId,
+          })
+        );
+      }
+
+      if (!reputationInfo) {
+        tx.add(
+          buildInitReputationIx({
+            payer: candidatePubkey,
+            candidate: candidatePubkey,
             programId,
           })
         );
@@ -792,6 +883,9 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
           candidate: candidatePubkey,
           usdcMint,
           jobId: params.jobId,
+          referrer: referrerPubkey,
+          candidateTokenAccount: isZeroStakeVip ? null : candidateAta,
+          includeReputation: true,
           tokenProgramId,
           programId,
         })
@@ -806,9 +900,14 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
         serializedTxBase64: bytesToBase64(serialized),
         escrowPda: escrowPda.toBase58(),
         stakePda: stakePda.toBase58(),
+        reputationPda: reputationPda.toBase58(),
         usdcMint: usdcMint.toBase58(),
         stakeBps: escrow.stakeBps,
         stakeMicros: stakeMicros.toString(),
+        isZeroStakeVip,
+        referrerWallet: referrerPubkey ? referrerPubkey.toBase58() : null,
+        verifiedStreak: activeStreak,
+        minStreak: escrow.minStreak ?? 0,
         recentBlockhash: blockhash,
         lastValidBlockHeight,
       };
@@ -819,11 +918,9 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
 }
 
 /**
- * Prepares `approve_and_payout` for either:
- *  - Recruiter signing directly in Phantom (`oracleCosign: false`), or
- *  - Oracle co-signing (`oracleCosign: true`, partial-signed `requireAllSignatures: false`)
- *    for Candidate 24h timeout / pre-approved claim.
- * Distributes `reward_per_winner` + 100% `amount_staked` refund + pro-rata `slashed_pool_amount` bonus.
+ * Prepares `approve_and_payout` for either Recruiter or 24h Timeout Oracle Auto-Claim.
+ * Executes atomic 90/10 Scout Split when `conviction_stake.referrer` is set,
+ * auto-creating referrer's USDC ATA idempotently so split payouts never fail.
  */
 export async function prepareApproveAndPayoutTx(params: {
   payerWallet: string;
@@ -836,6 +933,9 @@ export async function prepareApproveAndPayoutTx(params: {
   escrowPda: string;
   stakePda: string;
   claimReceiptPda: string;
+  referrerWallet: string | null;
+  expectedCandidateRewardMicros: string;
+  expectedScoutCutMicros: string;
   expectedTotalPayoutMicros: string;
   expectedBonusShareMicros: string;
   recentBlockhash: string;
@@ -853,11 +953,13 @@ export async function prepareApproveAndPayoutTx(params: {
       const [stakePda] = deriveConvictionStakePda(escrowPda, candidatePubkey, programId);
       const [claimReceiptPda] = deriveClaimReceiptPda(escrowPda, candidatePubkey, programId);
       const [evalPda] = deriveEvaluationPda(candidatePubkey, params.evalId, programId);
+      const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
 
-      const [escrowInfo, stakeInfo, claimInfo] = await Promise.all([
+      const [escrowInfo, stakeInfo, claimInfo, reputationInfo] = await Promise.all([
         connection.getAccountInfo(escrowPda, "confirmed"),
         connection.getAccountInfo(stakePda, "confirmed"),
         connection.getAccountInfo(claimReceiptPda, "confirmed"),
+        connection.getAccountInfo(reputationPda, "confirmed"),
       ]);
 
       if (!escrowInfo) {
@@ -888,10 +990,15 @@ export async function prepareApproveAndPayoutTx(params: {
         throw new BadRequestError("Candidate has already claimed a payout receipt on this bounty.");
       }
 
+      const referrerPubkey = stake.referrer ? new PublicKey(stake.referrer) : null;
+      const { candidateRewardMicros, scoutCutMicros } = computeScoutSplitMicros(
+        escrow.rewardPerWinnerMicros,
+        Boolean(referrerPubkey)
+      );
       const remainingSlots = BigInt(Math.max(1, escrow.maxWinners - escrow.claimsCount));
       const bonusShare = BigInt(escrow.slashedPoolAmountMicros) / remainingSlots;
       const expectedTotal =
-        BigInt(escrow.rewardPerWinnerMicros) + BigInt(stake.amountStakedMicros) + bonusShare;
+        candidateRewardMicros + BigInt(stake.amountStakedMicros) + bonusShare;
 
       let oracleKeypair: Keypair | null = null;
       if (params.oracleCosign) {
@@ -918,11 +1025,21 @@ export async function prepareApproveAndPayoutTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length === LEGACY_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: payerPubkey,
             jobId: params.jobId,
+            programId,
+          })
+        );
+      }
+
+      if (!reputationInfo) {
+        tx.add(
+          buildInitReputationIx({
+            payer: payerPubkey,
+            candidate: candidatePubkey,
             programId,
           })
         );
@@ -937,7 +1054,29 @@ export async function prepareApproveAndPayoutTx(params: {
           tokenProgramId,
           ASSOCIATED_TOKEN_PROGRAM_ID
         )
-      ).add(
+      );
+
+      if (referrerPubkey) {
+        const referrerAta = getAssociatedTokenAddressSync(
+          usdcMint,
+          referrerPubkey,
+          false,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+        tx.add(
+          createAssociatedTokenAccountIdempotentInstruction(
+            payerPubkey,
+            referrerAta,
+            referrerPubkey,
+            usdcMint,
+            tokenProgramId,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+      }
+
+      tx.add(
         buildApproveAndPayoutIx({
           payer: payerPubkey,
           authority: oracleKeypair ? oracleKeypair.publicKey : payerPubkey,
@@ -945,6 +1084,8 @@ export async function prepareApproveAndPayoutTx(params: {
           usdcMint,
           jobId: params.jobId,
           evaluationKey: evalPda,
+          referrer: referrerPubkey,
+          includeReputation: true,
           tokenProgramId,
           programId,
         })
@@ -964,6 +1105,9 @@ export async function prepareApproveAndPayoutTx(params: {
         escrowPda: escrowPda.toBase58(),
         stakePda: stakePda.toBase58(),
         claimReceiptPda: claimReceiptPda.toBase58(),
+        referrerWallet: stake.referrer,
+        expectedCandidateRewardMicros: candidateRewardMicros.toString(),
+        expectedScoutCutMicros: scoutCutMicros.toString(),
         expectedTotalPayoutMicros: expectedTotal.toString(),
         expectedBonusShareMicros: bonusShare.toString(),
         recentBlockhash: blockhash,
@@ -988,6 +1132,7 @@ export async function prepareSlashFraudStakeTx(params: {
   serializedTxBase64: string;
   escrowPda: string;
   stakePda: string;
+  reputationPda: string;
   amountSlashedMicros: string;
   recentBlockhash: string;
   lastValidBlockHeight: number;
@@ -1000,10 +1145,12 @@ export async function prepareSlashFraudStakeTx(params: {
 
       const [escrowPda] = deriveEscrowPda(params.jobId, programId);
       const [stakePda] = deriveConvictionStakePda(escrowPda, candidatePubkey, programId);
+      const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
 
-      const [escrowInfo, stakeInfo] = await Promise.all([
+      const [escrowInfo, stakeInfo, reputationInfo] = await Promise.all([
         connection.getAccountInfo(escrowPda, "confirmed"),
         connection.getAccountInfo(stakePda, "confirmed"),
+        connection.getAccountInfo(reputationPda, "confirmed"),
       ]);
 
       if (!escrowInfo) {
@@ -1035,11 +1182,21 @@ export async function prepareSlashFraudStakeTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length === LEGACY_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: authorityPubkey,
             jobId: params.jobId,
+            programId,
+          })
+        );
+      }
+
+      if (!reputationInfo) {
+        tx.add(
+          buildInitReputationIx({
+            payer: authorityPubkey,
+            candidate: candidatePubkey,
             programId,
           })
         );
@@ -1051,6 +1208,7 @@ export async function prepareSlashFraudStakeTx(params: {
           candidate: candidatePubkey,
           jobId: params.jobId,
           reasonCode: params.reasonCode ?? 3,
+          includeReputation: true,
           programId,
         })
       );
@@ -1064,6 +1222,7 @@ export async function prepareSlashFraudStakeTx(params: {
         serializedTxBase64: bytesToBase64(serialized),
         escrowPda: escrowPda.toBase58(),
         stakePda: stakePda.toBase58(),
+        reputationPda: reputationPda.toBase58(),
         amountSlashedMicros: stake.amountStakedMicros,
         recentBlockhash: blockhash,
         lastValidBlockHeight,
@@ -1096,10 +1255,12 @@ export async function executeOracleSlashFraudStake(params: {
 
       const [escrowPda] = deriveEscrowPda(params.jobId, programId);
       const [stakePda] = deriveConvictionStakePda(escrowPda, candidatePubkey, programId);
+      const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
 
-      const [escrowInfo, stakeInfo] = await Promise.all([
+      const [escrowInfo, stakeInfo, reputationInfo] = await Promise.all([
         connection.getAccountInfo(escrowPda, "confirmed"),
         connection.getAccountInfo(stakePda, "confirmed"),
+        connection.getAccountInfo(reputationPda, "confirmed"),
       ]);
 
       if (!escrowInfo || !stakeInfo) {
@@ -1123,11 +1284,21 @@ export async function executeOracleSlashFraudStake(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length === LEGACY_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: oracleKeypair.publicKey,
             jobId: params.jobId,
+            programId,
+          })
+        );
+      }
+
+      if (!reputationInfo) {
+        tx.add(
+          buildInitReputationIx({
+            payer: oracleKeypair.publicKey,
+            candidate: candidatePubkey,
             programId,
           })
         );
@@ -1139,6 +1310,7 @@ export async function executeOracleSlashFraudStake(params: {
           candidate: candidatePubkey,
           jobId: params.jobId,
           reasonCode: params.reasonCode,
+          includeReputation: true,
           programId,
         })
       );
@@ -1216,6 +1388,7 @@ export async function prepareRefundConvictionStakeTx(params: {
         );
       }
 
+      const isZeroStake = BigInt(stake.amountStakedMicros) === BigInt(0);
       const { oracleKeypair } = await assertInitializedOracle(connection);
       const candidateAta = getAssociatedTokenAddressSync(
         usdcMint,
@@ -1232,7 +1405,7 @@ export async function prepareRefundConvictionStakeTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length === LEGACY_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: candidatePubkey,
@@ -1242,21 +1415,26 @@ export async function prepareRefundConvictionStakeTx(params: {
         );
       }
 
+      if (!isZeroStake) {
+        tx.add(
+          createAssociatedTokenAccountIdempotentInstruction(
+            candidatePubkey,
+            candidateAta,
+            candidatePubkey,
+            usdcMint,
+            tokenProgramId,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+      }
+
       tx.add(
-        createAssociatedTokenAccountIdempotentInstruction(
-          candidatePubkey,
-          candidateAta,
-          candidatePubkey,
-          usdcMint,
-          tokenProgramId,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      ).add(
         buildRefundConvictionStakeIx({
           authority: oracleKeypair.publicKey,
           candidate: candidatePubkey,
           usdcMint,
           jobId: params.jobId,
+          candidateTokenAccount: isZeroStake ? null : candidateAta,
           tokenProgramId,
           programId,
         })
@@ -1308,11 +1486,13 @@ export async function prepareClaimBountyTx(params: {
       const [escrowPda] = deriveEscrowPda(params.jobId, programId);
       const [evalPda] = deriveEvaluationPda(candidatePubkey, params.evalId, programId);
       const [claimReceiptPda] = deriveClaimReceiptPda(escrowPda, candidatePubkey, programId);
+      const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
 
-      const [escrowInfo, evalInfo, existingClaim] = await Promise.all([
+      const [escrowInfo, evalInfo, existingClaim, reputationInfo] = await Promise.all([
         connection.getAccountInfo(escrowPda, "confirmed"),
         connection.getAccountInfo(evalPda, "confirmed"),
         connection.getAccountInfo(claimReceiptPda, "confirmed"),
+        connection.getAccountInfo(reputationPda, "confirmed"),
       ]);
 
       if (!escrowInfo) {
@@ -1360,11 +1540,21 @@ export async function prepareClaimBountyTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length === LEGACY_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: candidatePubkey,
             jobId: params.jobId,
+            programId,
+          })
+        );
+      }
+
+      if (!reputationInfo) {
+        tx.add(
+          buildInitReputationIx({
+            payer: candidatePubkey,
+            candidate: candidatePubkey,
             programId,
           })
         );
@@ -1385,6 +1575,7 @@ export async function prepareClaimBountyTx(params: {
           usdcMint,
           jobId: params.jobId,
           evalId: params.evalId,
+          includeReputation: true,
           tokenProgramId,
           programId,
         })
@@ -1547,6 +1738,21 @@ export async function fetchOnChainProfile(walletAddress: string): Promise<{
   return {
     profilePda: profilePda.toBase58(),
     profile: info ? decodeCandidateProfile(info.data) : null,
+  };
+}
+
+export async function fetchOnChainReputation(walletAddress: string): Promise<{
+  reputationPda: string;
+  reputation: DecodedReputationState | null;
+}> {
+  const programId = getProgramId();
+  const [reputationPda] = deriveReputationPda(new PublicKey(walletAddress), programId);
+  const info = await withSolanaConnection((connection) =>
+    connection.getAccountInfo(reputationPda, "confirmed")
+  );
+  return {
+    reputationPda: reputationPda.toBase58(),
+    reputation: info ? decodeReputationState(info.data) : null,
   };
 }
 

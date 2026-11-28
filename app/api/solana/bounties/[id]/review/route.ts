@@ -16,6 +16,7 @@ import {
   successResponse,
 } from "@/lib/shared";
 import {
+  computeScoutSplitMicros,
   confirmSubmittedSignature,
   fetchOnChainClaimReceipt,
   fetchOnChainConvictionStake,
@@ -213,11 +214,15 @@ export const PATCH = createApiHandler(
       }
 
       const paidMicros = BigInt(claimRes.claim.amountPaidMicros);
-      const rewardMicros = BigInt(bounty.rewardPerWinnerMicros);
+      const referrerWallet = stakeRes.stake?.referrer ?? sub.referrerWallet ?? null;
+      const { candidateRewardMicros, scoutCutMicros } = computeScoutSplitMicros(
+        bounty.rewardPerWinnerMicros,
+        Boolean(referrerWallet)
+      );
       const stakeMicros = BigInt(stakeRes.stake.amountStakedMicros);
       const bonusMicros =
-        paidMicros > rewardMicros + stakeMicros
-          ? paidMicros - rewardMicros - stakeMicros
+        paidMicros > candidateRewardMicros + stakeMicros
+          ? paidMicros - candidateRewardMicros - stakeMicros
           : BigInt(0);
 
       const updated = await reviewBountySubmissionDecision({
@@ -230,6 +235,8 @@ export const PATCH = createApiHandler(
         claimReceiptPda: claimRes.claimReceiptPda,
         amountPaidMicros: paidMicros.toString(),
         bonusPaidMicros: bonusMicros.toString(),
+        referrerWallet,
+        scoutCutMicros: scoutCutMicros.toString(),
         claimsCount: escrowRes.escrow?.claimsCount ?? bounty.claimsCount + 1,
         slashedPoolMicros:
           escrowRes.escrow?.slashedPoolAmountMicros ?? bounty.slashedPoolMicros,
@@ -242,6 +249,8 @@ export const PATCH = createApiHandler(
         submission: updated,
         totalPaidUsdc: Number(paidMicros) / 1_000_000,
         bonusPaidUsdc: Number(bonusMicros) / 1_000_000,
+        scoutPaidUsdc: Number(scoutCutMicros) / 1_000_000,
+        referrerWallet,
         txSignature: parsed.txSignature,
         txUrl: getExplorerTxUrl(parsed.txSignature),
       });

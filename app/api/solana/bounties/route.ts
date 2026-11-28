@@ -9,6 +9,7 @@ import {
   bountySubmissions,
   evaluations,
   jobDescriptions,
+  userProfiles,
 } from "@/lib/db/schema";
 import { computeStakeAndBonusMetrics, formatRemainingDuration, RESERVED_SUBMISSION_STATUSES } from "@/lib/bounties/service";
 import { getSession, requireAuth } from "@/lib/auth";
@@ -23,6 +24,7 @@ import {
 import {
   confirmSubmittedSignature,
   fetchOnChainEscrow,
+  fetchOnChainReputation,
   getExplorerAddressUrl,
   getExplorerTxUrl,
   getSolanaCluster,
@@ -45,6 +47,7 @@ const PrepareBountySchema = z.object({
   rawText: z.string().min(50, "Job description must be at least 50 characters.").max(25000),
   recruiterWallet: z.string().min(32).max(64),
   minScore: z.number().int().min(50).max(100),
+  minStreak: z.number().int().min(0).max(50).default(0),
   rewardPerWinnerUsdc: z.number().positive().max(100_000),
   stakePct: z.number().min(1).max(100).default(10),
   maxWinners: z.number().int().min(1).max(100),
@@ -87,6 +90,7 @@ export const GET = createApiHandler(async (req: Request) => {
       createTxSignature: bounties.createTxSignature,
       refundTxSignature: bounties.refundTxSignature,
       minScore: bounties.minScore,
+      minStreak: bounties.minStreak,
       rewardPerWinnerMicros: bounties.rewardPerWinnerMicros,
       stakeBps: bounties.stakeBps,
       slashedPoolMicros: bounties.slashedPoolMicros,
@@ -118,13 +122,14 @@ export const GET = createApiHandler(async (req: Request) => {
           )
       : [];
 
-  // Sync live claims/closed/slashed state for open bounties
+  // Sync live claims/closed/slashed/streak state for open bounties
   const syncedRows = await Promise.all(
     rows.map(async (row) => {
       let claimsCount = row.claimsCount;
       let status = row.status;
       let stakeBps = row.stakeBps;
       let slashedPoolMicros = row.slashedPoolMicros;
+      let minStreak = row.minStreak ?? 0;
       if (status === "active") {
         try {
           const onChain = await fetchOnChainEscrow(row.jobDescriptionId);
@@ -132,6 +137,7 @@ export const GET = createApiHandler(async (req: Request) => {
             claimsCount = onChain.escrow.claimsCount;
             stakeBps = onChain.escrow.stakeBps || row.stakeBps;
             slashedPoolMicros = onChain.escrow.slashedPoolAmountMicros || row.slashedPoolMicros;
+            minStreak = onChain.escrow.minStreak ?? minStreak;
             if (onChain.escrow.isClosed) {
               status = claimsCount >= row.maxWinners ? "filled" : "refunded";
             } else if (claimsCount >= row.maxWinners) {
@@ -160,16 +166,20 @@ export const GET = createApiHandler(async (req: Request) => {
         claimsCount,
         stakeBps,
         slashedPoolMicros,
+        minStreak,
       });
 
       return {
         ...row,
         claimsCount,
         status,
+        minStreak: stakeMetrics.minStreak,
         stakeBps: stakeMetrics.stakeBps,
         stakePercent: stakeMetrics.stakePercent,
         stakePerCandidateMicros: stakeMetrics.stakePerCandidateMicros,
         stakePerCandidateUsdc: stakeMetrics.stakePerCandidateUsdc,
+        candidate90Usdc: stakeMetrics.candidate90Usdc,
+        scout10Usdc: stakeMetrics.scout10Usdc,
         slashedPoolMicros: stakeMetrics.slashedPoolMicros,
         slashedPoolUsdc: stakeMetrics.slashedPoolUsdc,
         proRataBonusUsdc: stakeMetrics.proRataBonusUsdc,
@@ -200,6 +210,8 @@ export const GET = createApiHandler(async (req: Request) => {
     claimTxSignature: string;
     amountMicros: string;
     candidateWallet: string;
+    referrerWallet?: string | null;
+    scoutCutMicros?: string | null;
   }> = [];
   let mySubmissions: Array<{
     id: string;
@@ -218,6 +230,9 @@ export const GET = createApiHandler(async (req: Request) => {
     stakeAmountMicros: string | null;
     stakeAmountUsdc: number;
     stakeStatus: string;
+    isZeroStakeVip: boolean;
+    referrerWallet: string | null;
+    scoutCutUsdc: number;
     isReviewExpired: boolean;
     remainingReviewLabel: string | null;
   }> = [];
@@ -227,13 +242,25 @@ export const GET = createApiHandler(async (req: Request) => {
     details: string;
     createdAt: string;
   }> = [];
+  let candidateReputation: Awaited<ReturnType<typeof fetchOnChainReputation>>["reputation"] = null;
+  let reputationPda: string | null = null;
 
   if (session?.user?.id || walletParam) {
     const restrictionConds = [];
     if (session?.user?.id) restrictionConds.push(eq(bountyRestrictions.userId, session.user.id));
     if (walletParam) restrictionConds.push(eq(bountyRestrictions.walletAddress, walletParam));
 
-    const [evalRows, claimRows, subRows, restrictionRows] = await Promise.all([
+    let targetWalletForRep = walletParam;
+    if (!targetWalletForRep && session?.user?.id) {
+      const [prof] = await db
+        .select({ walletAddress: userProfiles.walletAddress })
+        .from(userProfiles)
+        .where(eq(userProfiles.userId, session.user.id))
+        .limit(1);
+      targetWalletForRep = prof?.walletAddress ?? null;
+    }
+
+    const [evalRows, claimRows, subRows, restrictionRows, repRes] = await Promise.all([
       session?.user?.id
         ? db
             .select({
@@ -255,6 +282,8 @@ export const GET = createApiHandler(async (req: Request) => {
               claimTxSignature: bountyClaims.claimTxSignature,
               amountMicros: bountyClaims.amountMicros,
               candidateWallet: bountyClaims.candidateWallet,
+              referrerWallet: bountyClaims.referrerWallet,
+              scoutCutMicros: bountyClaims.scoutCutMicros,
             })
             .from(bountyClaims)
             .where(eq(bountyClaims.candidateUserId, session.user.id))
@@ -277,6 +306,9 @@ export const GET = createApiHandler(async (req: Request) => {
               stakeTxSignature: bountySubmissions.stakeTxSignature,
               stakeAmountMicros: bountySubmissions.stakeAmountMicros,
               stakeStatus: bountySubmissions.stakeStatus,
+              isZeroStakeVip: bountySubmissions.isZeroStakeVip,
+              referrerWallet: bountySubmissions.referrerWallet,
+              scoutCutMicros: bountySubmissions.scoutCutMicros,
             })
             .from(bountySubmissions)
             .where(eq(bountySubmissions.candidateUserId, session.user.id))
@@ -294,10 +326,17 @@ export const GET = createApiHandler(async (req: Request) => {
             .where(or(...restrictionConds))
             .orderBy(desc(bountyRestrictions.createdAt))
         : Promise.resolve([]),
+      targetWalletForRep
+        ? fetchOnChainReputation(targetWalletForRep).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     myEvaluations = evalRows;
     myClaims = claimRows;
+    if (repRes) {
+      candidateReputation = repRes.reputation;
+      reputationPda = repRes.reputationPda;
+    }
 
     const nowMs = Date.now();
     mySubmissions = subRows.map((s) => {
@@ -308,6 +347,7 @@ export const GET = createApiHandler(async (req: Request) => {
       return {
         ...s,
         stakeAmountUsdc: s.stakeAmountMicros ? Number(s.stakeAmountMicros) / 1_000_000 : 0,
+        scoutCutUsdc: s.scoutCutMicros ? Number(s.scoutCutMicros) / 1_000_000 : 0,
         slotReservedAt: s.slotReservedAt ? s.slotReservedAt.toISOString() : null,
         reviewDeadlineAt: s.reviewDeadlineAt ? s.reviewDeadlineAt.toISOString() : null,
         isReviewExpired,
@@ -334,6 +374,8 @@ export const GET = createApiHandler(async (req: Request) => {
     myClaims,
     mySubmissions,
     myRestrictions,
+    candidateReputation,
+    reputationPda,
   });
 });
 
@@ -384,6 +426,7 @@ export const POST = createApiHandler(async (req: Request) => {
       recruiterWallet,
       jobId: jd.id,
       minScore: parsed.minScore,
+      minStreak: parsed.minStreak,
       rewardPerWinnerMicros,
       maxWinners: parsed.maxWinners,
       expiresAtUnix,
@@ -474,6 +517,7 @@ export const PATCH = createApiHandler(async (req: Request) => {
         vaultAddress: escrowRes.vaultPda,
         createTxSignature: parsed.txSignature,
         minScore: escrowRes.escrow.minScore,
+        minStreak: escrowRes.escrow.minStreak ?? 0,
         rewardPerWinnerMicros: escrowRes.escrow.rewardPerWinnerMicros,
         stakeBps: escrowRes.escrow.stakeBps,
         slashedPoolMicros: escrowRes.escrow.slashedPoolAmountMicros,
