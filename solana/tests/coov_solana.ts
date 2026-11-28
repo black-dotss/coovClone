@@ -12,7 +12,6 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   ACCOUNT_DISCRIMINATORS,
-  COOV_PDAS,
   DEFAULT_DEVNET_RPC,
   DEFAULT_DEVNET_USDC_MINT,
   DEFAULT_SOLANA_PROGRAM_ID,
@@ -29,10 +28,13 @@ import {
   decodeConvictionStake,
   decodeDisputeTicket,
   decodeReputationState,
-  getCoovAnchorProgram,
-  normalizeIdlForAnchor,
   uuidToBytes16,
 } from "../../lib/solana";
+import {
+  COOV_PDAS,
+  getCoovAnchorProgram,
+  normalizeIdlForAnchor,
+} from "../../lib/solana/anchor-client";
 
 const PROGRAM_ID = new PublicKey(DEFAULT_SOLANA_PROGRAM_ID);
 const DEVNET_USDC_MINT = new PublicKey(DEFAULT_DEVNET_USDC_MINT);

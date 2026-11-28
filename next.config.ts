@@ -17,9 +17,6 @@ const nextConfig = (phase: string): NextConfig => {
       "pdf-parse",
       "pdfkit",
       "pdfjs-dist",
-      "@coral-xyz/anchor",
-      "@coral-xyz/anchor-errors",
-      "@coral-xyz/borsh",
     ],
     outputFileTracingIncludes: {
       "/api/**/*": ["./node_modules/pdfjs-dist/**/*"],

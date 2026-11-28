@@ -3,13 +3,15 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import {
   DEFAULT_DEVNET_RPC,
   DEFAULT_SOLANA_PROGRAM_ID,
-  EVENT_DISCRIMINATORS,
   deriveConfigPda,
   deriveEscrowPda,
   deriveEscrowVaultPda,
+} from "@/lib/solana";
+import {
+  EVENT_DISCRIMINATORS,
   getCoovAnchorProgram,
   normalizeIdlForAnchor,
-} from "@/lib/solana";
+} from "@/lib/solana/anchor-client";
 import { Connection } from "@solana/web3.js";
 import { GET as getActionsJson, OPTIONS as optionsActionsJson } from "@/app/actions.json/route";
 
