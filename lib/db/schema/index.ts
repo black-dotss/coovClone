@@ -685,6 +685,8 @@ export const bounties = pgTable(
     refundTxSignature: text("refund_tx_signature"),
     minScore: integer("min_score").notNull(),
     rewardPerWinnerMicros: text("reward_per_winner_micros").notNull(),
+    stakeBps: integer("stake_bps").notNull().default(1000),
+    slashedPoolMicros: text("slashed_pool_micros").notNull().default("0"),
     maxWinners: integer("max_winners").notNull(),
     claimsCount: integer("claims_count").notNull().default(0),
     status: text("status").notNull().default("active"), // active, filled, expired, refunded
@@ -759,6 +761,13 @@ export const bountySubmissions = pgTable(
       onDelete: "set null",
     }),
     recruiterNotes: text("recruiter_notes"),
+    stakePdaAddress: text("stake_pda_address"),
+    stakeTxSignature: text("stake_tx_signature"),
+    stakeAmountMicros: text("stake_amount_micros"),
+    stakeStatus: text("stake_status").notNull().default("none"), // none, pending, approved, slashed, refunded
+    slashTxSignature: text("slash_tx_signature"),
+    payoutTxSignature: text("payout_tx_signature"),
+    bonusPaidMicros: text("bonus_paid_micros"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

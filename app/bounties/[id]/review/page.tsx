@@ -73,6 +73,12 @@ interface SubmissionItem {
     strengths?: string[];
   } | null;
   agentRuns: AgentRunItem[];
+  stakePdaAddress?: string | null;
+  stakeAmountUsdc?: number;
+  stakeStatus?: string;
+  bonusPaidUsdc?: number;
+  payoutTxSignature?: string | null;
+  slashTxSignature?: string | null;
   isReviewExpired: boolean;
   remainingReviewLabel: string | null;
 }
@@ -99,6 +105,10 @@ interface WorkspaceResponse {
     status: string;
     rewardPerWinnerUsdc: number;
     totalPoolUsdc: number;
+    stakePercent?: number;
+    stakePerCandidateUsdc?: number;
+    slashedPoolUsdc?: number;
+    proRataBonusUsdc?: number;
     expiresAt: string;
   };
   slotMetrics: {
@@ -109,6 +119,10 @@ interface WorkspaceResponse {
     approvedCount: number;
     occupiedSlots: number;
     availableSlots: number;
+    stakePercent?: number;
+    stakePerCandidateUsdc?: number;
+    slashedPoolUsdc?: number;
+    proRataBonusUsdc?: number;
   };
   submissions: SubmissionItem[];
   restrictions: RestrictionItem[];
@@ -147,7 +161,7 @@ function statusLabel(status: string): string {
 export default function BountyPublisherReviewPage() {
   const params = useParams<{ id: string }>();
   const bountyId = params?.id;
-  const { publicKey, signAndSubmitTx, clusterLabel } = useSolanaWallet();
+  const { publicKey, openConnectModal, signAndSubmitTx, clusterLabel } = useSolanaWallet();
 
   const [data, setData] = useState<WorkspaceResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -232,24 +246,61 @@ export default function BountyPublisherReviewPage() {
 
   const handleDecision = async (action: "approve" | "reject") => {
     if (!selected || !bountyId) return;
+    if (selected.stakeStatus === "pending" && !publicKey) {
+      openConnectModal();
+      return;
+    }
+
     setSubmittingAction(action);
     setError(null);
     setNotice(null);
     try {
-      await apiFetch(`/api/solana/bounties/${bountyId}/review`, {
+      const initRes = await apiFetch<{
+        requiresSignature?: boolean;
+        action?: "approve" | "reject";
+        serializedTxBase64?: string;
+        expectedTotalPayoutMicros?: string;
+        amountSlashedMicros?: string;
+      }>(`/api/solana/bounties/${bountyId}/review`, {
         method: "POST",
         body: JSON.stringify({
           submissionId: selected.id,
           action,
           recruiterNotes: activeNotes,
+          ...(publicKey ? { recruiterWallet: publicKey } : {}),
         }),
       });
 
-      setNotice(
-        action === "approve"
-          ? "Approved! Review hold cleared — candidate can now claim the USDC escrow payout on-chain immediately."
-          : "Candidate rejected & flagged. Winner slot freed and account/wallet/resume hash permanently restricted."
-      );
+      if (initRes.requiresSignature && initRes.serializedTxBase64 && publicKey) {
+        const txSignature = await signAndSubmitTx(initRes.serializedTxBase64);
+        const confirmed = await apiFetch<{
+          totalPaidUsdc?: number;
+          bonusPaidUsdc?: number;
+          slashedAmountUsdc?: number;
+          newSlashedPoolUsdc?: number;
+        }>(`/api/solana/bounties/${bountyId}/review`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            submissionId: selected.id,
+            action,
+            recruiterNotes: activeNotes,
+            recruiterWallet: publicKey,
+            txSignature,
+          }),
+        });
+
+        setNotice(
+          action === "approve"
+            ? `Approved & paid ${(confirmed.totalPaidUsdc ?? data?.bounty.rewardPerWinnerUsdc ?? 0).toFixed(2)} USDC on Solana ${clusterLabel}${(confirmed.bonusPaidUsdc ?? 0) > 0 ? ` (includes +${confirmed.bonusPaidUsdc?.toFixed(2)} USDC slashed spam bonus)` : ""}! Tx: ${txSignature}`
+            : `Flagged fraud & slashed ${confirmed.slashedAmountUsdc?.toFixed(2) ?? ""} USDC stake into Slashed Spam Yield pool (now ${confirmed.newSlashedPoolUsdc?.toFixed(2) ?? ""} USDC). Winner slot freed!`
+        );
+      } else {
+        setNotice(
+          action === "approve"
+            ? "Approved! Review hold cleared — candidate can now claim the USDC escrow payout on-chain immediately."
+            : "Candidate rejected & flagged. Winner slot freed and account/wallet/resume hash permanently restricted."
+        );
+      }
       await loadWorkspace();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save review decision.");
@@ -350,7 +401,8 @@ export default function BountyPublisherReviewPage() {
             </span>
           </div>
           <p className="text-xs text-text-secondary">
-            Min Score {data.bounty.minScore}/100 · {data.bounty.rewardPerWinnerUsdc} USDC per winner ·
+            Min Score {data.bounty.minScore}/100 · {data.bounty.rewardPerWinnerUsdc} USDC per winner ·{" "}
+            Stake {data.bounty.stakePerCandidateUsdc ?? 0} USDC ({data.bounty.stakePercent ?? 10}%) ·
             24h Review Window
           </p>
         </div>
@@ -372,8 +424,8 @@ export default function BountyPublisherReviewPage() {
         </div>
       )}
 
-      {/* Slot & Anti-Fraud Metrics Bar */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* Slot, Conviction Stake & Anti-Fraud Metrics Bar */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <div className="p-4 rounded-lg bg-surface border border-border">
           <span className="text-[11px] font-mono uppercase text-text-muted">
             Reserved (Pending Review)
@@ -397,6 +449,14 @@ export default function BountyPublisherReviewPage() {
           </span>
           <p className="text-2xl font-extrabold text-text mt-1">
             {data.slotMetrics.availableSlots}
+          </p>
+        </div>
+        <div className="p-4 rounded-lg bg-surface border border-border">
+          <span className="text-[11px] font-mono uppercase text-text-muted">
+            Slashed Spam Yield
+          </span>
+          <p className="text-2xl font-extrabold text-purple-400 mt-1">
+            +{(data.bounty.slashedPoolUsdc ?? 0).toFixed(2)} USDC
           </p>
         </div>
         <div className="p-4 rounded-lg bg-surface border border-border">
@@ -560,7 +620,7 @@ export default function BountyPublisherReviewPage() {
                 </CardHeader>
 
                 <CardContent className="pt-4 space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs font-mono">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
                     <div className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1">
                       <span className="text-[10px] text-text-muted uppercase">
                         Normalized Resume SHA-256
@@ -574,6 +634,21 @@ export default function BountyPublisherReviewPage() {
                       <p className="text-text break-all">
                         {selected.candidateWallet || "Not anchored to wallet yet"}
                       </p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1">
+                      <span className="text-[10px] text-text-muted uppercase">
+                        Conviction Stake
+                      </span>
+                      <p className="text-purple-400 font-bold uppercase">
+                        {selected.stakeStatus && selected.stakeStatus !== "none"
+                          ? `${selected.stakeStatus} (${selected.stakeAmountUsdc ?? 0} USDC)`
+                          : "Unstaked (Legacy)"}
+                      </p>
+                      {(selected.bonusPaidUsdc ?? 0) > 0 && (
+                        <p className="text-[11px] text-text-secondary">
+                          +{selected.bonusPaidUsdc} USDC spam yield paid
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -605,7 +680,9 @@ export default function BountyPublisherReviewPage() {
                           isLoading={submittingAction === "approve"}
                           onClick={() => void handleDecision("approve")}
                         >
-                          Approve & Unlock Payout
+                          {selected.stakeStatus === "pending"
+                            ? "Approve & Payout On-Chain"
+                            : "Approve & Unlock Payout"}
                         </Button>
                       )}
 
@@ -618,7 +695,9 @@ export default function BountyPublisherReviewPage() {
                             isLoading={submittingAction === "reject"}
                             onClick={() => void handleDecision("reject")}
                           >
-                            Reject / Flag & Restrict Permanently
+                            {selected.stakeStatus === "pending"
+                              ? "Reject / Flag Fraud & Slash Stake"
+                              : "Reject / Flag & Restrict Permanently"}
                           </Button>
                         )}
 

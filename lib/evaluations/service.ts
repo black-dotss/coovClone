@@ -33,6 +33,8 @@ export interface CreateEvaluationInput {
   cvVersionId: string;
   jobDescriptionId: string;
   tone?: EvaluationTone;
+  walletAddress?: string;
+  stakeTxSignature?: string;
   deviceId?: string;
   rawToken?: string | null;
   hardwareId?: string | null;
@@ -127,6 +129,9 @@ export async function createEvaluation(input: CreateEvaluationInput) {
       ownerUserId: input.ownerUserId,
       cvVersionId: input.cvVersionId,
       cvText: cvTextForBounty,
+      walletAddress: input.walletAddress,
+      stakeTxSignature: input.stakeTxSignature,
+      requireOnChainStake: true,
     });
   }
 
@@ -179,6 +184,10 @@ export async function createEvaluation(input: CreateEvaluationInput) {
         resumeHash: preBountyGate.resumeHash,
         fingerprint: preBountyGate.fingerprint,
         detectorReport: preBountyGate.detectorReport,
+        stakePdaAddress: preBountyGate.stakePdaAddress,
+        stakeTxSignature: preBountyGate.stakeTxSignature,
+        stakeAmountMicros: preBountyGate.stakeAmountMicros,
+        stakeStatus: preBountyGate.stakeStatus,
       });
     }
 

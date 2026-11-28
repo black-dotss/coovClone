@@ -4,7 +4,7 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::{invoke, invoke_signed},
 };
-use anchor_lang::system_program::{create_account, CreateAccount};
+use anchor_lang::system_program::{create_account, transfer, CreateAccount, Transfer};
 use anchor_spl::associated_token::{
     self, get_associated_token_address_with_program_id, AssociatedToken,
 };
@@ -29,6 +29,30 @@ pub const MAX_SBT_URI_LEN: usize = 200;
 pub const MAX_SCORE_TIER_LEN: usize = 24;
 pub const SBT_MIN_SCORE: u8 = 85;
 pub const MAX_DEFENSE_BOOST: u8 = 15;
+pub const DEFAULT_STAKE_BPS: u16 = 1_000; // 10%
+pub const MAX_STAKE_BPS: u16 = 10_000; // 100%
+pub const LEGACY_ESCROW_SPACE: usize = 144;
+pub const LEGACY_ESCROW_DISC: [u8; 8] = [59, 18, 13, 80, 225, 187, 6, 16];
+
+fn resolve_stake_bps(stake_bps: u16) -> u16 {
+    if stake_bps == 0 {
+        DEFAULT_STAKE_BPS
+    } else {
+        stake_bps
+    }
+}
+
+fn compute_stake_amount(reward_per_winner: u64, stake_bps: u16) -> Result<u64> {
+    let bps = resolve_stake_bps(stake_bps);
+    require!(bps > 0 && bps <= MAX_STAKE_BPS, CoovError::InvalidStakeBps);
+    let amount = ((reward_per_winner as u128)
+        .checked_mul(bps as u128)
+        .ok_or(CoovError::MathOverflow)?)
+        / 10_000u128;
+    let amount_u64 = u64::try_from(amount).map_err(|_| CoovError::MathOverflow)?;
+    require!(amount_u64 > 0, CoovError::InvalidAmount);
+    Ok(amount_u64)
+}
 
 #[program]
 pub mod coov_protocol {
@@ -460,8 +484,63 @@ pub mod coov_protocol {
         Ok(())
     }
 
+    /// Safely upgrades a legacy 144-byte `BountyEscrow` PDA to the v2 154-byte layout
+    /// with default `stake_bps = 1000` (10%) and `slashed_pool_amount = 0`.
+    pub fn migrate_escrow(ctx: Context<MigrateEscrow>) -> Result<()> {
+        let escrow_info = ctx.accounts.escrow.to_account_info();
+        require_keys_eq!(*escrow_info.owner, crate::ID, CoovError::InvalidEscrowAccount);
+        require!(
+            escrow_info.data_len() == LEGACY_ESCROW_SPACE,
+            CoovError::InvalidEscrowAccount
+        );
+
+        let (job_id, bump) = {
+            let data = escrow_info.try_borrow_data()?;
+            require!(&data[0..8] == &LEGACY_ESCROW_DISC, CoovError::InvalidEscrowAccount);
+            let mut job_id = [0u8; 16];
+            job_id.copy_from_slice(&data[40..56]);
+            let bump = data[142];
+            (job_id, bump)
+        };
+
+        let expected_key = Pubkey::create_program_address(
+            &[b"escrow", job_id.as_ref(), &[bump]],
+            &crate::ID,
+        )
+        .map_err(|_| error!(CoovError::InvalidEscrowAccount))?;
+        require_keys_eq!(escrow_info.key(), expected_key, CoovError::InvalidEscrowAccount);
+
+        let min_rent = Rent::get()?.minimum_balance(BountyEscrow::SPACE);
+        let current_lamports = escrow_info.lamports();
+        if min_rent > current_lamports {
+            let diff = min_rent
+                .checked_sub(current_lamports)
+                .ok_or(CoovError::MathOverflow)?;
+            transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.payer.to_account_info(),
+                        to: escrow_info.clone(),
+                    },
+                ),
+                diff,
+            )?;
+        }
+
+        escrow_info.realloc(BountyEscrow::SPACE, false)?;
+        let mut data = escrow_info.try_borrow_mut_data()?;
+        data[LEGACY_ESCROW_SPACE..LEGACY_ESCROW_SPACE + 2]
+            .copy_from_slice(&DEFAULT_STAKE_BPS.to_le_bytes());
+        data[LEGACY_ESCROW_SPACE + 2..BountyEscrow::SPACE]
+            .copy_from_slice(&0u64.to_le_bytes());
+
+        Ok(())
+    }
+
     /// Feature 4: Recruiter creates & funds a multi-winner USDC bounty escrow pool
-    /// (`reward_per_winner * max_winners`) with an `expires_at` deadline.
+    /// (`reward_per_winner * max_winners`) with an `expires_at` deadline and `stake_bps`.
+    /// Passing `stake_bps == 0` defaults cleanly to 1,000 bps (10%).
     pub fn create_bounty_escrow(
         ctx: Context<CreateBountyEscrow>,
         job_id: [u8; 16],
@@ -469,11 +548,15 @@ pub mod coov_protocol {
         reward_per_winner: u64,
         max_winners: u16,
         expires_at: i64,
+        stake_bps: u16,
     ) -> Result<()> {
         require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
         require!(min_score > 0 && min_score <= 100, CoovError::InvalidScore);
         require!(reward_per_winner > 0, CoovError::InvalidAmount);
         require!(max_winners > 0, CoovError::InvalidMaxWinners);
+
+        let effective_stake_bps = resolve_stake_bps(stake_bps);
+        let _stake_preview = compute_stake_amount(reward_per_winner, effective_stake_bps)?;
 
         let now = Clock::get()?.unix_timestamp;
         require!(expires_at > now, CoovError::InvalidExpiry);
@@ -509,6 +592,8 @@ pub mod coov_protocol {
         escrow.is_closed = false;
         escrow.bump = ctx.bumps.escrow;
         escrow.vault_bump = ctx.bumps.vault;
+        escrow.stake_bps = effective_stake_bps;
+        escrow.slashed_pool_amount = 0;
 
         emit!(BountyCreated {
             escrow: escrow.key(),
@@ -519,6 +604,260 @@ pub mod coov_protocol {
             max_winners,
             min_score,
             expires_at,
+            stake_bps: effective_stake_bps,
+        });
+
+        Ok(())
+    }
+
+    /// Feature 5 (Anti-Spam Conviction Stake): Candidate locks `(reward_per_winner * stake_bps) / 10_000`
+    /// Devnet USDC into the bounty's escrow vault BEFORE entering review.
+    pub fn submit_with_conviction_stake(ctx: Context<SubmitWithConvictionStake>) -> Result<()> {
+        require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
+        let now = Clock::get()?.unix_timestamp;
+
+        let escrow = &ctx.accounts.escrow;
+        require!(!escrow.is_closed, CoovError::EscrowClosed);
+        require!(now <= escrow.expires_at, CoovError::EscrowExpired);
+        require!(
+            escrow.claims_count < escrow.max_winners,
+            CoovError::BountyFullyClaimed
+        );
+
+        let amount_staked = compute_stake_amount(escrow.reward_per_winner, escrow.stake_bps)?;
+
+        transfer_checked(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.candidate_token_account.to_account_info(),
+                    mint: ctx.accounts.usdc_mint.to_account_info(),
+                    to: ctx.accounts.vault.to_account_info(),
+                    authority: ctx.accounts.candidate.to_account_info(),
+                },
+            ),
+            amount_staked,
+            ctx.accounts.usdc_mint.decimals,
+        )?;
+
+        let stake = &mut ctx.accounts.conviction_stake;
+        stake.escrow = escrow.key();
+        stake.candidate = ctx.accounts.candidate.key();
+        stake.amount_staked = amount_staked;
+        stake.status = ConvictionStatus::Pending;
+        stake.submitted_at = now;
+        stake.resolved_at = 0;
+        stake.bump = ctx.bumps.conviction_stake;
+
+        emit!(ConvictionStakeLocked {
+            escrow: escrow.key(),
+            candidate: stake.candidate,
+            stake_pda: stake.key(),
+            amount_staked,
+            timestamp: now,
+        });
+
+        Ok(())
+    }
+
+    /// Feature 5 (Recruiter Approval OR 24h Timeout Oracle Auto-Claim):
+    /// Transfers `reward_per_winner` + 100% refund of `amount_staked` + pro-rata bonus share
+    /// from `slashed_pool_amount` back to the candidate's ATA, and marks ConvictionStake Approved.
+    pub fn approve_and_payout(
+        ctx: Context<ApproveAndPayout>,
+        evaluation_key: Pubkey,
+    ) -> Result<()> {
+        require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
+        let now = Clock::get()?.unix_timestamp;
+        let escrow_info = ctx.accounts.escrow.to_account_info();
+
+        let job_id = ctx.accounts.escrow.job_id;
+        let bump = ctx.accounts.escrow.bump;
+        let reward_per_winner = ctx.accounts.escrow.reward_per_winner;
+        let max_winners = ctx.accounts.escrow.max_winners;
+        let claims_count = ctx.accounts.escrow.claims_count;
+        let expires_at = ctx.accounts.escrow.expires_at;
+        let is_closed = ctx.accounts.escrow.is_closed;
+        let slashed_pool_amount = ctx.accounts.escrow.slashed_pool_amount;
+
+        require!(!is_closed, CoovError::EscrowClosed);
+        require!(now <= expires_at, CoovError::EscrowExpired);
+        require!(claims_count < max_winners, CoovError::BountyFullyClaimed);
+        require!(
+            ctx.accounts.conviction_stake.status == ConvictionStatus::Pending,
+            CoovError::StakeAlreadyResolved
+        );
+
+        let remaining_slots = (max_winners - claims_count) as u64;
+        let bonus_share = slashed_pool_amount
+            .checked_div(remaining_slots)
+            .unwrap_or(0);
+        let stake_refund = ctx.accounts.conviction_stake.amount_staked;
+
+        let total_payout = reward_per_winner
+            .checked_add(stake_refund)
+            .ok_or(CoovError::MathOverflow)?
+            .checked_add(bonus_share)
+            .ok_or(CoovError::MathOverflow)?;
+
+        let escrow_seeds: &[&[u8]] = &[b"escrow", job_id.as_ref(), &[bump]];
+        let signer_seeds: &[&[&[u8]]] = &[escrow_seeds];
+
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault.to_account_info(),
+                    mint: ctx.accounts.usdc_mint.to_account_info(),
+                    to: ctx.accounts.candidate_token_account.to_account_info(),
+                    authority: escrow_info,
+                },
+                signer_seeds,
+            ),
+            total_payout,
+            ctx.accounts.usdc_mint.decimals,
+        )?;
+
+        let stake_mut = &mut ctx.accounts.conviction_stake;
+        stake_mut.status = ConvictionStatus::Approved;
+        stake_mut.resolved_at = now;
+
+        let escrow_mut = &mut ctx.accounts.escrow;
+        escrow_mut.slashed_pool_amount = escrow_mut
+            .slashed_pool_amount
+            .checked_sub(bonus_share)
+            .ok_or(CoovError::MathOverflow)?;
+        escrow_mut.claims_count = escrow_mut
+            .claims_count
+            .checked_add(1)
+            .ok_or(CoovError::MathOverflow)?;
+        if escrow_mut.claims_count >= escrow_mut.max_winners {
+            escrow_mut.is_closed = true;
+        }
+
+        let receipt = &mut ctx.accounts.claim_receipt;
+        receipt.escrow = escrow_mut.key();
+        receipt.candidate = ctx.accounts.candidate.key();
+        receipt.evaluation = evaluation_key;
+        receipt.amount_paid = total_payout;
+        receipt.claimed_at = now;
+        receipt.bump = ctx.bumps.claim_receipt;
+
+        emit!(ConvictionStakeApproved {
+            escrow: escrow_mut.key(),
+            candidate: receipt.candidate,
+            stake_pda: stake_mut.key(),
+            reward_paid: reward_per_winner,
+            stake_refunded: stake_refund,
+            bonus_share,
+            total_paid: total_payout,
+            timestamp: now,
+        });
+
+        emit!(BountyClaimed {
+            escrow: escrow_mut.key(),
+            candidate: receipt.candidate,
+            evaluation: receipt.evaluation,
+            amount_paid: total_payout,
+            claims_count: escrow_mut.claims_count,
+            timestamp: now,
+        });
+
+        Ok(())
+    }
+
+    /// Feature 5 (Anti-Fraud Slash): Called by `oracle_authority` or `recruiter` when a
+    /// submission fails the Duplicate Resume / Fake Detector gate or is flagged in review.
+    /// Keeps `amount_staked` inside the vault, credits `slashed_pool_amount` for honest winners,
+    /// frees the winner slot, and marks ConvictionStake Slashed.
+    pub fn slash_fraud_stake(ctx: Context<SlashFraudStake>, reason_code: u8) -> Result<()> {
+        require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
+        let now = Clock::get()?.unix_timestamp;
+        require!(!ctx.accounts.escrow.is_closed, CoovError::EscrowClosed);
+
+        let stake = &mut ctx.accounts.conviction_stake;
+        require!(
+            stake.status == ConvictionStatus::Pending,
+            CoovError::StakeAlreadyResolved
+        );
+
+        let amount_slashed = stake.amount_staked;
+        stake.status = ConvictionStatus::Slashed;
+        stake.resolved_at = now;
+
+        let escrow = &mut ctx.accounts.escrow;
+        escrow.slashed_pool_amount = escrow
+            .slashed_pool_amount
+            .checked_add(amount_slashed)
+            .ok_or(CoovError::MathOverflow)?;
+
+        emit!(FraudStakeSlashed {
+            escrow: escrow.key(),
+            candidate: stake.candidate,
+            stake_pda: stake.key(),
+            amount_slashed,
+            slashed_pool_amount: escrow.slashed_pool_amount,
+            reason_code,
+            timestamp: now,
+        });
+
+        Ok(())
+    }
+
+    /// Refunds 100% of principal `amount_staked` (0 reward, 0 bonus) back to an honest
+    /// candidate whose evaluation was non-fraudulent but did not win (e.g., below min_score,
+    /// waitlisted when slots filled, or bounty expired).
+    pub fn refund_conviction_stake(ctx: Context<RefundConvictionStake>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let escrow_info = ctx.accounts.escrow.to_account_info();
+        let authority_key = ctx.accounts.authority.key();
+        let is_oracle = authority_key == ctx.accounts.config.oracle_authority;
+        let is_recruiter = authority_key == ctx.accounts.escrow.recruiter;
+        let is_candidate_after_close_or_expiry = authority_key == ctx.accounts.candidate.key()
+            && (ctx.accounts.escrow.is_closed
+                || ctx.accounts.escrow.claims_count >= ctx.accounts.escrow.max_winners
+                || now > ctx.accounts.escrow.expires_at);
+
+        require!(
+            is_oracle || is_recruiter || is_candidate_after_close_or_expiry,
+            CoovError::UnauthorizedAuthority
+        );
+        require!(
+            ctx.accounts.conviction_stake.status == ConvictionStatus::Pending,
+            CoovError::StakeAlreadyResolved
+        );
+
+        let refund_amount = ctx.accounts.conviction_stake.amount_staked;
+        let job_id = ctx.accounts.escrow.job_id;
+        let bump = ctx.accounts.escrow.bump;
+        let escrow_seeds: &[&[u8]] = &[b"escrow", job_id.as_ref(), &[bump]];
+        let signer_seeds: &[&[&[u8]]] = &[escrow_seeds];
+
+        transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                TransferChecked {
+                    from: ctx.accounts.vault.to_account_info(),
+                    mint: ctx.accounts.usdc_mint.to_account_info(),
+                    to: ctx.accounts.candidate_token_account.to_account_info(),
+                    authority: escrow_info,
+                },
+                signer_seeds,
+            ),
+            refund_amount,
+            ctx.accounts.usdc_mint.decimals,
+        )?;
+
+        let stake_mut = &mut ctx.accounts.conviction_stake;
+        stake_mut.status = ConvictionStatus::Refunded;
+        stake_mut.resolved_at = now;
+
+        emit!(ConvictionStakeRefunded {
+            escrow: ctx.accounts.escrow.key(),
+            candidate: stake_mut.candidate,
+            stake_pda: stake_mut.key(),
+            amount_refunded: refund_amount,
+            timestamp: now,
         });
 
         Ok(())
@@ -875,6 +1214,18 @@ pub struct MintCredential<'info> {
 }
 
 #[derive(Accounts)]
+pub struct MigrateEscrow<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: Verified owner == crate::ID, discriminator == BountyEscrow, and len == 144 bytes.
+    #[account(mut)]
+    pub escrow: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 #[instruction(job_id: [u8; 16])]
 pub struct CreateBountyEscrow<'info> {
     #[account(
@@ -918,6 +1269,195 @@ pub struct CreateBountyEscrow<'info> {
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SubmitWithConvictionStake<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    #[account(mut)]
+    pub candidate: Signer<'info>,
+
+    pub usdc_mint: InterfaceAccount<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.job_id.as_ref()],
+        bump = escrow.bump,
+        has_one = usdc_mint,
+        has_one = vault
+    )]
+    pub escrow: Box<Account<'info, BountyEscrow>>,
+
+    #[account(mut)]
+    pub vault: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        token::mint = usdc_mint,
+        token::authority = candidate,
+        token::token_program = token_program
+    )]
+    pub candidate_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        init,
+        payer = candidate,
+        space = ConvictionStake::SPACE,
+        seeds = [b"conviction_stake", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump
+    )]
+    pub conviction_stake: Box<Account<'info, ConvictionStake>>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ApproveAndPayout<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        constraint = authority.key() == escrow.recruiter || authority.key() == config.oracle_authority @ CoovError::UnauthorizedAuthority
+    )]
+    pub authority: Signer<'info>,
+
+    /// CHECK: Candidate wallet verified against conviction_stake and ATA authority
+    pub candidate: UncheckedAccount<'info>,
+
+    pub usdc_mint: InterfaceAccount<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.job_id.as_ref()],
+        bump = escrow.bump,
+        has_one = usdc_mint,
+        has_one = vault
+    )]
+    pub escrow: Box<Account<'info, BountyEscrow>>,
+
+    #[account(mut)]
+    pub vault: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        token::mint = usdc_mint,
+        token::authority = candidate,
+        token::token_program = token_program
+    )]
+    pub candidate_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"conviction_stake", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump = conviction_stake.bump,
+        has_one = escrow,
+        has_one = candidate
+    )]
+    pub conviction_stake: Box<Account<'info, ConvictionStake>>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = BountyClaim::SPACE,
+        seeds = [b"claim", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump
+    )]
+    pub claim_receipt: Box<Account<'info, BountyClaim>>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SlashFraudStake<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    #[account(
+        constraint = authority.key() == escrow.recruiter || authority.key() == config.oracle_authority @ CoovError::UnauthorizedAuthority
+    )]
+    pub authority: Signer<'info>,
+
+    /// CHECK: Candidate wallet verified against conviction_stake has_one and PDA seeds
+    pub candidate: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.job_id.as_ref()],
+        bump = escrow.bump
+    )]
+    pub escrow: Box<Account<'info, BountyEscrow>>,
+
+    #[account(
+        mut,
+        seeds = [b"conviction_stake", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump = conviction_stake.bump,
+        has_one = escrow,
+        has_one = candidate
+    )]
+    pub conviction_stake: Box<Account<'info, ConvictionStake>>,
+}
+
+#[derive(Accounts)]
+pub struct RefundConvictionStake<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    pub authority: Signer<'info>,
+
+    /// CHECK: Candidate wallet verified against conviction_stake and ATA authority
+    pub candidate: UncheckedAccount<'info>,
+
+    pub usdc_mint: InterfaceAccount<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.job_id.as_ref()],
+        bump = escrow.bump,
+        has_one = usdc_mint,
+        has_one = vault
+    )]
+    pub escrow: Box<Account<'info, BountyEscrow>>,
+
+    #[account(mut)]
+    pub vault: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        token::mint = usdc_mint,
+        token::authority = candidate,
+        token::token_program = token_program
+    )]
+    pub candidate_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"conviction_stake", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump = conviction_stake.bump,
+        has_one = escrow,
+        has_one = candidate
+    )]
+    pub conviction_stake: Box<Account<'info, ConvictionStake>>,
+
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -1084,10 +1624,35 @@ pub struct BountyEscrow {
     pub is_closed: bool,
     pub bump: u8,
     pub vault_bump: u8,
+    pub stake_bps: u16,
+    pub slashed_pool_amount: u64,
 }
 
 impl BountyEscrow {
-    pub const SPACE: usize = 8 + 32 + 16 + 32 + 32 + 8 + 2 + 2 + 1 + 8 + 1 + 1 + 1;
+    pub const SPACE: usize = 8 + 32 + 16 + 32 + 32 + 8 + 2 + 2 + 1 + 8 + 1 + 1 + 1 + 2 + 8; // 154
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConvictionStatus {
+    Pending,
+    Approved,
+    Slashed,
+    Refunded,
+}
+
+#[account]
+pub struct ConvictionStake {
+    pub escrow: Pubkey,
+    pub candidate: Pubkey,
+    pub amount_staked: u64,
+    pub status: ConvictionStatus,
+    pub submitted_at: i64,
+    pub resolved_at: i64,
+    pub bump: u8,
+}
+
+impl ConvictionStake {
+    pub const SPACE: usize = 8 + 32 + 32 + 8 + 1 + 8 + 8 + 1; // 98
 }
 
 #[account]
@@ -1153,6 +1718,48 @@ pub struct BountyCreated {
     pub max_winners: u16,
     pub min_score: u8,
     pub expires_at: i64,
+    pub stake_bps: u16,
+}
+
+#[event]
+pub struct ConvictionStakeLocked {
+    pub escrow: Pubkey,
+    pub candidate: Pubkey,
+    pub stake_pda: Pubkey,
+    pub amount_staked: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct ConvictionStakeApproved {
+    pub escrow: Pubkey,
+    pub candidate: Pubkey,
+    pub stake_pda: Pubkey,
+    pub reward_paid: u64,
+    pub stake_refunded: u64,
+    pub bonus_share: u64,
+    pub total_paid: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct FraudStakeSlashed {
+    pub escrow: Pubkey,
+    pub candidate: Pubkey,
+    pub stake_pda: Pubkey,
+    pub amount_slashed: u64,
+    pub slashed_pool_amount: u64,
+    pub reason_code: u8,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct ConvictionStakeRefunded {
+    pub escrow: Pubkey,
+    pub candidate: Pubkey,
+    pub stake_pda: Pubkey,
+    pub amount_refunded: u64,
+    pub timestamp: i64,
 }
 
 #[event]
@@ -1197,7 +1804,7 @@ pub enum CoovError {
     ScoreBelowThreshold,
     #[msg("Provided ATA does not match derived Token-2022 ATA")]
     InvalidTokenAccount,
-    #[msg("Reward amount must be greater than zero")]
+    #[msg("Reward or stake amount must be greater than zero")]
     InvalidAmount,
     #[msg("Max winners must be greater than zero")]
     InvalidMaxWinners,
@@ -1215,4 +1822,12 @@ pub enum CoovError {
     JobMismatch,
     #[msg("Evaluation composite score does not meet bounty min_score")]
     ScoreBelowBountyThreshold,
+    #[msg("Stake basis points must be between 1 and 10,000")]
+    InvalidStakeBps,
+    #[msg("Conviction stake has already been approved, slashed, or refunded")]
+    StakeAlreadyResolved,
+    #[msg("Signer is not authorized as recruiter, oracle, or expired-stake owner")]
+    UnauthorizedAuthority,
+    #[msg("Escrow account is not a valid legacy 144-byte BountyEscrow PDA")]
+    InvalidEscrowAccount,
 }

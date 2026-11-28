@@ -28,6 +28,8 @@ export const POST = createApiHandler(async (req: Request) => {
     cvVersionId: validated.cvVersionId,
     jobDescriptionId: validated.jobDescriptionId,
     tone: validated.tone,
+    walletAddress: validated.walletAddress,
+    stakeTxSignature: validated.stakeTxSignature,
     rawToken: rawCookieToken,
     rawHardwareToken,
     ipAddress,

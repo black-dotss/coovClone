@@ -33,6 +33,7 @@ describe("Anchor Client Adapter & Solana Actions (Blinks) Discovery", () => {
     const accounts = program.account as Record<string, { fetchNullable?: unknown }>;
     expect(typeof accounts.bountyEscrow?.fetchNullable).toBe("function");
     expect(typeof accounts.evaluationRecord?.fetchNullable).toBe("function");
+    expect(typeof accounts.convictionStake?.fetchNullable).toBe("function");
   });
 
   it("serves compliant Solana Actions rules and CORS headers at /actions.json", async () => {

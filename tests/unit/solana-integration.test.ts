@@ -6,17 +6,24 @@ import { Keypair } from "@solana/web3.js";
 import {
   ACCOUNT_DISCRIMINATORS,
   IX_DISCRIMINATORS,
+  buildApproveAndPayoutIx,
   buildClaimBountyIx,
   buildCreateBountyEscrowIx,
   buildInitProfileIx,
   buildInitializeConfigIx,
+  buildMigrateEscrowIx,
   buildMintCredentialIx,
   buildRecordEvaluationIx,
+  buildRefundConvictionStakeIx,
+  buildSlashFraudStakeIx,
+  buildSubmitWithConvictionStakeIx,
   buildUpdateEvaluationAfterDefenseIx,
   buildWithdrawExpiredEscrowIx,
   bytes16ToUuid,
+  computeConvictionStakeMicros,
   deriveClaimReceiptPda,
   deriveConfigPda,
+  deriveConvictionStakePda,
   deriveEscrowPda,
   deriveEscrowVaultPda,
   deriveEvaluationPda,
@@ -165,11 +172,55 @@ describe("Solana Protocol Integration & Crypto Primitives", () => {
       rewardPerWinnerMicros: 20_000_000,
       maxWinners: 5,
       expiresAtUnix: 1_900_000_000,
+      stakeBps: 1000,
     });
     expect(escrowIx.data.subarray(0, 8)).toEqual(
       Buffer.from(IX_DISCRIMINATORS.createBountyEscrow)
     );
-    expect(escrowIx.data.length).toBe(8 + 16 + 1 + 8 + 2 + 8);
+    expect(escrowIx.data.length).toBe(8 + 16 + 1 + 8 + 2 + 8 + 2);
+
+    const migrateIx = buildMigrateEscrowIx({ payer: candidate, jobId });
+    expect(migrateIx.data).toEqual(Buffer.from(IX_DISCRIMINATORS.migrateEscrow));
+
+    const stakeIx = buildSubmitWithConvictionStakeIx({ candidate, usdcMint, jobId });
+    expect(stakeIx.data).toEqual(Buffer.from(IX_DISCRIMINATORS.submitWithConvictionStake));
+    expect(stakeIx.keys).toHaveLength(9);
+
+    const [stakePda] = deriveConvictionStakePda(deriveEscrowPda(jobId)[0], candidate);
+    expect(stakePda.toBase58()).toHaveLength(44);
+    expect(computeConvictionStakeMicros(20_000_000, 1000)).toBe(BigInt(2_000_000));
+
+    const approveIx = buildApproveAndPayoutIx({
+      payer: admin,
+      authority: admin,
+      candidate,
+      usdcMint,
+      jobId,
+      evaluationKey: deriveEvaluationPda(candidate, evalId)[0],
+    });
+    expect(approveIx.data.subarray(0, 8)).toEqual(
+      Buffer.from(IX_DISCRIMINATORS.approveAndPayout)
+    );
+    expect(approveIx.keys).toHaveLength(12);
+
+    const slashIx = buildSlashFraudStakeIx({
+      authority: oracle,
+      candidate,
+      jobId,
+      reasonCode: 2,
+    });
+    expect(slashIx.data.subarray(0, 8)).toEqual(
+      Buffer.from(IX_DISCRIMINATORS.slashFraudStake)
+    );
+    expect(slashIx.data[8]).toBe(2);
+
+    const refundStakeIx = buildRefundConvictionStakeIx({
+      authority: oracle,
+      candidate,
+      usdcMint,
+      jobId,
+    });
+    expect(refundStakeIx.data).toEqual(Buffer.from(IX_DISCRIMINATORS.refundConvictionStake));
 
     const claimIx = buildClaimBountyIx({ candidate, usdcMint, jobId, evalId });
     expect(claimIx.data).toEqual(Buffer.from(IX_DISCRIMINATORS.claimBounty));

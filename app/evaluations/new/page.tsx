@@ -66,6 +66,10 @@ interface ActiveBountyTarget {
   companyLogoUrl?: string | null;
   minScore: number;
   rewardPerWinnerUsdc: number;
+  stakePercent?: number;
+  stakePerCandidateUsdc?: number;
+  slashedPoolUsdc?: number;
+  proRataBonusUsdc?: number;
   rawText: string;
   availableSlots?: number;
 }
@@ -73,7 +77,7 @@ interface ActiveBountyTarget {
 export default function NewEvaluationPage() {
   const router = useRouter();
   const { data: session } = useSession();
-  const { publicKey } = useSolanaWallet();
+  const { publicKey, openConnectModal, signAndSubmitTx } = useSolanaWallet();
 
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [cvDragOver, setCvDragOver] = useState(false);
@@ -234,6 +238,10 @@ export default function NewEvaluationPage() {
       setErrorMessage("Please provide a job description (at least 50 characters).");
       return;
     }
+    if (activeBounty && !publicKey) {
+      openConnectModal();
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -271,6 +279,21 @@ export default function NewEvaluationPage() {
         throw new Error("Could not process CV version. Please try uploading again.");
       }
 
+      // Lock mandatory Conviction Stake in Devnet USDC before entering bounty evaluation/review
+      let stakeTxSignature: string | undefined;
+      if (activeBounty && publicKey) {
+        const preparedStake = await apiFetch<{
+          serializedTxBase64: string;
+          stakeUsdc: number;
+        }>(`/api/solana/bounties/${activeBounty.id}/stake`, {
+          method: "POST",
+          body: JSON.stringify({
+            walletAddress: publicKey,
+          }),
+        });
+        stakeTxSignature = await signAndSubmitTx(preparedStake.serializedTxBase64);
+      }
+
       // Reuse existing Bounty Job Description ID when applying for an on-chain USDC bounty,
       // otherwise create a new Job Description owned by this user.
       let jobDescriptionId = activeBounty?.jobDescriptionId;
@@ -294,13 +317,19 @@ export default function NewEvaluationPage() {
         throw new Error("Could not save job description. Please try again.");
       }
 
-      // Launch Evaluation
+      // Launch Evaluation (verifies Conviction Stake PDA + SHA-256 Duplicate + Fake Detector gates)
       const evalRes = await apiFetch<CreateEvaluationResponse>("/api/evaluations", {
         method: "POST",
         body: JSON.stringify({
           cvVersionId,
           jobDescriptionId,
           tone,
+          ...(activeBounty && publicKey
+            ? {
+                walletAddress: publicKey,
+                stakeTxSignature,
+              }
+            : {}),
         }),
       });
 
@@ -366,37 +395,61 @@ export default function NewEvaluationPage() {
         </div>
       )}
 
-      {activeBounty && !bountyRestriction && (
-        <div className="rounded-xl border border-border bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start gap-3.5 min-w-0">
-            <BountyCompanyLogo
-              company={activeBounty.company}
-              logoUrl={activeBounty.companyLogoUrl}
-              size="md"
-            />
-            <div className="space-y-1 min-w-0">
-              <div className="text-sm font-bold text-purple-400">
-                Solana USDC Bounty Mode · {activeBounty.rewardPerWinnerUsdc} USDC Reward
+      {activeBounty && !bountyRestriction && (() => {
+        const stakePct = activeBounty.stakePercent ?? 10;
+        const stakeUsdc =
+          activeBounty.stakePerCandidateUsdc ??
+          (activeBounty.rewardPerWinnerUsdc * stakePct) / 100;
+        const slashedBonus = activeBounty.proRataBonusUsdc ?? 0;
+
+        return (
+          <div className="rounded-xl border border-border bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3.5 min-w-0">
+              <BountyCompanyLogo
+                company={activeBounty.company}
+                logoUrl={activeBounty.companyLogoUrl}
+                size="md"
+              />
+              <div className="space-y-1.5 min-w-0">
+                <div className="text-sm font-bold text-purple-400">
+                  Solana USDC Bounty Mode · {activeBounty.rewardPerWinnerUsdc} USDC Reward ·{" "}
+                  {stakeUsdc} USDC Stake ({stakePct}%)
+                </div>
+                <p className="text-xs sm:text-sm text-text-secondary leading-relaxed">
+                  Targeting <strong className="text-text">{activeBounty.title}</strong> at{" "}
+                  <strong className="text-text">{activeBounty.company}</strong>. Locking{" "}
+                  <strong className="text-text">{stakeUsdc} USDC</strong> gets refunded 100% +{" "}
+                  {slashedBonus > 0
+                    ? `+${slashedBonus.toFixed(2)} USDC slashed spam yield `
+                    : "slashed spam yield "}
+                  upon approval ({activeBounty.minScore}/100+ bar). Duplicate or fake resumes
+                  automatically slash stake into the spam yield pool.
+                </p>
               </div>
-              <p className="text-xs sm:text-sm text-text-secondary leading-relaxed">
-                Targeting <strong className="text-text">{activeBounty.title}</strong> at{" "}
-                <strong className="text-text">{activeBounty.company}</strong>. Resumes undergo
-                SHA-256 duplicate &amp; Fake Resume Detector gating. Scoring{" "}
-                {activeBounty.minScore}/100+ reserves your winner slot in a 24h recruiter
-                review window before payout release.
-              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {!publicKey && (
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  onClick={openConnectModal}
+                >
+                  Connect Wallet to Stake
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setActiveBounty(null)}
+              >
+                Detach Bounty
+              </Button>
             </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            onClick={() => setActiveBounty(null)}
-          >
-            Detach Bounty
-          </Button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Main Review Form */}
       <form onSubmit={handleSubmit} className="space-y-6">
@@ -544,16 +597,32 @@ export default function NewEvaluationPage() {
         </div>
 
         {/* Submit Button */}
-        <div className="flex justify-end pt-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-end gap-3 pt-2">
+          {activeBounty && (
+            <span className="text-xs font-mono text-text-muted">
+              {(
+                activeBounty.stakePerCandidateUsdc ??
+                (activeBounty.rewardPerWinnerUsdc * (activeBounty.stakePercent ?? 10)) / 100
+              ).toFixed(2)}{" "}
+              USDC stake → get stake back + slashed spam yield on approval
+            </span>
+          )}
           <Button
             type="submit"
             variant="primary"
             size="lg"
             isLoading={isSubmitting}
             disabled={!cvFile || jobDescriptionText.trim().length < 50}
-            className="w-full sm:w-auto min-w-[200px] h-11 text-sm font-bold"
+            className="w-full sm:w-auto min-w-[220px] h-11 text-sm font-bold"
           >
-            Start Review →
+            {activeBounty
+              ? publicKey
+                ? `Lock ${(
+                    activeBounty.stakePerCandidateUsdc ??
+                    (activeBounty.rewardPerWinnerUsdc * (activeBounty.stakePercent ?? 10)) / 100
+                  ).toFixed(2)} USDC Stake & Start Review →`
+                : "Connect Wallet & Lock Stake →"
+              : "Start Review →"}
           </Button>
         </div>
       </form>

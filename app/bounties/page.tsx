@@ -28,6 +28,11 @@ interface BountyItem {
   minScore: number;
   rewardPerWinnerUsdc: number;
   totalPoolUsdc: number;
+  stakeBps?: number;
+  stakePercent?: number;
+  stakePerCandidateUsdc?: number;
+  slashedPoolUsdc?: number;
+  proRataBonusUsdc?: number;
   maxWinners: number;
   claimsCount: number;
   pendingReviewCount: number;
@@ -70,6 +75,9 @@ interface CandidateSubmissionSummary {
   slotReservedAt: string | null;
   reviewDeadlineAt: string | null;
   recruiterNotes: string | null;
+  stakePdaAddress?: string | null;
+  stakeAmountUsdc?: number;
+  stakeStatus?: string;
   isReviewExpired: boolean;
   remainingReviewLabel: string | null;
 }
@@ -183,23 +191,85 @@ export default function BountiesPage() {
   };
 
   const handleSubmitSlot = async (bounty: BountyItem, evalId: string) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
     setBusyBountyId(bounty.id);
     setError(null);
     setNotice(null);
     try {
+      const preparedStake = await apiFetch<{
+        serializedTxBase64: string;
+        stakeUsdc: number;
+      }>(`/api/solana/bounties/${bounty.id}/stake`, {
+        method: "POST",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+        }),
+      });
+
+      const stakeTxSignature = await signAndSubmitTx(preparedStake.serializedTxBase64);
+
       await apiFetch(`/api/solana/bounties/${bounty.id}/submit`, {
         method: "POST",
         body: JSON.stringify({
           evaluationId: evalId,
-          ...(publicKey ? { walletAddress: publicKey } : {}),
+          walletAddress: publicKey,
+          stakeTxSignature,
         }),
       });
       setNotice(
-        "Winner slot reserved in pending_review! Payout unlocks upon recruiter approval or after the 24h review window expires."
+        `Locked ${preparedStake.stakeUsdc} USDC Conviction Stake & reserved slot in pending_review! Stake + slashed spam yield release with your reward on approval.`
       );
       await loadBounties();
     } catch (err) {
-      showError(err, "Failed to reserve bounty review slot.");
+      showError(err, "Failed to lock Conviction Stake and reserve bounty slot.");
+      await loadBounties();
+    } finally {
+      setBusyBountyId(null);
+    }
+  };
+
+  const handleRefundStake = async (bounty: BountyItem, submissionId: string) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+    setBusyBountyId(bounty.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const prep = await apiFetch<{
+        serializedTxBase64: string;
+        submissionId: string;
+      }>(`/api/solana/bounties/${bounty.id}/refund-stake`, {
+        method: "POST",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          submissionId,
+        }),
+      });
+
+      const txSignature = await signAndSubmitTx(prep.serializedTxBase64);
+      const conf = await apiFetch<{ amountRefundedUsdc: number }>(
+        `/api/solana/bounties/${bounty.id}/refund-stake`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            walletAddress: publicKey,
+            submissionId: prep.submissionId,
+            txSignature,
+          }),
+        }
+      );
+
+      setNotice(
+        `Refunded ${conf.amountRefundedUsdc} USDC Conviction Stake back to your wallet.`
+      );
+      await loadBounties();
+    } catch (err) {
+      showError(err, "Failed to reclaim Conviction Stake.");
     } finally {
       setBusyBountyId(null);
     }
@@ -477,31 +547,54 @@ export default function BountiesPage() {
                     </span>
                   </div>
 
-                  {/* Pool & Threshold Metrics */}
-                  <div className="grid grid-cols-3 gap-3">
+                  {/* Pool, Stake, & Live Slashed Spam Yield Metrics */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
-                      <span className="text-[10px] font-mono text-text-muted uppercase">
+                      <span className="text-[10px] font-mono text-text-muted uppercase block">
                         Reward
                       </span>
-                      <p className="text-lg font-extrabold text-purple-400 mt-0.5">
+                      <p className="text-base sm:text-lg font-extrabold text-purple-400 mt-0.5">
                         {bounty.rewardPerWinnerUsdc} USDC
                       </p>
                     </div>
                     <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
-                      <span className="text-[10px] font-mono text-text-muted uppercase">
+                      <span className="text-[10px] font-mono text-text-muted uppercase block">
                         Min Score
                       </span>
-                      <p className="text-lg font-extrabold text-text mt-0.5">
+                      <p className="text-base sm:text-lg font-extrabold text-text mt-0.5">
                         {bounty.minScore}/100
                       </p>
                     </div>
                     <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
-                      <span className="text-[10px] font-mono text-text-muted uppercase">
-                        Total Pool
+                      <span className="text-[10px] font-mono text-text-muted uppercase block">
+                        Stake ({bounty.stakePercent ?? 10}%)
                       </span>
-                      <p className="text-lg font-extrabold text-text mt-0.5">
-                        {bounty.totalPoolUsdc} USDC
+                      <p className="text-base sm:text-lg font-extrabold text-text mt-0.5">
+                        {(
+                          bounty.stakePerCandidateUsdc ??
+                          (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
+                        ).toFixed(2)}{" "}
+                        USDC
                       </p>
+                    </div>
+                    <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
+                      <span className="text-[10px] font-mono text-text-muted uppercase block">
+                        Slashed Spam Yield
+                      </span>
+                      <p
+                        className={`text-base sm:text-lg font-extrabold mt-0.5 ${
+                          (bounty.slashedPoolUsdc ?? 0) > 0
+                            ? "text-purple-400"
+                            : "text-text"
+                        }`}
+                      >
+                        +{(bounty.slashedPoolUsdc ?? 0).toFixed(2)} USDC
+                      </p>
+                      {(bounty.proRataBonusUsdc ?? 0) > 0 && (
+                        <span className="text-[10px] font-mono text-purple-400 block">
+                          +{bounty.proRataBonusUsdc?.toFixed(2)} USDC / slot
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -667,6 +760,26 @@ export default function BountiesPage() {
                         Claimed {Number(myClaim.amountMicros) / 1_000_000} USDC
                       </span>
                     ) : myRestriction ? null : mySub &&
+                      mySub.reviewStatus === "below_threshold" &&
+                      mySub.stakeStatus === "pending" ? (
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <Button
+                          variant="primary"
+                          size="md"
+                          isLoading={busyBountyId === bounty.id}
+                          onClick={() => void handleRefundStake(bounty, mySub.id)}
+                        >
+                          Reclaim {mySub.stakeAmountUsdc ?? 0} USDC Stake →
+                        </Button>
+                        {bestIneligibleEval && (
+                          <Link href={`/evaluations/${bestIneligibleEval.id}/report`}>
+                            <Button variant="outline" size="md">
+                              View Report ({bestIneligibleEval.overallScore}/100) →
+                            </Button>
+                          </Link>
+                        )}
+                      </div>
+                    ) : mySub &&
                       mySub.reviewStatus !== "below_threshold" &&
                       mySub.reviewStatus !== "evaluating" ? (
                       isSubUnlocked ? (
@@ -683,11 +796,20 @@ export default function BountiesPage() {
                               )
                             }
                           >
-                            {!claimableEval
-                              ? `Anchor Proof & Claim ${bounty.rewardPerWinnerUsdc} USDC`
-                              : mySub.reviewStatus === "approved"
-                              ? `Claim Approved ${bounty.rewardPerWinnerUsdc} USDC`
-                              : `Auto-Claim ${bounty.rewardPerWinnerUsdc} USDC`}{" "}
+                            {(() => {
+                              const extraStake =
+                                mySub.stakeStatus === "pending"
+                                  ? (mySub.stakeAmountUsdc ?? 0) + (bounty.proRataBonusUsdc ?? 0)
+                                  : 0;
+                              const payoutLabel = (
+                                bounty.rewardPerWinnerUsdc + extraStake
+                              ).toFixed(2);
+                              return !claimableEval
+                                ? `Anchor Proof & Claim ${payoutLabel} USDC`
+                                : mySub.reviewStatus === "approved"
+                                ? `Claim Approved ${payoutLabel} USDC`
+                                : `Auto-Claim ${payoutLabel} USDC`;
+                            })()}{" "}
                             →
                           </Button>
                         ) : null
@@ -699,19 +821,33 @@ export default function BountiesPage() {
                         </Link>
                       ) : null
                     ) : claimableEval || qualifyingUnanchored ? (
-                      <Button
-                        variant="secondary"
-                        size="md"
-                        isLoading={busyBountyId === bounty.id}
-                        onClick={() =>
-                          void handleSubmitSlot(
-                            bounty,
-                            (claimableEval ?? qualifyingUnanchored)!.id
-                          )
-                        }
-                      >
-                        Submit & Reserve Slot ({(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →
-                      </Button>
+                      <div className="space-y-1.5">
+                        <Button
+                          variant="secondary"
+                          size="md"
+                          isLoading={busyBountyId === bounty.id}
+                          onClick={() =>
+                            void handleSubmitSlot(
+                              bounty,
+                              (claimableEval ?? qualifyingUnanchored)!.id
+                            )
+                          }
+                        >
+                          Stake{" "}
+                          {(
+                            bounty.stakePerCandidateUsdc ??
+                            (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
+                          ).toFixed(2)}{" "}
+                          USDC &amp; Enter Review ({(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →
+                        </Button>
+                        <p className="text-[11px] font-mono text-text-muted">
+                          {(
+                            bounty.stakePerCandidateUsdc ??
+                            (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
+                          ).toFixed(2)}{" "}
+                          USDC stake → get stake back + slashed spam yield on approval
+                        </p>
+                      </div>
                     ) : bestIneligibleEval ? (
                       <Link href={`/evaluations/${bestIneligibleEval.id}/report`}>
                         <Button variant="outline" size="md">
@@ -723,11 +859,25 @@ export default function BountiesPage() {
                         All Winner Slots Reserved / Paid
                       </span>
                     ) : bounty.status === "active" && !isExpired ? (
-                      <Link href={`/evaluations/new?bountyId=${bounty.id}`}>
-                        <Button variant="primary" size="md">
-                          Apply & Evaluate CV →
-                        </Button>
-                      </Link>
+                      <div className="space-y-1.5">
+                        <Link href={`/evaluations/new?bountyId=${bounty.id}`}>
+                          <Button variant="primary" size="md">
+                            Apply &amp; Stake{" "}
+                            {(
+                              bounty.stakePerCandidateUsdc ??
+                              (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
+                            ).toFixed(2)}{" "}
+                            USDC →
+                          </Button>
+                        </Link>
+                        <p className="text-[11px] font-mono text-text-muted">
+                          {(
+                            bounty.stakePerCandidateUsdc ??
+                            (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
+                          ).toFixed(2)}{" "}
+                          USDC stake → get stake back + slashed spam yield on approval
+                        </p>
+                      </div>
                     ) : null}
                   </div>
                 </div>

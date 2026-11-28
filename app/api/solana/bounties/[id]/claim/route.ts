@@ -16,8 +16,10 @@ import {
 import {
   confirmSubmittedSignature,
   fetchOnChainClaimReceipt,
+  fetchOnChainConvictionStake,
   fetchOnChainEscrow,
   getExplorerTxUrl,
+  prepareApproveAndPayoutTx,
   prepareClaimBountyTx,
 } from "@/lib/solana";
 
@@ -126,11 +128,25 @@ export const POST = createApiHandler(
       throw new ConflictError("You have already claimed a payout from this bounty.");
     }
 
-    const prepared = await prepareClaimBountyTx({
-      candidateWallet,
-      jobId: bounty.jobDescriptionId,
-      evalId: evalRow.id,
-    });
+    const stakeRes = await fetchOnChainConvictionStake(
+      bounty.jobDescriptionId,
+      candidateWallet
+    ).catch(() => ({ stake: null }));
+
+    const prepared =
+      stakeRes.stake?.status === "pending"
+        ? await prepareApproveAndPayoutTx({
+            payerWallet: candidateWallet,
+            candidateWallet,
+            jobId: bounty.jobDescriptionId,
+            evalId: evalRow.id,
+            oracleCosign: true,
+          })
+        : await prepareClaimBountyTx({
+            candidateWallet,
+            jobId: bounty.jobDescriptionId,
+            evalId: evalRow.id,
+          });
 
     return successResponse(prepared);
   }
@@ -158,9 +174,12 @@ export const PATCH = createApiHandler(
     });
 
     await confirmSubmittedSignature(parsed.txSignature);
-    const [claimRes, escrowRes] = await Promise.all([
+    const [claimRes, escrowRes, stakeRes] = await Promise.all([
       fetchOnChainClaimReceipt(bounty.jobDescriptionId, candidateWallet),
       fetchOnChainEscrow(bounty.jobDescriptionId),
+      fetchOnChainConvictionStake(bounty.jobDescriptionId, candidateWallet).catch(() => ({
+        stake: null,
+      })),
     ]);
 
     if (!claimRes.claim) {
@@ -200,16 +219,36 @@ export const PATCH = createApiHandler(
       .update(bounties)
       .set({
         claimsCount: updatedClaimsCount,
+        ...(escrowRes.escrow?.slashedPoolAmountMicros
+          ? { slashedPoolMicros: escrowRes.escrow.slashedPoolAmountMicros }
+          : {}),
         status: isFilled ? "filled" : "active",
         updatedAt: new Date(),
       })
       .where(eq(bounties.id, bounty.id));
+
+    const paidMicros = BigInt(claimRes.claim.amountPaidMicros);
+    const rewardMicros = BigInt(bounty.rewardPerWinnerMicros);
+    const stakeMicros = stakeRes.stake
+      ? BigInt(stakeRes.stake.amountStakedMicros)
+      : BigInt(0);
+    const bonusMicros =
+      stakeRes.stake && paidMicros > rewardMicros + stakeMicros
+        ? paidMicros - rewardMicros - stakeMicros
+        : BigInt(0);
 
     await db
       .update(bountySubmissions)
       .set({
         candidateWallet,
         reviewStatus: "claimed",
+        ...(stakeRes.stake?.status === "approved"
+          ? {
+              stakeStatus: "approved",
+              payoutTxSignature: parsed.txSignature,
+              bonusPaidMicros: bonusMicros.toString(),
+            }
+          : { payoutTxSignature: parsed.txSignature }),
         updatedAt: new Date(),
       })
       .where(

@@ -2,6 +2,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import {
+  computeStakeAndBonusMetrics,
   formatRemainingDuration,
   getActiveRestriction,
   getBountySlotMetrics,
@@ -69,6 +70,8 @@ export const GET = createApiHandler(
       evalRow = latest;
     }
 
+    const earlyStakeMetrics = computeStakeAndBonusMetrics(bounty);
+
     if (!evalRow) {
       return NextResponse.json(
         {
@@ -82,6 +85,11 @@ export const GET = createApiHandler(
               minScore: bounty.minScore,
               maxWinners: bounty.maxWinners,
               rewardPerWinnerUsdc: Number(bounty.rewardPerWinnerMicros) / 1_000_000,
+              stakeBps: earlyStakeMetrics.stakeBps,
+              stakePercent: earlyStakeMetrics.stakePercent,
+              stakePerCandidateUsdc: earlyStakeMetrics.stakePerCandidateUsdc,
+              slashedPoolUsdc: earlyStakeMetrics.slashedPoolUsdc,
+              proRataBonusUsdc: earlyStakeMetrics.proRataBonusUsdc,
               expiresAt: bounty.expiresAt.toISOString(),
             },
             evaluation: null,
@@ -181,6 +189,11 @@ export const GET = createApiHandler(
         minScore: bounty.minScore,
         maxWinners: bounty.maxWinners,
         rewardPerWinnerUsdc: Number(bounty.rewardPerWinnerMicros) / 1_000_000,
+        stakeBps: earlyStakeMetrics.stakeBps,
+        stakePercent: earlyStakeMetrics.stakePercent,
+        stakePerCandidateUsdc: earlyStakeMetrics.stakePerCandidateUsdc,
+        slashedPoolUsdc: earlyStakeMetrics.slashedPoolUsdc,
+        proRataBonusUsdc: earlyStakeMetrics.proRataBonusUsdc,
         expiresAt: bounty.expiresAt.toISOString(),
       },
       evaluation: {
@@ -199,6 +212,14 @@ export const GET = createApiHandler(
             fakeDetectorStatus: submission.fakeDetectorStatus,
             fakeDetectorScore: submission.fakeDetectorScore,
             recruiterNotes: submission.recruiterNotes,
+            stakePdaAddress: submission.stakePdaAddress,
+            stakeStatus: submission.stakeStatus,
+            stakeAmountUsdc: submission.stakeAmountMicros
+              ? Number(submission.stakeAmountMicros) / 1_000_000
+              : 0,
+            bonusPaidUsdc: submission.bonusPaidMicros
+              ? Number(submission.bonusPaidMicros) / 1_000_000
+              : 0,
             remainingReviewLabel:
               deadlineMs && nowMs < deadlineMs
                 ? formatRemainingDuration(deadlineMs, nowMs)
