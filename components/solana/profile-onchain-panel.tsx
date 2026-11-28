@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { ErrorPopup } from "@/components/ui/error-popup";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { SolanaIdentityCard } from "@/components/solana/solana-identity-card";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -158,6 +158,10 @@ export const ProfileOnChainPanel: React.FC = () => {
     }
   };
 
+  if (loading && !data) {
+    return <FullPageLoading />;
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-6">
@@ -181,7 +185,7 @@ export const ProfileOnChainPanel: React.FC = () => {
             onClick={() => void loadWalletState()}
             disabled={loading}
           >
-            Refresh
+            {loading ? "Refreshing..." : "Refresh"}
           </Button>
         </div>
 
@@ -201,12 +205,7 @@ export const ProfileOnChainPanel: React.FC = () => {
           </Alert>
         )}
 
-        {loading ? (
-          <div className="py-10 flex justify-center">
-            <LoadingSpinner label="Querying Solana PDA & Token-2022 state..." />
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
             {/* Portrait A4-shaped Solana Identity Card */}
             <div className="xl:col-span-5">
               <SolanaIdentityCard
@@ -381,7 +380,6 @@ export const ProfileOnChainPanel: React.FC = () => {
               </div>
             </div>
           </div>
-        )}
       </div>
 
       {/* Token-2022 Non-Transferable Soulbound Credentials */}
@@ -400,11 +398,7 @@ export const ProfileOnChainPanel: React.FC = () => {
           </span>
         </div>
 
-        {loading ? (
-          <div className="py-6 flex justify-center">
-            <LoadingSpinner label="Scanning Token-2022 Non-Transferable mints..." />
-          </div>
-        ) : !data?.credentials || data.credentials.length === 0 ? (
+        {!data?.credentials || data.credentials.length === 0 ? (
           <div className="p-6 rounded-lg bg-surface-elevated border border-border text-center space-y-2">
             <p className="text-sm font-bold text-text">No Soulbound Credentials Yet</p>
             <p className="text-xs text-text-secondary max-w-lg mx-auto">

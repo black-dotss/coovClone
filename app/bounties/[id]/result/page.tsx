@@ -8,6 +8,8 @@ import { ErrorPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
 import { apiFetch } from "@/lib/client/api";
+import { executeBountyClaimFlow } from "@/lib/solana/client-claim";
+import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 
 interface BountyResultResponse {
   cluster: string;
@@ -61,9 +63,12 @@ function BountyResultContent() {
   const searchParams = useSearchParams();
   const bountyId = params?.id as string;
   const evalId = searchParams?.get("evalId") || "";
+  const { publicKey, openConnectModal, signAndSubmitTx } = useSolanaWallet();
 
   const [data, setData] = useState<BountyResultResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [claiming, setClaiming] = useState(false);
+  const [claimNotice, setClaimNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -252,10 +257,61 @@ function BountyResultContent() {
           </div>
         )}
 
+        {claimNotice && (
+          <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-purple-500/40 text-xs font-mono text-purple-400">
+            {claimNotice}
+          </div>
+        )}
+
         {/* Minimal Actions */}
         <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-border">
+          {isSuccess &&
+            !data.claim &&
+            (subStatus === "approved" ||
+              data.submission?.remainingReviewLabel === "Deadline expired (Auto-claim ready)") && (
+              <Button
+                variant="primary"
+                size="md"
+                isLoading={claiming}
+                onClick={async () => {
+                  if (!publicKey) {
+                    openConnectModal();
+                    return;
+                  }
+                  setClaiming(true);
+                  setError(null);
+                  try {
+                    const res = await executeBountyClaimFlow({
+                      bountyId: data.bounty.id,
+                      evaluationId: data.evaluation!.id,
+                      walletAddress: publicKey,
+                      isEvalAnchored: Boolean(data.evaluation!.evalTxSignature),
+                      signAndSubmitTx,
+                    });
+                    setClaimNotice(
+                      `Claimed ${res.amountPaidUsdc} USDC payout! Tx: ${res.claimTxSignature}`
+                    );
+                    const qs = evalId ? `?evalId=${encodeURIComponent(evalId)}` : "";
+                    const refreshed = await apiFetch<BountyResultResponse>(
+                      `/api/solana/bounties/${bountyId}/result${qs}`
+                    );
+                    setData(refreshed);
+                  } catch (err) {
+                    setError(
+                      err instanceof Error ? err.message : "Failed to claim USDC bounty."
+                    );
+                  } finally {
+                    setClaiming(false);
+                  }
+                }}
+              >
+                {data.evaluation.evalTxSignature
+                  ? `Claim ${data.bounty.rewardPerWinnerUsdc} USDC →`
+                  : `Anchor Proof & Claim ${data.bounty.rewardPerWinnerUsdc} USDC →`}
+              </Button>
+            )}
           <Link href={`/evaluations/${data.evaluation.id}/report`}>
-            <Button variant="primary" size="md">
+            <Button variant={subStatus === "approved" && !data.claim ? "outline" : "primary"} size="md">
               {isSuccess && !data.evaluation.evalTxSignature
                 ? "View Report & Anchor Proof →"
                 : "View Full Report →"}

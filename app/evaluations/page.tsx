@@ -4,7 +4,9 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/client/api";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
+import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
 
 interface EvaluationItem {
   id: string;
@@ -56,19 +58,99 @@ function getCompanyLogoUrl(company: string): string | null {
   return null;
 }
 
+interface PersonalBountyItem {
+  id: string;
+  recruiterUserId: string;
+  jobDescriptionId: string;
+  title: string;
+  company: string;
+  companyLogoUrl?: string | null;
+  minScore: number;
+  rewardPerWinnerUsdc: number;
+  maxWinners: number;
+  claimsCount: number;
+  approvedCount?: number;
+  pendingReviewCount?: number;
+  status: string;
+  expiresAt: string;
+  role: "published" | "entered";
+  submissionStatus?: string | null;
+  evaluationId?: string | null;
+  overallScore?: number | null;
+}
+
 export default function HistoryPage() {
   const router = useRouter();
   const [evaluations, setEvaluations] = useState<EvaluationItem[]>([]);
   const [comparisons, setComparisons] = useState<ComparisonHistoryItem[]>([]);
-  const [activeTab, setActiveTab] = useState<"reviews" | "compares">("reviews");
+  const [myBounties, setMyBounties] = useState<PersonalBountyItem[]>([]);
+  const [activeTab, setActiveTab] = useState<"bounties" | "reviews" | "compares">("reviews");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadData() {
       try {
-        const data = await apiFetch<EvaluationItem[]>("/api/evaluations");
-        setEvaluations(data || []);
+        const [evalData, bountyData] = await Promise.all([
+          apiFetch<EvaluationItem[]>("/api/evaluations"),
+          apiFetch<{
+            currentUserId?: string | null;
+            bounties?: Array<{
+              id: string;
+              recruiterUserId: string;
+              jobDescriptionId: string;
+              title: string;
+              company: string;
+              companyLogoUrl?: string | null;
+              minScore: number;
+              rewardPerWinnerUsdc: number;
+              maxWinners: number;
+              claimsCount: number;
+              approvedCount?: number;
+              pendingReviewCount?: number;
+              status: string;
+              expiresAt: string;
+            }>;
+            myEvaluations?: Array<{
+              id: string;
+              jobDescriptionId: string;
+              overallScore: number | null;
+            }>;
+            mySubmissions?: Array<{
+              bountyId: string;
+              evaluationId: string;
+              reviewStatus: string;
+            }>;
+          }>("/api/solana/bounties").catch(() => null),
+        ]);
+        setEvaluations(evalData || []);
+
+        if (bountyData?.bounties && bountyData.currentUserId) {
+          const uid = bountyData.currentUserId;
+          const subsByBounty = new Map(
+            (bountyData.mySubmissions ?? []).map((s) => [s.bountyId, s])
+          );
+          const evalsByJd = new Map(
+            (bountyData.myEvaluations ?? []).map((e) => [e.jobDescriptionId, e])
+          );
+
+          const personal: PersonalBountyItem[] = [];
+          for (const b of bountyData.bounties) {
+            const isPublisher = b.recruiterUserId === uid;
+            const sub = subsByBounty.get(b.id);
+            const ev = evalsByJd.get(b.jobDescriptionId);
+            if (isPublisher || sub || ev) {
+              personal.push({
+                ...b,
+                role: isPublisher ? "published" : "entered",
+                submissionStatus: sub?.reviewStatus ?? null,
+                evaluationId: sub?.evaluationId ?? ev?.id ?? null,
+                overallScore: ev?.overallScore ?? null,
+              });
+            }
+          }
+          setMyBounties(personal);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load reviews");
       } finally {
@@ -171,14 +253,34 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="p-3 bg-red-950/40 border border-red-900/60 text-red-300 text-xs rounded-xl">
-          {error}
-        </div>
-      )}
+      <ErrorPopup
+        title="History Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
 
       {/* Mobile Activity Switcher */}
       <div className="flex lg:hidden items-center gap-2 border-b border-border pb-3 w-full overflow-x-auto">
+        <button
+          onClick={() => setActiveTab("bounties")}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold shrink-0 cursor-pointer transition-colors ${
+            activeTab === "bounties"
+              ? "bg-purple-600 text-white shadow-xs"
+              : "bg-surface-elevated border border-border text-text-muted hover:text-text"
+          }`}
+        >
+          <span>My Bounties</span>
+          <span
+            className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+              activeTab === "bounties"
+                ? "bg-purple-700/80 text-white"
+                : "bg-surface text-text-muted"
+            }`}
+          >
+            {myBounties.length}
+          </span>
+        </button>
+
         <button
           onClick={() => setActiveTab("reviews")}
           className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold shrink-0 cursor-pointer transition-colors ${
@@ -224,6 +326,70 @@ export default function HistoryPage() {
       <div className="w-full flex flex-col lg:flex-row gap-6 items-start">
         {/* Left Sidebar (Desktop Only) */}
         <aside className="hidden lg:block lg:w-64 lg:min-w-[16rem] lg:max-w-[16rem] shrink-0 lg:sticky lg:top-20 space-y-4 bg-surface border border-border rounded-xl p-3 shadow-xs">
+          {/* Top Personal Bounties Quick List + Nav Button */}
+          <div className="space-y-2 pb-3 border-b border-border">
+            <button
+              onClick={() => setActiveTab("bounties")}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm rounded-lg transition-all text-left cursor-pointer group ${
+                activeTab === "bounties"
+                  ? "bg-surface-elevated text-text font-bold border border-border shadow-xs"
+                  : "text-text-muted hover:text-text hover:bg-surface-elevated/60 font-semibold"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <svg
+                  className={`w-4 h-4 shrink-0 ${
+                    activeTab === "bounties" ? "text-purple-400" : "text-text-muted"
+                  }`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <span>My Bounties</span>
+              </div>
+              <span
+                className={`text-xs font-mono px-2 py-0.5 rounded font-bold ${
+                  activeTab === "bounties"
+                    ? "bg-purple-100 text-purple-900 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800"
+                    : "bg-surface-elevated text-text-muted border border-border"
+                }`}
+              >
+                {myBounties.length}
+              </span>
+            </button>
+
+            {myBounties.length > 0 && (
+              <div className="space-y-1 px-1">
+                {myBounties.slice(0, 4).map((b) => (
+                  <Link
+                    key={b.id}
+                    href={
+                      b.role === "published"
+                        ? `/bounties/${b.id}/review`
+                        : `/bounties/${b.id}/result${b.evaluationId ? `?evalId=${encodeURIComponent(b.evaluationId)}` : ""}`
+                    }
+                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-elevated text-xs transition-colors"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-text truncate">{b.title}</p>
+                      <p className="text-[10px] font-mono text-text-muted truncate">
+                        {b.company} · {b.role === "published" ? "Publisher" : `${b.rewardPerWinnerUsdc} USDC`}
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono text-purple-400 shrink-0">→</span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="space-y-1">
             <div className="text-[11px] font-bold uppercase tracking-wider text-text-muted px-3.5 pt-1 pb-1">
               Activity Type
@@ -333,7 +499,95 @@ export default function HistoryPage() {
 
         {/* Right Main Content: 2-Column Grid */}
         <main className="flex-1 min-w-0 w-full">
-          {activeTab === "reviews" ? (
+          {activeTab === "bounties" ? (
+            /* TAB: MY BOUNTIES */
+            myBounties.length === 0 ? (
+              <div className="p-12 text-center border border-border bg-surface rounded-xl space-y-4 shadow-xs">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-text">No personal bounties yet</h3>
+                  <p className="text-xs text-text-muted max-w-sm mx-auto">
+                    Publish a Solana USDC bounty escrow or evaluate your CV for an active bounty to see it listed here.
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-3">
+                  <Link href="/bounties">
+                    <span className="inline-flex items-center justify-center px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg transition-colors">
+                      Explore Bounties →
+                    </span>
+                  </Link>
+                  <Link href="/bounties/new">
+                    <span className="inline-flex items-center justify-center px-4 py-2 bg-surface-elevated border border-border text-text text-xs font-semibold rounded-lg transition-colors">
+                      + Post USDC Bounty
+                    </span>
+                  </Link>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {myBounties.map((b) => (
+                  <div
+                    key={b.id}
+                    className="p-4 sm:p-5 bg-surface border border-border rounded-xl hover:border-purple-500/50 transition-all flex flex-col justify-between gap-4 shadow-xs"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <BountyCompanyLogo
+                            company={b.company}
+                            logoUrl={b.companyLogoUrl}
+                            size="md"
+                          />
+                          <div className="min-w-0">
+                            <span className="text-[11px] font-mono text-purple-400 uppercase font-semibold block truncate">
+                              {b.company}
+                            </span>
+                            <h3 className="text-sm font-bold text-text truncate">
+                              {b.title}
+                            </h3>
+                          </div>
+                        </div>
+                        <span className="px-2 py-0.5 rounded bg-surface-elevated border border-border text-[10px] font-mono text-purple-400 shrink-0">
+                          {b.role === "published" ? "Publisher" : "Applicant"}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono text-text-muted">
+                        <span>{b.rewardPerWinnerUsdc} USDC / winner</span>
+                        <span>·</span>
+                        <span>
+                          {b.claimsCount} paid
+                          {(b.approvedCount ?? 0) > 0 ? ` · ${b.approvedCount} approved` : ""}
+                          {(b.pendingReviewCount ?? 0) > 0 ? ` · ${b.pendingReviewCount} in review` : ""}{" "}
+                          / {b.maxWinners}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-border flex items-center justify-between gap-3">
+                      <span className="text-xs font-mono text-text-secondary">
+                        {b.role === "published"
+                          ? `Min ${b.minScore}/100`
+                          : b.overallScore !== null && b.overallScore !== undefined
+                          ? `Score: ${b.overallScore}/100 (${b.submissionStatus ?? "evaluated"})`
+                          : "Evaluated"}
+                      </span>
+
+                      <Link
+                        href={
+                          b.role === "published"
+                            ? `/bounties/${b.id}/review`
+                            : `/bounties/${b.id}/result${b.evaluationId ? `?evalId=${encodeURIComponent(b.evaluationId)}` : ""}`
+                        }
+                        className="px-3 py-1.5 bg-surface-elevated hover:border-purple-500/40 border border-border text-xs font-semibold text-purple-400 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                      >
+                        {b.role === "published" ? "Review Candidates →" : "View Result →"}
+                      </Link>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : activeTab === "reviews" ? (
             /* TAB: MY REVIEWS */
             evaluations.length === 0 ? (
               <div className="p-12 text-center border border-border bg-surface rounded-xl space-y-4 shadow-xs">

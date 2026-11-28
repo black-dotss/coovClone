@@ -157,6 +157,7 @@ export default function BountyPublisherReviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showFullCv, setShowFullCv] = useState(true);
+  const [showAgentReview, setShowAgentReview] = useState(false);
 
   const loadWorkspace = useCallback(async () => {
     if (!bountyId) return;
@@ -637,127 +638,17 @@ export default function BountyPublisherReviewPage() {
                     </div>
 
                     <span className="text-[11px] font-mono text-text-muted">
-                      Approving clears the 24h hold immediately for on-chain USDC release.
+                      Approving unlocks payout for the candidate to claim on-chain via their wallet.
                     </span>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Fake Resume Detector Agent Report */}
+              {/* Full Candidate Resume / CV Reader (Shown FIRST above Agents Review) */}
               <Card className="bg-surface border-border rounded-xl">
                 <CardHeader className="pb-3 border-b border-border flex flex-row items-center justify-between">
                   <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
-                    Fake Resume Detector Agent Report
-                  </CardTitle>
-                  <span
-                    className={`px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border ${
-                      selected.fakeDetectorStatus === "flagged"
-                        ? "text-red-400"
-                        : "text-purple-400"
-                    }`}
-                  >
-                    {selected.fakeDetectorStatus.toUpperCase()} · Risk{" "}
-                    {selected.fakeDetectorScore ?? 0}/100
-                  </span>
-                </CardHeader>
-                <CardContent className="pt-4 space-y-3 text-xs">
-                  <p className="text-text-secondary">
-                    {selected.fakeDetectorReport?.summary ||
-                      "No fabrication, keyword stuffing, or prompt injection detected."}
-                  </p>
-                  {selected.fakeDetectorReport?.signals &&
-                    selected.fakeDetectorReport.signals.length > 0 && (
-                      <div className="space-y-2">
-                        {selected.fakeDetectorReport.signals.map((sig, idx) => (
-                          <div
-                            key={`${sig.category}-${idx}`}
-                            className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1"
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-text">{sig.finding}</span>
-                              <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-text-muted">
-                                {sig.category} · {sig.severity}
-                              </span>
-                            </div>
-                            <p className="font-mono text-[11px] text-text-muted">
-                              Evidence: {sig.evidence}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                </CardContent>
-              </Card>
-
-              {/* 6-Agent Committee Review Breakdown */}
-              <Card className="bg-surface border-border rounded-xl">
-                <CardHeader className="pb-3 border-b border-border">
-                  <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
-                    6-Agent Hiring Committee Review ({selected.agentRuns.length} Personas)
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="pt-4 space-y-4">
-                  {selected.structuredReport?.explanation && (
-                    <div className="p-3.5 rounded-lg bg-surface-elevated border border-border text-xs text-text-secondary leading-relaxed">
-                      <span className="block font-mono uppercase text-[10px] text-purple-400 font-bold mb-1">
-                        Synthesis Summary
-                      </span>
-                      {selected.structuredReport.explanation}
-                    </div>
-                  )}
-
-                  {selected.structuredReport?.redFlags &&
-                    selected.structuredReport.redFlags.length > 0 && (
-                      <div className="space-y-2">
-                        <span className="text-[11px] font-mono uppercase font-bold text-red-400">
-                          Committee Red Flags ({selected.structuredReport.redFlags.length})
-                        </span>
-                        {selected.structuredReport.redFlags.map((rf, i) => (
-                          <div
-                            key={i}
-                            className="p-3 rounded-lg border border-border bg-surface-elevated text-xs space-y-1"
-                          >
-                            <p className="font-semibold text-text">{rf.flag}</p>
-                            <p className="font-mono text-[11px] text-text-muted">
-                              &ldquo;{rf.evidenceSnippet}&rdquo;
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {selected.agentRuns.map((run) => (
-                      <div
-                        key={run.agentRole}
-                        className="p-3.5 rounded-lg bg-surface-elevated border border-border space-y-2 text-xs"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-text">
-                            {run.structuredResult?.displayName ||
-                              ROLE_LABELS[run.agentRole] ||
-                              run.agentRole}
-                          </span>
-                          <span className="font-mono font-extrabold text-purple-400">
-                            {run.scoreContribution ?? "—"}/100
-                          </span>
-                        </div>
-                        {run.structuredResult?.position && (
-                          <p className="text-text-secondary leading-relaxed">
-                            {run.structuredResult.position}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Full Candidate Resume / CV Reader */}
-              <Card className="bg-surface border-border rounded-xl">
-                <CardHeader className="pb-3 border-b border-border flex flex-row items-center justify-between">
-                  <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
-                    Full Submitted Resume / CV
+                    Candidate Full Resume / CV
                   </CardTitle>
                   <Button
                     variant="outline"
@@ -769,9 +660,139 @@ export default function BountyPublisherReviewPage() {
                 </CardHeader>
                 {showFullCv && (
                   <CardContent className="pt-4">
-                    <pre className="whitespace-pre-wrap font-mono text-xs text-text-secondary bg-surface-elevated p-4 rounded-lg border border-border max-h-[500px] overflow-y-auto leading-relaxed">
+                    <pre className="whitespace-pre-wrap font-mono text-xs text-text-secondary bg-surface-elevated p-4 rounded-lg border border-border max-h-[520px] overflow-y-auto leading-relaxed">
                       {selected.cvText}
                     </pre>
+                  </CardContent>
+                )}
+              </Card>
+
+              {/* Collapsible Agents Review & Fake Resume Detector (Collapsed by default) */}
+              <Card className="bg-surface border-border rounded-xl">
+                <CardHeader className="pb-3 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <CardTitle className="text-sm font-extrabold uppercase tracking-wider text-text">
+                      6-Agent Review & Fake Resume Detector
+                    </CardTitle>
+                    <p className="text-[11px] font-mono text-text-muted">
+                      Score: <span className="text-purple-400 font-semibold">{selected.overallScore ?? "—"}/100</span> ·{" "}
+                      Fake Detector:{" "}
+                      <span className={selected.fakeDetectorStatus === "flagged" ? "text-red-400 font-semibold" : "text-purple-400 font-semibold"}>
+                        {selected.fakeDetectorStatus.toUpperCase()} (Risk {selected.fakeDetectorScore ?? 0}/100)
+                      </span>
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowAgentReview((v) => !v)}
+                  >
+                    {showAgentReview ? "Collapse Agents Review" : "Expand Agents Review"}
+                  </Button>
+                </CardHeader>
+
+                {showAgentReview && (
+                  <CardContent className="pt-5 space-y-6">
+                    {/* Fake Resume Detector Breakdown */}
+                    <div className="space-y-3 text-xs pb-5 border-b border-border">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono uppercase text-[11px] font-bold text-text">
+                          Fake Resume Detector Report
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border ${
+                            selected.fakeDetectorStatus === "flagged"
+                              ? "text-red-400"
+                              : "text-purple-400"
+                          }`}
+                        >
+                          {selected.fakeDetectorStatus.toUpperCase()} · Risk{" "}
+                          {selected.fakeDetectorScore ?? 0}/100
+                        </span>
+                      </div>
+                      <p className="text-text-secondary">
+                        {selected.fakeDetectorReport?.summary ||
+                          "No fabrication, keyword stuffing, or prompt injection detected."}
+                      </p>
+                      {selected.fakeDetectorReport?.signals &&
+                        selected.fakeDetectorReport.signals.length > 0 && (
+                          <div className="space-y-2">
+                            {selected.fakeDetectorReport.signals.map((sig, idx) => (
+                              <div
+                                key={`${sig.category}-${idx}`}
+                                className="p-3 rounded-lg bg-surface-elevated border border-border space-y-1"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="font-bold text-text">{sig.finding}</span>
+                                  <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-text-muted">
+                                    {sig.category} · {sig.severity}
+                                  </span>
+                                </div>
+                                <p className="font-mono text-[11px] text-text-muted">
+                                  Evidence: {sig.evidence}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                    </div>
+
+                    {/* 6-Agent Committee Breakdown */}
+                    <div className="space-y-4">
+                      {selected.structuredReport?.explanation && (
+                        <div className="p-3.5 rounded-lg bg-surface-elevated border border-border text-xs text-text-secondary leading-relaxed">
+                          <span className="block font-mono uppercase text-[10px] text-purple-400 font-bold mb-1">
+                            Synthesis Summary
+                          </span>
+                          {selected.structuredReport.explanation}
+                        </div>
+                      )}
+
+                      {selected.structuredReport?.redFlags &&
+                        selected.structuredReport.redFlags.length > 0 && (
+                          <div className="space-y-2">
+                            <span className="text-[11px] font-mono uppercase font-bold text-red-400">
+                              Committee Red Flags ({selected.structuredReport.redFlags.length})
+                            </span>
+                            {selected.structuredReport.redFlags.map((rf, i) => (
+                              <div
+                                key={i}
+                                className="p-3 rounded-lg border border-border bg-surface-elevated text-xs space-y-1"
+                              >
+                                <p className="font-semibold text-text">{rf.flag}</p>
+                                <p className="font-mono text-[11px] text-text-muted">
+                                  &ldquo;{rf.evidenceSnippet}&rdquo;
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {selected.agentRuns.map((run) => (
+                          <div
+                            key={run.agentRole}
+                            className="p-3.5 rounded-lg bg-surface-elevated border border-border space-y-2 text-xs"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-text">
+                                {run.structuredResult?.displayName ||
+                                  ROLE_LABELS[run.agentRole] ||
+                                  run.agentRole}
+                              </span>
+                              <span className="font-mono font-extrabold text-purple-400">
+                                {run.scoreContribution ?? "—"}/100
+                              </span>
+                            </div>
+                            {run.structuredResult?.position && (
+                              <p className="text-text-secondary leading-relaxed">
+                                {run.structuredResult.position}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </CardContent>
                 )}
               </Card>

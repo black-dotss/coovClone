@@ -52,13 +52,13 @@ export function ErrorPopup({
       aria-live="assertive"
       className="fixed top-20 left-1/2 -translate-x-1/2 z-[150] w-[calc(100%-2rem)] max-w-lg animate-in fade-in slide-in-from-top-2 duration-150"
     >
-      <div className="rounded-xl border border-purple-500/40 bg-surface shadow-2xl shadow-black/40 p-4 sm:p-5 flex items-start justify-between gap-4">
+      <div className="rounded-xl border border-rose-400/40 dark:border-purple-400/45 bg-gradient-to-br from-[#fcebf2] via-[#f6e8fc] to-[#ede8fe] dark:from-[#2c121e] dark:via-[#261226] dark:to-[#1d1129] shadow-2xl shadow-black/40 p-4 sm:p-5 flex items-start justify-between gap-4">
         <div className="flex items-start gap-3 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-surface-elevated border border-border text-purple-400 flex items-center justify-center font-mono font-bold text-sm shrink-0">
+          <div className="w-7 h-7 rounded-lg bg-rose-500/15 dark:bg-purple-500/20 border border-rose-400/40 dark:border-purple-400/40 text-rose-500 dark:text-purple-300 flex items-center justify-center font-mono font-bold text-sm shrink-0">
             !
           </div>
           <div className="space-y-1 min-w-0">
-            <h3 className="text-xs sm:text-sm font-bold text-purple-400 leading-tight">
+            <h3 className="text-xs sm:text-sm font-bold text-rose-600 dark:text-purple-300 leading-tight">
               {title}
             </h3>
             <p className="text-xs sm:text-sm text-text leading-relaxed break-words">
