@@ -7,7 +7,8 @@ import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading, LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Modal } from "@/components/ui/modal";
 
 const SUPER_ADMIN_EMAIL = "israelashenafi29@gmail.com";
@@ -365,11 +366,7 @@ export default function AdminPage() {
   };
 
   if (sessionLoading) {
-    return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <LoadingSpinner size="md" />
-      </div>
-    );
+    return <FullPageLoading />;
   }
 
   if (!session || !isAuthorized) {
@@ -512,8 +509,13 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* Message Alert */}
-        {message && (
+        {/* Error Popup + Success Message Alert */}
+        <ErrorPopup
+          title="Admin Notice"
+          message={message?.type === "danger" ? message.text : null}
+          onDismiss={() => setMessage(null)}
+        />
+        {message && message.type !== "danger" && (
           <Alert
             variant={message.type}
             action={

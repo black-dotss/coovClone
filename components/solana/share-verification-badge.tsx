@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { SharedOnChainProofMetadata } from "@/lib/reports/share";
 import type { StructuredEvaluationReport } from "@/lib/reports/types";
@@ -111,30 +110,22 @@ export const ShareVerificationBadge: React.FC<{
   const clusterQuery = cluster === "mainnet-beta" ? "" : `?cluster=${cluster}`;
 
   return (
-    <Card className="bg-surface border-purple-500/40">
+    <Card className="bg-surface border-border rounded-xl">
       <CardHeader className="border-b border-border pb-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <CardTitle className="text-xs font-extrabold uppercase tracking-wider text-text font-mono">
               Cryptographic Audit & Solana On-Chain Proof
             </CardTitle>
-            {checking ? (
-              <Badge variant="neutral" size="sm">
-                Verifying SHA-256...
-              </Badge>
-            ) : isVerifiedMatch ? (
-              <Badge variant="purple" size="sm">
-                Verified On-Chain
-              </Badge>
-            ) : isAnchoredOutOfSync ? (
-              <Badge variant="warning" size="sm">
-                Anchored (Resync Needed)
-              </Badge>
-            ) : (
-              <Badge variant="neutral" size="sm">
-                Off-Chain Only
-              </Badge>
-            )}
+            <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
+              {checking
+                ? "Verifying SHA-256..."
+                : isVerifiedMatch
+                ? "Verified On-Chain"
+                : isAnchoredOutOfSync
+                ? "Anchored (Resync Needed)"
+                : "Off-Chain Only"}
+            </span>
           </div>
 
           {(proof.sbtMintAddress || onChain?.record?.sbtMinted) && (
@@ -144,10 +135,9 @@ export const ShareVerificationBadge: React.FC<{
               }${clusterQuery}`}
               target="_blank"
               rel="noreferrer"
+              className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400 hover:underline"
             >
-              <Badge variant="purple" size="sm">
-                Soulbound SBT Verified →
-              </Badge>
+              Soulbound SBT Verified →
             </a>
           )}
         </div>

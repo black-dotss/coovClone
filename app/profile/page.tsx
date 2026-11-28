@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { Modal } from "@/components/ui/modal";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { LoadingSpinner, FullPageLoading } from "@/components/ui/loading-spinner";
@@ -507,11 +508,11 @@ function ProfilePageContent() {
   return (
     <div className="w-full max-w-[1500px] mx-auto px-4 sm:px-6 lg:px-10 py-8 sm:py-10 space-y-6">
       {/* Feedback alerts */}
-      {error && (
-        <Alert variant="danger" title="Account Notice">
-          {error}
-        </Alert>
-      )}
+      <ErrorPopup
+        title="Account Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
 
       {successMessage && (
         <Alert variant="success" title="Success">
@@ -742,15 +743,15 @@ function ProfilePageContent() {
               </div>
 
               {/* On-Chain & SBT Quick Access Card */}
-              <div className="rounded-2xl border border-purple-500/40 bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="rounded-xl border border-border bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-extrabold text-text">
                       Solana On-Chain Profile & Soulbound SBT
                     </h3>
-                    <Badge variant="purple" size="sm">
+                    <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
                       Devnet
-                    </Badge>
+                    </span>
                   </div>
                   <p className="text-xs text-text-secondary">
                     Link Phantom or Solflare to inspect your verified on-chain skills and minted Token-2022 credentials.
@@ -758,9 +759,9 @@ function ProfilePageContent() {
                 </div>
                 <Button
                   type="button"
-                  variant="primary"
+                  variant="outline"
                   size="sm"
-                  className="bg-purple-600 hover:bg-purple-500 font-semibold shrink-0"
+                  className="shrink-0"
                   onClick={() => {
                     setActiveTab("solana");
                     router.replace("/profile?tab=solana", { scroll: false });

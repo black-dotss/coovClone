@@ -6,7 +6,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { useSession } from "@/lib/auth/auth-client";
 import { apiFetch } from "@/lib/client/api";
@@ -22,7 +23,7 @@ interface UserDevice {
 }
 
 export default function OnboardingPage() {
-  const { data: session } = useSession();
+  const { data: session, isPending } = useSession();
 
   const [step, setStep] = useState<OnboardingStep>(1);
   const [targetTitle, setTargetTitle] = useState("");
@@ -103,6 +104,10 @@ export default function OnboardingPage() {
 
   const progressPercent = ((step - 1) / 3) * 100;
 
+  if (isPending) {
+    return <FullPageLoading />;
+  }
+
   return (
     <div className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center px-4 sm:px-6 py-12">
       <div className="w-full max-w-xl flex flex-col gap-6">
@@ -120,11 +125,11 @@ export default function OnboardingPage() {
           <ProgressBar value={progressPercent} color="purple" size="sm" />
         </div>
 
-        {error && (
-          <Alert variant="danger" title="Notice">
-            {error}
-          </Alert>
-        )}
+        <ErrorPopup
+          title="Onboarding Notice"
+          message={error}
+          onDismiss={() => setError(null)}
+        />
 
         {/* Step 1: Target Role & Level */}
         {step === 1 && (

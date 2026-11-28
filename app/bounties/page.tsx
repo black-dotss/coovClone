@@ -2,13 +2,14 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
 import { ProgressBar } from "@/components/ui/progress-bar";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
+import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
 
 interface BountyItem {
   id: string;
@@ -17,6 +18,7 @@ interface BountyItem {
   jobDescriptionId: string;
   title: string;
   company: string;
+  companyLogoUrl?: string | null;
   usdcMint: string;
   escrowPdaAddress: string;
   vaultAddress: string;
@@ -89,11 +91,13 @@ interface BountiesApiResponse {
 }
 
 export default function BountiesPage() {
+  const router = useRouter();
   const { publicKey, openConnectModal, signAndSubmitTx, clusterLabel } =
     useSolanaWallet();
 
   const [data, setData] = useState<BountiesApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [navigatingToNew, setNavigatingToNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
@@ -101,6 +105,17 @@ export default function BountiesPage() {
       return new URLSearchParams(window.location.search).get("created") === "1"
         ? "USDC Bounty Escrow funded and live on Solana Devnet."
         : null;
+    } catch {
+      return null;
+    }
+  });
+  const [evalArrival] = useState<{ fromEval: string; bountyId: string } | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const p = new URLSearchParams(window.location.search);
+      const fromEval = p.get("fromEval");
+      const bountyId = p.get("bountyId");
+      return fromEval && bountyId ? { fromEval, bountyId } : null;
     } catch {
       return null;
     }
@@ -123,7 +138,11 @@ export default function BountiesPage() {
   }, [publicKey]);
 
   useEffect(() => {
-    if (typeof window !== "undefined" && window.location.search.includes("created=1")) {
+    if (
+      typeof window !== "undefined" &&
+      (window.location.search.includes("created=1") ||
+        window.location.search.includes("fromEval="))
+    ) {
       try {
         window.history.replaceState({}, document.title, window.location.pathname);
       } catch {}
@@ -157,6 +176,11 @@ export default function BountiesPage() {
     }
   };
 
+  const handleOpenNewBounty = () => {
+    setNavigatingToNew(true);
+    router.push("/bounties/new");
+  };
+
   const handleSubmitSlot = async (bounty: BountyItem, evalId: string) => {
     setBusyBountyId(bounty.id);
     setError(null);
@@ -170,7 +194,7 @@ export default function BountiesPage() {
         }),
       });
       setNotice(
-        "Winner slot reserved in pending_review! Payout unlocks upon recruiter approval or after the 48h review window expires."
+        "Winner slot reserved in pending_review! Payout unlocks upon recruiter approval or after the 24h review window expires."
       );
       await loadBounties();
     } catch (err) {
@@ -258,80 +282,139 @@ export default function BountiesPage() {
     }
   };
 
+  if (navigatingToNew || (loading && !data)) {
+    return <FullPageLoading />;
+  }
+
+  const arrivalBounty =
+    evalArrival && data ? data.bounties.find((b) => b.id === evalArrival.bountyId) : null;
+  const arrivalEval =
+    evalArrival && data
+      ? data.myEvaluations.find((e) => e.id === evalArrival.fromEval)
+      : null;
+  const arrivalSub =
+    evalArrival && data
+      ? data.mySubmissions?.find((s) => s.evaluationId === evalArrival.fromEval)
+      : null;
+  const arrivalRestriction =
+    evalArrival && data
+      ? data.myRestrictions?.find((r) => r.bountyId === evalArrival.bountyId)
+      : null;
+
   return (
-    <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 space-y-8">
-      {/* Header */}
+    <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 space-y-8">
+      {/* Header with 2 clean action buttons only */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-border">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-text">
-              On-Chain USDC Hiring Bounties
-            </h1>
-            <Badge variant="purple" size="sm">
-              Solana {clusterLabel}
-            </Badge>
-          </div>
-          <p className="text-xs sm:text-sm text-text-secondary max-w-2xl">
-            Recruiters lock Devnet USDC in escrow PDAs with anti-fraud gating & a 48h
-            optimistic review window before on-chain payout release.
+        <div className="space-y-1">
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-text">
+            Hiring Bounties
+          </h1>
+          <p className="text-xs sm:text-sm text-text-secondary">
+            USDC bounty escrows with verified CV screening on Solana {clusterLabel}.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          {!publicKey && (
-            <Button variant="outline" size="sm" onClick={openConnectModal}>
-              Connect Wallet
-            </Button>
-          )}
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
           <Link href="/profile?tab=solana">
             <Button variant="outline" size="md">
               On-Chain & SBT
             </Button>
           </Link>
-          <Link href="/bounties/new">
-            <Button variant="primary" size="md" className="bg-purple-600 hover:bg-purple-500 font-semibold">
-              + Post USDC Bounty Escrow
-            </Button>
-          </Link>
+          <Button variant="primary" size="md" onClick={handleOpenNewBounty}>
+            + Post USDC Bounty Escrow
+          </Button>
         </div>
       </div>
 
-      {error && (
-        <Alert
-          variant="danger"
-          title="Bounty Notice"
-          action={
-            <Button variant="outline" size="sm" onClick={() => setError(null)}>
-              Dismiss
-            </Button>
-          }
-        >
-          {error}
-        </Alert>
+      {/* Direct Return Banner after Bounty CV Evaluation (Neutral surface + purple text only) */}
+      {arrivalBounty && arrivalEval && (
+        arrivalRestriction ? (
+          <div className="rounded-xl border border-border bg-surface p-5 space-y-1.5">
+            <h3 className="text-sm font-bold text-purple-400">
+              Not Eligible for {arrivalBounty.title}
+            </h3>
+            <p className="text-xs sm:text-sm text-text leading-relaxed">
+              {arrivalRestriction.details}
+            </p>
+          </div>
+        ) : (arrivalEval.overallScore ?? 0) < arrivalBounty.minScore ? (
+          <div className="rounded-xl border border-border bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-purple-400">
+                Not Eligible for {arrivalBounty.title}
+              </h3>
+              <p className="text-xs sm:text-sm text-text leading-relaxed">
+                You are not eligible for this bounty yet: your CV scored{" "}
+                <strong>{arrivalEval.overallScore ?? 0}/100</strong>, which is below the{" "}
+                <strong>{arrivalBounty.minScore}/100</strong> requirement.
+              </p>
+            </div>
+            <Link href={`/evaluations/${arrivalEval.id}/report`} className="shrink-0">
+              <Button variant="outline" size="sm">
+                View Report →
+              </Button>
+            </Link>
+          </div>
+        ) : arrivalSub?.reviewStatus === "pending_review" ? (
+          <div className="rounded-xl border border-border bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-purple-400">
+                Eligible · Slot Reserved ({arrivalEval.overallScore}/100)
+              </h3>
+              <p className="text-xs sm:text-sm text-text-secondary leading-relaxed">
+                Your CV passed ({arrivalEval.overallScore}/100) for{" "}
+                <strong className="text-text">{arrivalBounty.title}</strong>. Your winner
+                slot is reserved for 24h in <code>pending_review</code>. Anchor your proof
+                on-chain so your wallet is ready for payout.
+              </p>
+            </div>
+            <Link href={`/evaluations/${arrivalEval.id}/report`} className="shrink-0">
+              <Button variant="outline" size="sm">
+                Anchor Proof On-Chain →
+              </Button>
+            </Link>
+          </div>
+        ) : arrivalBounty.availableSlots <= 0 ? (
+          <div className="rounded-xl border border-border bg-surface p-5 space-y-1">
+            <h3 className="text-sm font-bold text-purple-400">
+              Not Eligible for Slot · All Winners Filled ({arrivalBounty.title})
+            </h3>
+            <p className="text-xs sm:text-sm text-text-secondary leading-relaxed">
+              Your CV scored {arrivalEval.overallScore}/100, but all{" "}
+              {arrivalBounty.maxWinners} winner slots are already reserved or claimed.
+            </p>
+          </div>
+        ) : null
       )}
+
+      <ErrorPopup
+        title="Bounty Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
       {notice && (
-        <Alert variant="success" title="Transaction Confirmed">
-          {notice}
-        </Alert>
+        <div className="rounded-xl border border-border bg-surface p-5 flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-purple-400">Confirmed</h3>
+            <p className="text-xs sm:text-sm text-text leading-relaxed">{notice}</p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setNotice(null)}>
+            Dismiss
+          </Button>
+        </div>
       )}
 
       {/* Bounties List */}
-      {loading ? (
-        <div className="py-16 flex justify-center">
-          <LoadingSpinner size="lg" label="Loading Devnet USDC bounty escrows..." />
-        </div>
-      ) : !data?.bounties || data.bounties.length === 0 ? (
-        <div className="rounded-2xl border border-border bg-surface p-10 text-center space-y-4">
-          <h2 className="text-lg font-bold text-text">No Active Bounties Yet</h2>
+      {!data?.bounties || data.bounties.length === 0 ? (
+        <div className="rounded-xl border border-border bg-surface p-12 text-center space-y-4">
+          <h2 className="text-xl font-bold text-text">No Active Bounties Yet</h2>
           <p className="text-xs sm:text-sm text-text-secondary max-w-md mx-auto">
             Launch the first verifiable hiring bounty by locking Devnet USDC into an
             on-chain escrow vault for top-scoring candidates.
           </p>
-          <Link href="/bounties/new">
-            <Button variant="primary" size="md" className="bg-purple-600 hover:bg-purple-500 font-semibold">
-              Create First USDC Bounty
-            </Button>
-          </Link>
+          <Button variant="primary" size="md" onClick={handleOpenNewBounty}>
+            Create First USDC Bounty
+          </Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -362,6 +445,13 @@ export default function BountiesPage() {
                 typeof ev.overallScore === "number" &&
                 ev.overallScore >= bounty.minScore
             );
+            const bestIneligibleEval = matchingEvals
+              .filter(
+                (ev) =>
+                  typeof ev.overallScore === "number" && ev.overallScore < bounty.minScore
+              )
+              .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))[0];
+
             const isExpired = bounty.isExpired;
             const isCreator =
               Boolean(data.currentUserId) &&
@@ -375,56 +465,60 @@ export default function BountiesPage() {
             return (
               <div
                 key={bounty.id}
-                className="rounded-2xl border border-border hover:border-purple-500/40 transition-colors bg-surface p-6 space-y-5 flex flex-col justify-between"
+                className="rounded-xl border border-border hover:border-purple-500/40 transition-colors bg-surface p-6 sm:p-8 space-y-6 flex flex-col justify-between"
               >
-                <div className="space-y-4">
+                <div className="space-y-5">
                   <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <span className="text-xs font-mono text-purple-400 font-semibold uppercase tracking-wider">
-                        {bounty.company}
-                      </span>
-                      <h3 className="text-lg font-extrabold text-text mt-0.5">
-                        {bounty.title}
-                      </h3>
+                    <div className="flex items-start gap-3.5 min-w-0">
+                      <BountyCompanyLogo
+                        company={bounty.company}
+                        logoUrl={bounty.companyLogoUrl}
+                        size="lg"
+                      />
+                      <div className="min-w-0">
+                        <span className="text-xs font-mono text-purple-400 font-semibold uppercase tracking-wider block truncate">
+                          {bounty.company}
+                        </span>
+                        <h3 className="text-lg sm:text-xl font-extrabold text-text mt-0.5 truncate">
+                          {bounty.title}
+                        </h3>
+                      </div>
                     </div>
-                    <Badge
-                      variant={bounty.status === "active" ? "purple" : "neutral"}
-                      size="sm"
-                    >
+                    <span className="px-2.5 py-1 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-text-secondary shrink-0">
                       {bounty.status.toUpperCase()}
-                    </Badge>
+                    </span>
                   </div>
 
                   {/* Pool & Threshold Metrics */}
-                  <div className="grid grid-cols-3 gap-2.5">
-                    <div className="p-3 rounded-xl bg-surface-elevated border border-border">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
                       <span className="text-[10px] font-mono text-text-muted uppercase">
                         Reward
                       </span>
-                      <p className="text-base font-extrabold text-purple-400 mt-0.5">
+                      <p className="text-lg font-extrabold text-purple-400 mt-0.5">
                         {bounty.rewardPerWinnerUsdc} USDC
                       </p>
                     </div>
-                    <div className="p-3 rounded-xl bg-surface-elevated border border-border">
+                    <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
                       <span className="text-[10px] font-mono text-text-muted uppercase">
                         Min Score
                       </span>
-                      <p className="text-base font-extrabold text-text mt-0.5">
+                      <p className="text-lg font-extrabold text-text mt-0.5">
                         {bounty.minScore}/100
                       </p>
                     </div>
-                    <div className="p-3 rounded-xl bg-surface-elevated border border-border">
+                    <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
                       <span className="text-[10px] font-mono text-text-muted uppercase">
                         Total Pool
                       </span>
-                      <p className="text-base font-extrabold text-text mt-0.5">
+                      <p className="text-lg font-extrabold text-text mt-0.5">
                         {bounty.totalPoolUsdc} USDC
                       </p>
                     </div>
                   </div>
 
                   {/* Slots Progress */}
-                  <div className="space-y-1.5">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs font-mono text-text-muted">
                       <span>
                         Slots: {bounty.claimsCount} paid
@@ -440,18 +534,18 @@ export default function BountiesPage() {
                     <ProgressBar value={fillPct} color="purple" size="sm" />
                   </div>
 
-                  <p className="text-xs text-text-secondary line-clamp-3 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-text-secondary line-clamp-3 leading-relaxed">
                     {bounty.rawText}
                   </p>
                 </div>
 
-                <div className="space-y-3 pt-4 border-t border-border/70">
+                <div className="space-y-3.5 pt-4 border-t border-border/70">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-text-muted">
                     <a
                       href={bounty.escrowUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-purple-400 hover:underline truncate max-w-[230px]"
+                      className="text-purple-400 hover:underline truncate max-w-[260px]"
                     >
                       Escrow PDA: {bounty.escrowPdaAddress.slice(0, 8)}...
                       {bounty.escrowPdaAddress.slice(-6)} →
@@ -468,58 +562,84 @@ export default function BountiesPage() {
                     )}
                   </div>
 
-                  {myRestriction && (
-                    <div className="p-3 rounded-xl border border-red-500/40 bg-red-500/10 text-xs space-y-1">
-                      <span className="font-bold text-red-400 uppercase font-mono">
+                  {!isCreator && myRestriction && (
+                    <div className="p-3.5 rounded-lg border border-border bg-surface-elevated text-xs space-y-1">
+                      <span className="font-bold text-purple-400 uppercase font-mono">
                         Restricted ({myRestriction.reason.replace(/_/g, " ")})
                       </span>
                       <p className="text-text-secondary">{myRestriction.details}</p>
                     </div>
                   )}
 
-                  {mySub && mySub.reviewStatus === "pending_review" && !mySub.isReviewExpired && (
-                    <div className="p-3 rounded-xl border border-purple-500/35 bg-surface-elevated text-xs space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-purple-400 uppercase font-mono">
-                          Slot Reserved · Pending Review
-                        </span>
-                        <span className="font-mono text-text">
-                          ⏱ {mySub.remainingReviewLabel} left
-                        </span>
+                  {!isCreator &&
+                    mySub &&
+                    mySub.reviewStatus === "pending_review" &&
+                    !mySub.isReviewExpired && (
+                      <div className="p-3.5 rounded-lg border border-border bg-surface-elevated text-xs space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-purple-400 uppercase font-mono">
+                            Slot Reserved · Pending Review
+                          </span>
+                          <span className="font-mono text-text">
+                            {mySub.remainingReviewLabel} left
+                          </span>
+                        </div>
+                        <p className="text-text-secondary">
+                          Recruiter can approve early for immediate release, or auto-claim unlocks automatically when the 24h window ends.
+                        </p>
                       </div>
-                      <p className="text-text-secondary">
-                        Recruiter can approve early for immediate release, or auto-claim unlocks automatically when the 48h window ends.
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {isCreator && (
-                      <Link href={`/bounties/${bounty.id}/review`}>
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          className="bg-purple-600 hover:bg-purple-500 font-semibold"
-                        >
-                          Publisher Review Panel
-                          {bounty.pendingReviewCount > 0
-                            ? ` (${bounty.pendingReviewCount} pending)`
-                            : ""} →
-                        </Button>
-                      </Link>
                     )}
 
-                    {myClaim ? (
-                      <Badge variant="purple" size="md">
+                  {!isCreator &&
+                    !myClaim &&
+                    !myRestriction &&
+                    (!mySub || mySub.reviewStatus === "below_threshold") &&
+                    bestIneligibleEval && (
+                      <div className="p-3.5 rounded-lg border border-border bg-surface-elevated text-xs space-y-1">
+                        <span className="font-bold text-purple-400 uppercase font-mono">
+                          Not Eligible · Score {bestIneligibleEval.overallScore}/100
+                        </span>
+                        <p className="text-text-secondary">
+                          Required score is {bounty.minScore}/100. View your report to improve or defend your deductions.
+                        </p>
+                      </div>
+                    )}
+
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    {isCreator ? (
+                      <>
+                        <Link href={`/bounties/${bounty.id}/review`}>
+                          <Button variant="primary" size="md">
+                            Publisher Review Panel
+                            {bounty.pendingReviewCount > 0
+                              ? ` (${bounty.pendingReviewCount} pending)`
+                              : ""}{" "}
+                            →
+                          </Button>
+                        </Link>
+                        {isExpired && bounty.status !== "refunded" && (
+                          <Button
+                            variant="outline"
+                            size="md"
+                            isLoading={busyBountyId === bounty.id}
+                            onClick={() => void handleRefund(bounty)}
+                          >
+                            Withdraw Expired Escrow USDC
+                          </Button>
+                        )}
+                      </>
+                    ) : myClaim ? (
+                      <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-purple-400 font-bold">
                         Claimed {Number(myClaim.amountMicros) / 1_000_000} USDC
-                      </Badge>
-                    ) : myRestriction ? null : mySub ? (
+                      </span>
+                    ) : myRestriction ? null : mySub &&
+                      mySub.reviewStatus !== "below_threshold" &&
+                      mySub.reviewStatus !== "evaluating" ? (
                       isSubUnlocked ? (
                         claimableEval ? (
                           <Button
                             variant="primary"
-                            size="sm"
-                            className="bg-purple-600 hover:bg-purple-500 font-semibold"
+                            size="md"
                             isLoading={busyBountyId === bounty.id}
                             onClick={() => void handleClaim(bounty, claimableEval.id)}
                           >
@@ -530,14 +650,14 @@ export default function BountiesPage() {
                           </Button>
                         ) : qualifyingUnanchored ? (
                           <Link href={`/evaluations/${qualifyingUnanchored.id}/report`}>
-                            <Button variant="secondary" size="sm">
+                            <Button variant="secondary" size="md">
                               Anchor Proof to Claim {bounty.rewardPerWinnerUsdc} USDC →
                             </Button>
                           </Link>
                         ) : null
                       ) : mySub.reviewStatus === "pending_review" && qualifyingUnanchored ? (
                         <Link href={`/evaluations/${qualifyingUnanchored.id}/report`}>
-                          <Button variant="outline" size="sm">
+                          <Button variant="outline" size="md">
                             Anchor Evaluation Proof ({qualifyingUnanchored.overallScore}/100) →
                           </Button>
                         </Link>
@@ -545,7 +665,7 @@ export default function BountiesPage() {
                     ) : claimableEval || qualifyingUnanchored ? (
                       <Button
                         variant="secondary"
-                        size="sm"
+                        size="md"
                         isLoading={busyBountyId === bounty.id}
                         onClick={() =>
                           void handleSubmitSlot(
@@ -556,28 +676,23 @@ export default function BountiesPage() {
                       >
                         Submit & Reserve Slot ({(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →
                       </Button>
+                    ) : bestIneligibleEval ? (
+                      <Link href={`/evaluations/${bestIneligibleEval.id}/report`}>
+                        <Button variant="outline" size="md">
+                          View Report ({bestIneligibleEval.overallScore}/100) →
+                        </Button>
+                      </Link>
                     ) : bounty.availableSlots <= 0 ? (
-                      <Badge variant="neutral" size="sm">
+                      <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-text-muted">
                         All Winner Slots Reserved / Paid
-                      </Badge>
+                      </span>
                     ) : bounty.status === "active" && !isExpired ? (
                       <Link href={`/evaluations/new?bountyId=${bounty.id}`}>
-                        <Button variant="primary" size="sm" className="bg-purple-600 hover:bg-purple-500 font-semibold">
+                        <Button variant="primary" size="md">
                           Apply & Evaluate CV →
                         </Button>
                       </Link>
                     ) : null}
-
-                    {isCreator && isExpired && bounty.status !== "refunded" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        isLoading={busyBountyId === bounty.id}
-                        onClick={() => void handleRefund(bounty)}
-                      >
-                        Withdraw Expired Escrow USDC
-                      </Button>
-                    )}
                   </div>
                 </div>
               </div>

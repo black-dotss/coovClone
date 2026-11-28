@@ -30,7 +30,7 @@ import {
 } from "@/lib/shared/errors";
 import { logger } from "@/lib/shared/logger";
 
-export const BOUNTY_REVIEW_WINDOW_HOURS = 48;
+export const BOUNTY_REVIEW_WINDOW_HOURS = 24;
 export const BOUNTY_REVIEW_WINDOW_MS = BOUNTY_REVIEW_WINDOW_HOURS * 60 * 60 * 1000;
 
 export const RESERVED_SUBMISSION_STATUSES = ["pending_review", "approved"] as const;
@@ -831,7 +831,7 @@ export async function assertCandidateEligibleToClaimOnChain(params: {
     if (nowMs < deadlineMs) {
       const remaining = formatRemainingDuration(deadlineMs, nowMs);
       throw new BadRequestError(
-        `Your winner slot is reserved in pending_review. Awaiting recruiter approval or auto-claim unlock in ${remaining}.`
+        `Your winner slot is reserved in pending_review. Awaiting recruiter approval or auto-claim unlock in ${remaining} (24h window).`
       );
     }
 

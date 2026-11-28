@@ -5,8 +5,9 @@ import Link from "next/link";
 import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { Badge } from "@/components/ui/badge";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { FullPageLoading, LoadingSpinner } from "@/components/ui/loading-spinner";
 import { AppShell } from "@/components/layout/app-shell";
 import { EvaluationOnChainPanel } from "@/components/solana/evaluation-onchain-panel";
 import type { DefenseRevision } from "@/lib/reports/types";
@@ -168,6 +169,10 @@ export default function DefendScorePage({
     primaryDialogue?.role
   );
 
+  if (loading) {
+    return <FullPageLoading />;
+  }
+
   return (
     <AppShell
       title="Defend Yourself Room"
@@ -197,28 +202,25 @@ export default function DefendScorePage({
         {/* Solana On-Chain Defense Sync */}
         <EvaluationOnChainPanel key={revisions.length} evaluationId={id} compact />
 
-        {error && (
-          <Alert
-            variant="danger"
-            title="Defense Notice"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setLoading(true);
-                  setError(null);
-                  setReloadKey((k) => k + 1);
-                }}
-                className="text-xs"
-              >
-                Retry
-              </Button>
-            }
-          >
-            {error}
-          </Alert>
-        )}
+        <ErrorPopup
+          title="Defense Notice"
+          message={error}
+          onDismiss={() => setError(null)}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setLoading(true);
+                setError(null);
+                setReloadKey((k) => k + 1);
+              }}
+              className="text-xs"
+            >
+              Retry
+            </Button>
+          }
+        />
 
         {successMessage && (
           <Alert variant="success" title="Reassessment Successful">
@@ -367,14 +369,7 @@ export default function DefendScorePage({
 
           {/* RIGHT SIDE: Reviewing Agent Identity & Speech Card */}
           <div className="lg:col-span-7 space-y-5">
-            {loading ? (
-              <div className="rounded-2xl border border-border bg-surface p-12 flex flex-col items-center justify-center text-center space-y-4 shadow-sm">
-                <LoadingSpinner size="lg" label="Loading committee evaluation..." />
-                <p className="text-xs sm:text-sm font-medium text-text-muted">
-                  Fetching evaluation panel records...
-                </p>
-              </div>
-            ) : submitting ? (
+            {submitting ? (
               /* Reviewing In Progress Card */
               <div className="rounded-2xl border border-purple-500/40 bg-surface p-8 sm:p-10 shadow-lg space-y-6 text-center">
                 <div className="relative w-24 h-24 mx-auto">

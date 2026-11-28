@@ -6,9 +6,9 @@ import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { Textarea } from "@/components/ui/textarea";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { AppShell } from "@/components/layout/app-shell";
 import type { RewriteSuggestionRecord } from "@/lib/reports/types";
 
@@ -139,6 +139,10 @@ export default function BulletRewritesPage({
 
   const acceptedRewrites = rewrites.filter((r) => r.isAccepted);
 
+  if (loading) {
+    return <FullPageLoading />;
+  }
+
   return (
     <AppShell
       title="Truthful Bullet Point Rewrites"
@@ -180,28 +184,25 @@ export default function BulletRewritesPage({
           <span className="text-text font-bold">Bullet Rewrites</span>
         </div>
 
-        {error && (
-          <Alert
-            variant="danger"
-            title="Rewrite Notice"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setLoading(true);
-                  setError(null);
-                  setReloadKey((k) => k + 1);
-                }}
-                className="text-xs"
-              >
-                Retry
-              </Button>
-            }
-          >
-            {error}
-          </Alert>
-        )}
+        <ErrorPopup
+          title="Rewrite Notice"
+          message={error}
+          onDismiss={() => setError(null)}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setLoading(true);
+                setError(null);
+                setReloadKey((k) => k + 1);
+              }}
+              className="text-xs"
+            >
+              Retry
+            </Button>
+          }
+        />
 
         {/* Custom Bullet Input Panel */}
         {showCustomInput && (
@@ -252,11 +253,7 @@ export default function BulletRewritesPage({
           </Card>
         )}
 
-        {loading ? (
-          <div className="py-20 flex justify-center">
-            <LoadingSpinner size="lg" label="Loading rewrite suggestions..." />
-          </div>
-        ) : rewrites.length === 0 ? (
+        {rewrites.length === 0 ? (
           <Card className="text-center py-16 bg-surface border-border shadow-sm">
             <CardContent className="space-y-4">
               <div className="w-14 h-14 rounded-2xl bg-surface-elevated border border-border flex items-center justify-center mx-auto text-text-muted shadow-xs">

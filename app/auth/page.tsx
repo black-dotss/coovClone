@@ -8,6 +8,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/com
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { signIn, signUp, authClient } from "@/lib/auth/auth-client";
 
 function AuthForm() {
@@ -435,11 +437,11 @@ function AuthForm() {
               </CardHeader>
 
               <CardContent className="pt-3 space-y-4">
-                {otpErrorMessage && (
-                  <Alert variant="danger" title="Verification Notice">
-                    {otpErrorMessage}
-                  </Alert>
-                )}
+                <ErrorPopup
+                  title="Verification Notice"
+                  message={otpErrorMessage}
+                  onDismiss={() => setOtpErrorMessage(null)}
+                />
 
                 {otpSuccessMessage && (
                   <Alert variant="info" title="Code Sent">
@@ -581,13 +583,11 @@ function AuthForm() {
               </CardHeader>
 
               <CardContent className="pt-2">
-                {errorMessage && (
-                  <div className="mb-4">
-                    <Alert variant="danger" title="Authentication Notice">
-                      {errorMessage}
-                    </Alert>
-                  </div>
-                )}
+                <ErrorPopup
+                  title="Authentication Notice"
+                  message={errorMessage}
+                  onDismiss={() => setErrorMessage(null)}
+                />
 
                 {/* Social Logins */}
                 <div className="flex flex-col gap-2.5">
@@ -704,13 +704,7 @@ function AuthForm() {
 
 export default function AuthPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="min-h-screen flex items-center justify-center text-xs text-text-muted">
-          Loading...
-        </div>
-      }
-    >
+    <Suspense fallback={<FullPageLoading />}>
       <AuthForm />
     </Suspense>
   );

@@ -33,7 +33,7 @@ export const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
 
 export function FullPageLoading() {
   return (
-    <div className="flex-1 w-full min-h-[65vh] flex items-center justify-center">
+    <div className="flex-1 w-full min-h-[calc(100vh-5rem)] flex items-center justify-center px-4">
       <InfinityLoop className="w-28 h-14 text-purple-400" />
     </div>
   );

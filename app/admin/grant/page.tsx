@@ -6,7 +6,8 @@ import { useSession } from "@/lib/auth/auth-client";
 import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 
 const SUPER_ADMIN_EMAIL = "israelashenafi29@gmail.com";
 
@@ -27,11 +28,7 @@ export default function AdminGrantSubscriptionPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (isPending) {
-    return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <LoadingSpinner size="lg" label="Checking permissions..." />
-      </div>
-    );
+    return <FullPageLoading />;
   }
 
   const currentUserEmail = (session?.user?.email || "").toLowerCase().trim();
@@ -123,11 +120,11 @@ export default function AdminGrantSubscriptionPage() {
         </Alert>
       )}
 
-      {errorMessage && (
-        <Alert variant="danger">
-          {errorMessage}
-        </Alert>
-      )}
+      <ErrorPopup
+        title="Grant Plan Notice"
+        message={errorMessage}
+        onDismiss={() => setErrorMessage(null)}
+      />
 
       <form onSubmit={handleGrant} className="p-6 rounded-2xl border border-border bg-surface space-y-5">
         <div className="space-y-2">

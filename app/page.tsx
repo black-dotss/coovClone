@@ -81,7 +81,7 @@ export default function HomePage() {
 
               {/* Hero Headline */}
               <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight text-text leading-[1.08]">
-                Screen your CV against actual hiring bars.
+                Screen your CV against AI Hiring Agents on Solana.
               </h1>
 
               {/* Subline */}

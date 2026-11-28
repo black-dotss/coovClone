@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -11,6 +12,13 @@ import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 interface EvaluationSolanaStatus {
   evaluationId: string;
   jobDescriptionId: string;
+  bountyContext?: {
+    bountyId: string;
+    title: string;
+    company: string;
+    minScore: number;
+    isEligible: boolean;
+  } | null;
   status: string;
   overallScore: number;
   scoreTier: string;
@@ -243,49 +251,64 @@ export const EvaluationOnChainPanel: React.FC<{
   const isSbtMinted = Boolean(state.sbtMintAddress || state.onChainEval?.sbtMinted);
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-5 sm:p-6 space-y-5">
-      {/* Bold Header + Primary Action */}
+    <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-6">
+      {state.bountyContext && (
+        <div className="p-3.5 rounded-lg bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <div>
+            <span className="font-bold text-text">
+              Bounty: {state.bountyContext.title} ({state.bountyContext.company})
+            </span>{" "}
+            <span className={state.bountyContext.isEligible ? "text-purple-400 font-semibold" : "text-red-400 font-semibold"}>
+              {state.bountyContext.isEligible
+                ? `· Eligible (${state.overallScore}/${state.bountyContext.minScore} min)`
+                : `· Not Eligible (Scored ${state.overallScore}/100 vs ${state.bountyContext.minScore} min)`}
+            </span>
+          </div>
+          <Link
+            href={`/bounties?fromEval=${encodeURIComponent(state.evaluationId)}&bountyId=${encodeURIComponent(state.bountyContext.bountyId)}`}
+            className="text-purple-400 hover:underline font-semibold shrink-0"
+          >
+            Go to Bounty →
+          </Link>
+        </div>
+      )}
+
+      {/* Header + Action */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-border">
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-base sm:text-lg font-extrabold text-text">
               On-Chain Proof & Soulbound Credential
             </h3>
-            <Badge variant={isAnchored ? "purple" : "neutral"} size="sm">
+            <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
               {isAnchored
                 ? state.needsDefenseSync
                   ? "Defense Sync Ready"
                   : `Anchored · ${clusterLabel}`
                 : `Unanchored · ${clusterLabel}`}
-            </Badge>
+            </span>
             {isSbtMinted && (
-              <Badge variant="purple" size="sm">
+              <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-text">
                 SBT Minted
-              </Badge>
+              </span>
             )}
           </div>
           <p className="text-xs text-text-secondary">
             {state.sbtEligible
-              ? "Immutable SHA-256 report proof & non-transferable Token-2022 Soulbound Credential (>= 85/100)."
-              : "Immutable SHA-256 report proof on Solana. Score 85/100+ to unlock Token-2022 SBT minting."}
+              ? "SHA-256 report attestation & non-transferable Token-2022 Soulbound Credential (>= 85/100)."
+              : "SHA-256 report attestation on Solana. Score 85/100+ to unlock Token-2022 SBT minting."}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           {!publicKey ? (
-            <Button
-              variant="primary"
-              size="sm"
-              className="bg-purple-600 hover:bg-purple-500 font-semibold"
-              onClick={openConnectModal}
-            >
+            <Button variant="primary" size="sm" onClick={openConnectModal}>
               Connect Wallet
             </Button>
           ) : !isAnchored ? (
             <Button
               variant="primary"
               size="sm"
-              className="bg-purple-600 hover:bg-purple-500 font-semibold"
               isLoading={anchoring}
               disabled={!state.programConfigInitialized || state.status !== "completed"}
               onClick={() => void handleAnchor()}
@@ -296,7 +319,6 @@ export const EvaluationOnChainPanel: React.FC<{
             <Button
               variant="primary"
               size="sm"
-              className="bg-purple-600 hover:bg-purple-500 font-semibold"
               isLoading={anchoring}
               onClick={() => void handleAnchor()}
             >
@@ -306,9 +328,8 @@ export const EvaluationOnChainPanel: React.FC<{
 
           {isAnchored && state.sbtEligible && !isSbtMinted && (
             <Button
-              variant="primary"
+              variant="outline"
               size="sm"
-              className="bg-purple-600 hover:bg-purple-500 font-semibold"
               isLoading={minting}
               onClick={() => void handleMintSbt()}
             >
@@ -337,7 +358,11 @@ export const EvaluationOnChainPanel: React.FC<{
         </Alert>
       )}
 
-      {error && <Alert variant="danger">{error}</Alert>}
+      <ErrorPopup
+        title="On-Chain Proof Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
       {notice && <Alert variant="success">{notice}</Alert>}
       {state.rpcError && (
         <Alert variant="warning" title="RPC Warning">
@@ -347,9 +372,8 @@ export const EvaluationOnChainPanel: React.FC<{
 
       {!compact && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Left: Score & Blockchain References */}
-          <div className="p-4 rounded-xl bg-surface-elevated border border-border space-y-3">
-            <div className="flex items-center justify-between border-b border-border/70 pb-2.5">
+          <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-3">
+            <div className="flex items-center justify-between border-b border-border pb-2.5">
               <span className="text-xs font-mono uppercase tracking-wider text-text-muted">
                 Verified Score
               </span>
@@ -404,9 +428,8 @@ export const EvaluationOnChainPanel: React.FC<{
             </div>
           </div>
 
-          {/* Right: Digest & Skills */}
-          <div className="p-4 rounded-xl bg-surface-elevated border border-border space-y-3">
-            <div className="flex items-center justify-between text-[11px] font-mono text-text-muted border-b border-border/70 pb-2">
+          <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-3">
+            <div className="flex items-center justify-between text-[11px] font-mono text-text-muted border-b border-border pb-2">
               <span>Canonical Report SHA-256</span>
               <span>{state.modelVersion}</span>
             </div>
@@ -416,9 +439,12 @@ export const EvaluationOnChainPanel: React.FC<{
             {state.verifiedSkills.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {state.verifiedSkills.map((skill) => (
-                  <Badge key={skill} variant="purple" size="sm">
+                  <span
+                    key={skill}
+                    className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface border border-border text-text-secondary"
+                  >
                     {skill}
-                  </Badge>
+                  </span>
                 ))}
               </div>
             )}

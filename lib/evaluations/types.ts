@@ -57,6 +57,15 @@ export interface EvaluationProgress {
   isTerminal: boolean;
   overallScore?: number | null;
   verdict?: Verdict | null;
+  bountyContext?: {
+    bountyId: string;
+    title: string;
+    company: string;
+    minScore: number;
+    rewardPerWinnerUsdc: number;
+    reviewStatus: string | null;
+    isEligible: boolean;
+  } | null;
   errorMessage?: string | null;
   error?: string | null;
   updatedAt: Date;

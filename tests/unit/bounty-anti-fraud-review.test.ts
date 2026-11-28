@@ -152,6 +152,7 @@ vi.mock("@/lib/db", async () => {
 
 import {
   assertCandidateEligibleToClaimOnChain,
+  BOUNTY_REVIEW_WINDOW_HOURS,
   reviewBountySubmissionDecision,
   syncEvaluationToBountySubmission,
   validatePreBountySubmission,
@@ -338,7 +339,7 @@ describe("Bounty Anti-Fraud Gates & Optimistic Recruiter Review", () => {
       expect(state.restrictions[0].userId).toBe("user-sybil-2");
     });
 
-    it("reserves pending_review slot with 48h deadline, blocks premature claim, and unlocks on approve or deadline expiry", async () => {
+    it("reserves pending_review slot with 24h deadline, blocks premature claim, and unlocks on approve or deadline expiry", async () => {
       const bountyId = "bounty-2";
       const jdId = "jd-2";
       const candWallet = "CandWallet11111111111111111111111111111111";
@@ -377,10 +378,15 @@ describe("Bounty Anti-Fraud Gates & Optimistic Recruiter Review", () => {
         walletAddress: candWallet,
       });
 
+      expect(BOUNTY_REVIEW_WINDOW_HOURS).toBe(24);
       expect(synced?.submission?.reviewStatus).toBe("pending_review");
       expect(synced?.submission?.reviewDeadlineAt).toBeTruthy();
+      expect(synced?.submission?.slotReservedAt).toBeTruthy();
+      const reservedMs = new Date(synced!.submission!.slotReservedAt as Date).getTime();
+      const deadlineMs = new Date(synced!.submission!.reviewDeadlineAt as Date).getTime();
+      expect(Math.round((deadlineMs - reservedMs) / 3_600_000)).toBe(24);
 
-      // Premature claim must fail while in 48h pending_review window
+      // Premature claim must fail while in 24h pending_review window
       await expect(
         assertCandidateEligibleToClaimOnChain({
           bounty: bounty as never,
@@ -390,7 +396,7 @@ describe("Bounty Anti-Fraud Gates & Optimistic Recruiter Review", () => {
         })
       ).rejects.toThrow(/pending_review/i);
 
-      // Simulate 48h review deadline expiration -> Auto-claim unlocked!
+      // Simulate 24h review deadline expiration -> Auto-claim unlocked!
       state.submissions[0].reviewDeadlineAt = new Date(Date.now() - 60_000);
       const expiredUnlock = await assertCandidateEligibleToClaimOnChain({
         bounty: bounty as never,
@@ -401,7 +407,7 @@ describe("Bounty Anti-Fraud Gates & Optimistic Recruiter Review", () => {
       expect(expiredUnlock.unlockReason).toBe("deadline_expired");
 
       // Reset timer and test Publisher Approve -> Immediate unlock!
-      state.submissions[0].reviewDeadlineAt = new Date(Date.now() + 40 * 3600_000);
+      state.submissions[0].reviewDeadlineAt = new Date(Date.now() + 20 * 3600_000);
       await reviewBountySubmissionDecision({
         bountyId,
         submissionId: state.submissions[0].id as string,

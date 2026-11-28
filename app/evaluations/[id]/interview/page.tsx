@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { AppShell } from "@/components/layout/app-shell";
 import type {
@@ -137,6 +138,10 @@ export default function MockInterviewPage({
     ? session.questions.filter((q) => feedbackMap[q.id]).length
     : 0;
 
+  if (starting && !session) {
+    return <FullPageLoading />;
+  }
+
   return (
     <AppShell
       title="Interactive Mock Interview Room"
@@ -163,24 +168,21 @@ export default function MockInterviewPage({
           <span className="text-text font-semibold">Mock Interview</span>
         </div>
 
-        {error && (
-          <Alert
-            variant="danger"
-            title="Interview Notice"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleStartSession}
-                className="text-xs"
-              >
-                Retry
-              </Button>
-            }
-          >
-            {error}
-          </Alert>
-        )}
+        <ErrorPopup
+          title="Interview Notice"
+          message={error}
+          onDismiss={() => setError(null)}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleStartSession}
+              className="text-xs"
+            >
+              Retry
+            </Button>
+          }
+        />
 
         {!session ? (
           <Card className="text-center py-16 bg-surface border-border">
