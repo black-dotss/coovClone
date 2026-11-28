@@ -31,7 +31,13 @@ interface JobDescriptionItem {
 
 export default function ComparisonsPage() {
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, isPending } = useSession();
+
+  useEffect(() => {
+    if (!isPending && !session) {
+      router.replace("/auth?callbackUrl=/comparisons");
+    }
+  }, [isPending, session, router]);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>("");
   const [cvVersions, setCvVersions] = useState<CvVersionItem[]>([]);
@@ -59,6 +65,7 @@ export default function ComparisonsPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!session) return;
     let ignore = false;
     async function initData() {
       try {
@@ -108,7 +115,7 @@ export default function ComparisonsPage() {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [session]);
 
   // Fetch CV versions when selectedDocId changes
   useEffect(() => {

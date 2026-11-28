@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -57,6 +57,12 @@ export default function NewBountyPage() {
   const { data: session, isPending } = useSession();
   const { publicKey, openConnectModal, signAndSubmitTx, clusterLabel } =
     useSolanaWallet();
+
+  useEffect(() => {
+    if (!isPending && !session) {
+      router.replace("/auth?callbackUrl=/bounties/new");
+    }
+  }, [isPending, session, router]);
 
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
@@ -162,7 +168,7 @@ export default function NewBountyPage() {
     }
   };
 
-  if (isPending || redirecting) {
+  if (isPending || !session || redirecting) {
     return <FullPageLoading />;
   }
 

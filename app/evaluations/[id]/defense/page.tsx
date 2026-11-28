@@ -4,8 +4,7 @@ import React, { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { Badge } from "@/components/ui/badge";
 import { FullPageLoading, LoadingSpinner } from "@/components/ui/loading-spinner";
 import { AppShell } from "@/components/layout/app-shell";
@@ -222,11 +221,11 @@ export default function DefendScorePage({
           }
         />
 
-        {successMessage && (
-          <Alert variant="success" title="Reassessment Successful">
-            {successMessage}
-          </Alert>
-        )}
+        <SuccessPopup
+          title="Reassessment Successful"
+          message={successMessage}
+          onDismiss={() => setSuccessMessage(null)}
+        />
 
         {/* 2-Sided Split Layout: Left = Entry Form, Right = Reviewing Agent Response */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">

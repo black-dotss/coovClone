@@ -20,6 +20,8 @@ export interface ErrorPopupProps {
   autoDismissMs?: number;
 }
 
+export type SuccessPopupProps = ErrorPopupProps;
+
 function subscribeNoop() {
   return () => {};
 }
@@ -32,17 +34,18 @@ function useIsClient() {
   );
 }
 
-/**
- * Standard viewport-fixed error popup shared across all pages and modals.
- * Ensures every error renders with identical shape, surface card styling, and position.
- */
-export function ErrorPopup({
+interface NoticePopupInternalProps extends ErrorPopupProps {
+  variant: "error" | "success";
+}
+
+function NoticePopup({
+  variant,
   message,
-  title = "Notice",
+  title,
   onDismiss,
   action,
   autoDismissMs = 5000,
-}: ErrorPopupProps) {
+}: NoticePopupInternalProps) {
   const mounted = useIsClient();
   const [dismissedMsg, setDismissedMsg] = useState<string | null>(null);
 
@@ -64,20 +67,41 @@ export function ErrorPopup({
     return null;
   }
 
+  const isSuccess = variant === "success";
+  const resolvedTitle = title ?? (isSuccess ? "Confirmed" : "Notice");
+
   return createPortal(
     <div
-      role="alert"
-      aria-live="assertive"
+      role={isSuccess ? "status" : "alert"}
+      aria-live={isSuccess ? "polite" : "assertive"}
       className="fixed top-20 left-1/2 -translate-x-1/2 z-[150] w-[calc(100%-2rem)] max-w-lg animate-in fade-in slide-in-from-top-2 duration-150"
     >
-      <div className="rounded-xl border border-purple-400/50 bg-gradient-to-br from-[#fae8f5] via-[#f3e8ff] to-[#ebe5ff] dark:from-[#2a1222] dark:via-[#241129] dark:to-[#1b0f2a] shadow-2xl shadow-black/40 p-4 sm:p-5 flex items-start justify-between gap-4">
+      <div
+        className={
+          isSuccess
+            ? "rounded-xl border border-emerald-400/45 bg-gradient-to-br from-[#e7faf1] via-[#f1e9ff] to-[#ebe5ff] dark:from-[#0f2922] dark:via-[#1e122d] dark:to-[#190f29] shadow-2xl shadow-black/40 p-4 sm:p-5 flex items-start justify-between gap-4"
+            : "rounded-xl border border-purple-400/50 bg-gradient-to-br from-[#fae8f5] via-[#f3e8ff] to-[#ebe5ff] dark:from-[#2a1222] dark:via-[#241129] dark:to-[#1b0f2a] shadow-2xl shadow-black/40 p-4 sm:p-5 flex items-start justify-between gap-4"
+        }
+      >
         <div className="flex items-start gap-3 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-purple-500/15 dark:bg-purple-500/20 border border-purple-400/45 text-purple-600 dark:text-purple-300 flex items-center justify-center font-mono font-bold text-sm shrink-0">
-            !
+          <div
+            className={
+              isSuccess
+                ? "w-7 h-7 rounded-lg bg-emerald-500/15 dark:bg-emerald-500/20 border border-emerald-400/45 text-emerald-600 dark:text-emerald-300 flex items-center justify-center font-mono font-bold text-sm shrink-0"
+                : "w-7 h-7 rounded-lg bg-purple-500/15 dark:bg-purple-500/20 border border-purple-400/45 text-purple-600 dark:text-purple-300 flex items-center justify-center font-mono font-bold text-sm shrink-0"
+            }
+          >
+            {isSuccess ? "✓" : "!"}
           </div>
           <div className="space-y-1 min-w-0">
-            <h3 className="text-xs sm:text-sm font-bold text-purple-600 dark:text-purple-300 leading-tight">
-              {title}
+            <h3
+              className={
+                isSuccess
+                  ? "text-xs sm:text-sm font-bold text-emerald-600 dark:text-emerald-300 leading-tight"
+                  : "text-xs sm:text-sm font-bold text-purple-600 dark:text-purple-300 leading-tight"
+              }
+            >
+              {resolvedTitle}
             </h3>
             <p className="text-xs sm:text-sm text-text leading-relaxed break-words">
               {message}
@@ -97,6 +121,20 @@ export function ErrorPopup({
     </div>,
     document.body
   );
+}
+
+/**
+ * Standard viewport-fixed error popup shared across all pages and modals.
+ */
+export function ErrorPopup(props: ErrorPopupProps) {
+  return <NoticePopup variant="error" {...props} />;
+}
+
+/**
+ * Standard viewport-fixed success popup with purple-emerald tinting and auto-dismiss.
+ */
+export function SuccessPopup(props: SuccessPopupProps) {
+  return <NoticePopup variant="success" {...props} />;
 }
 
 interface GlobalErrorState {

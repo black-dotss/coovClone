@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/client/api";
+import { useSession } from "@/lib/auth/auth-client";
 import { ErrorPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
@@ -81,6 +82,7 @@ interface PersonalBountyItem {
 
 export default function HistoryPage() {
   const router = useRouter();
+  const { data: session, isPending } = useSession();
   const [evaluations, setEvaluations] = useState<EvaluationItem[]>([]);
   const [comparisons, setComparisons] = useState<ComparisonHistoryItem[]>([]);
   const [myBounties, setMyBounties] = useState<PersonalBountyItem[]>([]);
@@ -89,6 +91,13 @@ export default function HistoryPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isPending && !session) {
+      router.replace("/auth?callbackUrl=/evaluations");
+    }
+  }, [isPending, session, router]);
+
+  useEffect(() => {
+    if (!session) return;
     async function loadData() {
       try {
         const [evalData, bountyData] = await Promise.all([
@@ -202,7 +211,7 @@ export default function HistoryPage() {
       }
     }
     loadData();
-  }, []);
+  }, [session]);
 
   const handleOpenComparison = (item: ComparisonHistoryItem) => {
     if (typeof window !== "undefined") {

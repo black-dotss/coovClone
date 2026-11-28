@@ -3,10 +3,12 @@
 import React, { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { useSession } from "@/lib/auth/auth-client";
 import { savePendingCv } from "@/lib/client/pending-cv";
 
 export function HeroAuditCard() {
   const router = useRouter();
+  const { data: session } = useSession();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{ name: string; size: string } | null>(null);
@@ -49,15 +51,20 @@ export function HeroAuditCard() {
   };
 
   const handleStart = async () => {
+    const query = targetRole.trim() ? `?role=${encodeURIComponent(targetRole.trim())}` : "";
+    const target = `/evaluations/new${query}`;
     try {
       setIsNavigating(true);
       if (actualFile) {
         await savePendingCv(actualFile, targetRole);
       }
-      const query = targetRole.trim() ? `?role=${encodeURIComponent(targetRole.trim())}` : "";
-      router.push(`/evaluations/new${query}`);
+      if (!session) {
+        router.push(`/auth?callbackUrl=${encodeURIComponent(target)}`);
+        return;
+      }
+      router.push(target);
     } catch {
-      router.push("/evaluations/new");
+      router.push(session ? "/evaluations/new" : "/auth?callbackUrl=/evaluations/new");
     }
   };
 

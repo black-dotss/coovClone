@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { SolanaIdentityCard } from "@/components/solana/solana-identity-card";
 import { apiFetch } from "@/lib/client/api";
@@ -47,6 +47,17 @@ interface OnChainReputationData {
   daysUntilDecay: number | null;
 }
 
+interface ReadyEvaluationItem {
+  id: string;
+  roleTitle: string;
+  company: string | null;
+  overallScore: number;
+  evalTxSignature: string | null;
+  sbtMintAddress: string | null;
+  sbtEligible: boolean;
+  createdAt: string;
+}
+
 interface WalletStatusResponse {
   cluster: string;
   linkedWallet: string | null;
@@ -59,16 +70,21 @@ interface WalletStatusResponse {
   onChainReputation?: OnChainReputationData | null;
   credentials: CredentialData[];
   onChainError: string | null;
+  completedEvaluationsCount?: number;
+  bestCompletedScore?: number;
+  bestCompletedRoleTitle?: string | null;
+  readyEvaluations?: ReadyEvaluationItem[];
 }
 
 export const ProfileOnChainPanel: React.FC = () => {
-  const { publicKey, openConnectModal, signMessageText, clusterLabel } =
+  const { publicKey, openConnectModal, signMessageText, signAndSubmitTx, clusterLabel } =
     useSolanaWallet();
 
   const [data, setData] = useState<WalletStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [linking, setLinking] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
+  const [busyEvalKey, setBusyEvalKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -174,6 +190,81 @@ export const ProfileOnChainPanel: React.FC = () => {
     }
   };
 
+  const handleAnchorEvaluation = async (ev: ReadyEvaluationItem) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+    setBusyEvalKey(`anchor:${ev.id}`);
+    setError(null);
+    setSuccess(null);
+    try {
+      const prepared = await apiFetch<{
+        serializedTxBase64: string;
+        evalPda: string;
+      }>(`/api/solana/evaluations/${ev.id}`, {
+        method: "POST",
+        body: JSON.stringify({ walletAddress: publicKey, action: "auto" }),
+      });
+      const txSignature = await signAndSubmitTx(prepared.serializedTxBase64);
+      await apiFetch(`/api/solana/evaluations/${ev.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          txSignature,
+        }),
+      });
+      setSuccess(
+        `Anchored #${ev.id.slice(0, 8)} (${ev.overallScore}/100) to Solana ${clusterLabel}.`
+      );
+      await loadWalletState();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to anchor evaluation on Solana."
+      );
+    } finally {
+      setBusyEvalKey(null);
+    }
+  };
+
+  const handleMintEvaluationSbt = async (ev: ReadyEvaluationItem) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+    setBusyEvalKey(`mint:${ev.id}`);
+    setError(null);
+    setSuccess(null);
+    try {
+      const prepared = await apiFetch<{
+        serializedTxBase64: string;
+        sbtMintAddress: string;
+      }>(`/api/solana/evaluations/${ev.id}/mint-sbt`, {
+        method: "POST",
+        body: JSON.stringify({ walletAddress: publicKey }),
+      });
+      const txSignature = await signAndSubmitTx(prepared.serializedTxBase64);
+      await apiFetch(`/api/solana/evaluations/${ev.id}/mint-sbt`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          txSignature,
+          sbtMintAddress: prepared.sbtMintAddress,
+        }),
+      });
+      setSuccess(
+        `Minted Token-2022 Soulbound Credential for #${ev.id.slice(0, 8)} (${ev.overallScore}/100)!`
+      );
+      await loadWalletState();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to mint Soulbound Credential."
+      );
+    } finally {
+      setBusyEvalKey(null);
+    }
+  };
+
   if (loading && !data) {
     return <FullPageLoading />;
   }
@@ -181,6 +272,14 @@ export const ProfileOnChainPanel: React.FC = () => {
   const activeWallet = data?.linkedWallet || publicKey;
   const rep = data?.onChainReputation;
   const profile = data?.onChainProfile;
+  const completedCount = data?.completedEvaluationsCount ?? 0;
+  const bestCompletedScore = data?.bestCompletedScore ?? 0;
+  const readyEvals = data?.readyEvaluations ?? [];
+  const actionableEvals = readyEvals.filter(
+    (ev) => !ev.evalTxSignature || (ev.sbtEligible && !ev.sbtMintAddress)
+  );
+  const displayScore = profile?.highestScore ?? bestCompletedScore;
+  const isShowingUnanchoredScore = !profile && bestCompletedScore > 0;
 
   const reputationStatusLabel =
     rep && rep.fraudFlags > 0
@@ -200,11 +299,11 @@ export const ProfileOnChainPanel: React.FC = () => {
         message={error}
         onDismiss={() => setError(null)}
       />
-      {success && (
-        <Alert variant="success" title="Wallet Verified">
-          {success}
-        </Alert>
-      )}
+      <SuccessPopup
+        title="Wallet & Proof Confirmed"
+        message={success}
+        onDismiss={() => setSuccess(null)}
+      />
       {data?.onChainError && (
         <Alert variant="warning" title="RPC Notice">
           {data.onChainError}
@@ -219,20 +318,32 @@ export const ProfileOnChainPanel: React.FC = () => {
             badgeLabel={
               data?.credentials?.length
                 ? `${data.credentials.length} SBT Minted`
+                : profile
+                ? "On-Chain ID"
+                : completedCount > 0
+                ? "Ready to Anchor"
                 : "Candidate ID"
             }
             clusterLabel={clusterLabel}
-            roleTitle={profile?.lastRoleTitle || "Solana Verified Candidate"}
-            score={profile?.highestScore ?? 0}
+            roleTitle={
+              profile?.lastRoleTitle ||
+              data?.bestCompletedRoleTitle ||
+              "Solana Verified Candidate"
+            }
+            score={displayScore}
             scoreTier={
               profile
-                ? `${profile.evalCount} Anchored Audits`
-                : "Pending On-Chain Audit"
+                ? `${profile.evalCount} Anchored Audit${profile.evalCount === 1 ? "" : "s"}`
+                : completedCount > 0
+                ? `${completedCount} Completed · Anchor Below`
+                : "Pending Review"
             }
             verifiedSkills={profile?.topSkills ?? []}
             subtitle={
-              rep
+              rep && rep.effectiveStreak > 0
                 ? `Streak ${rep.effectiveStreak}x · ${rep.totalEarnedUsdc.toFixed(2)} USDC`
+                : completedCount > 0 && !profile
+                ? `Best Review ${bestCompletedScore}/100 · Unanchored`
                 : null
             }
             issuedLabel={
@@ -378,9 +489,14 @@ export const ProfileOnChainPanel: React.FC = () => {
                   Highest Score
                 </span>
                 <p className="text-3xl sm:text-4xl font-black text-purple-400 mt-2 font-mono">
-                  {profile?.highestScore ?? 0}
+                  {displayScore}
                   <span className="text-lg sm:text-xl text-text-muted font-bold">/100</span>
                 </p>
+                {isShowingUnanchoredScore && (
+                  <p className="text-xs font-mono text-text-secondary mt-1">
+                    In History · Ready to anchor
+                  </p>
+                )}
               </div>
 
               <div className="p-5 rounded-xl bg-surface-elevated border border-border">
@@ -404,23 +520,104 @@ export const ProfileOnChainPanel: React.FC = () => {
 
               <div className="p-5 rounded-xl bg-surface-elevated border border-border">
                 <span className="text-xs sm:text-sm font-bold uppercase tracking-wider text-text-secondary block">
-                  Anchored Audits
+                  Anchored Reviews
                 </span>
                 <p className="text-3xl sm:text-4xl font-black text-text mt-2 font-mono">
                   {profile?.evalCount ?? 0}
                 </p>
                 <p
                   className={`text-xs font-mono mt-1 ${
-                    (rep?.fraudFlags ?? 0) > 0 ? "text-red-400 font-bold" : "text-text-muted"
+                    (rep?.fraudFlags ?? 0) > 0
+                      ? "text-red-400 font-bold"
+                      : "text-text-secondary"
                   }`}
                 >
-                  {rep?.fraudFlags ?? 0} Fraud Flags
+                  {completedCount > 0
+                    ? `${completedCount} completed in History`
+                    : `${rep?.fraudFlags ?? 0} Fraud Flags`}
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Card 3: Verified Skills & Latest Role */}
+          {/* Card 3: Anchor Completed Reviews / Verified Skills */}
+          {actionableEvals.length > 0 && (
+            <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-xl sm:text-2xl font-black text-text">
+                    Publish Completed Reviews to Solana
+                  </h3>
+                  <p className="text-sm text-text-secondary mt-1">
+                    Anchor completed reviews on-chain to update your profile PDA and mint SBTs (85/100+).
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {actionableEvals.slice(0, 4).map((ev) => {
+                  const anchored = Boolean(ev.evalTxSignature);
+                  const anchoringThis = busyEvalKey === `anchor:${ev.id}`;
+                  const mintingThis = busyEvalKey === `mint:${ev.id}`;
+                  return (
+                    <div
+                      key={ev.id}
+                      className="p-4 sm:p-5 rounded-xl bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-bold text-purple-400">
+                            #{ev.id.slice(0, 8)}
+                          </span>
+                          <span className="text-sm font-extrabold text-text truncate">
+                            {ev.roleTitle}
+                          </span>
+                          {ev.sbtEligible && (
+                            <span className="px-2 py-0.5 text-[11px] font-mono font-bold rounded-md bg-surface border border-border text-purple-400">
+                              SBT Eligible
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs sm:text-sm font-mono text-text-secondary">
+                          Score: <strong className="text-text">{ev.overallScore}/100</strong> ·{" "}
+                          {anchored ? "Anchored on Solana" : "Not yet anchored on Solana"}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        {!anchored ? (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            isLoading={anchoringThis}
+                            onClick={() => void handleAnchorEvaluation(ev)}
+                          >
+                            {publicKey ? "Anchor On-Chain →" : "Connect Wallet →"}
+                          </Button>
+                        ) : ev.sbtEligible && !ev.sbtMintAddress ? (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            isLoading={mintingThis}
+                            onClick={() => void handleMintEvaluationSbt(ev)}
+                          >
+                            Mint Token-2022 SBT →
+                          </Button>
+                        ) : null}
+                        <Link href={`/evaluations/${ev.id}/report`}>
+                          <Button variant="outline" size="sm">
+                            Report →
+                          </Button>
+                        </Link>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Card 4: Verified Skills & Latest Role */}
           <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
@@ -428,7 +625,7 @@ export const ProfileOnChainPanel: React.FC = () => {
                   Latest Audited Role
                 </span>
                 <h3 className="text-xl sm:text-2xl font-black text-text mt-1">
-                  {profile?.lastRoleTitle || "No Anchored Audits Yet"}
+                  {profile?.lastRoleTitle || data?.bestCompletedRoleTitle || "No Anchored Audits Yet"}
                 </h3>
               </div>
               {data?.explorerProfileUrl && (
@@ -457,11 +654,13 @@ export const ProfileOnChainPanel: React.FC = () => {
             ) : (
               <div className="p-5 rounded-xl bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <p className="text-sm text-text-secondary">
-                  Complete an evaluation and anchor the proof to populate your permanent Solana skills registry.
+                  {actionableEvals.length > 0
+                    ? "Anchor one of your completed evaluations above to populate your verified on-chain skills."
+                    : "Complete a CV review first, then anchor its proof onto Solana Devnet."}
                 </p>
-                <Link href="/evaluations" className="shrink-0">
+                <Link href={actionableEvals.length > 0 ? "/evaluations" : "/evaluations/new"} className="shrink-0">
                   <Button variant="outline" size="md">
-                    Go to History →
+                    {actionableEvals.length > 0 ? "Go to History →" : "Start New Review →"}
                   </Button>
                 </Link>
               </div>
@@ -490,7 +689,7 @@ export const ProfileOnChainPanel: React.FC = () => {
           <div className="p-8 sm:p-10 rounded-xl bg-surface-elevated border border-border text-center space-y-3">
             <p className="text-lg font-extrabold text-text">No Soulbound Credentials Yet</p>
             <p className="text-sm sm:text-base text-text-secondary max-w-xl mx-auto">
-              Score 85/100 or higher on any COOV review, open its report, anchor the proof on Solana, and mint your permanent Token-2022 SBT.
+              Score 85/100 or higher on any COOV review, anchor it to Solana above or from your report, and mint your permanent Token-2022 SBT.
             </p>
           </div>
         ) : (

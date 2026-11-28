@@ -1,7 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { ProfileOnChainPanel } from "@/components/solana/profile-onchain-panel";
@@ -9,10 +10,17 @@ import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 import { useSession } from "@/lib/auth/auth-client";
 
 export default function OnChainPage() {
+  const router = useRouter();
   const { data: session, isPending } = useSession();
-  const { clusterLabel, openConnectModal, publicKey } = useSolanaWallet();
+  const { clusterLabel } = useSolanaWallet();
 
-  if (isPending) {
+  useEffect(() => {
+    if (!isPending && !session) {
+      router.replace("/auth?callbackUrl=/on-chain");
+    }
+  }, [isPending, session, router]);
+
+  if (isPending || !session) {
     return <FullPageLoading />;
   }
 
@@ -47,30 +55,7 @@ export default function OnChainPage() {
         </div>
       </div>
 
-      {!session ? (
-        <div className="rounded-2xl border border-border bg-surface p-8 sm:p-12 text-center space-y-5 max-w-2xl mx-auto">
-          <h2 className="text-2xl font-black text-text">
-            Sign in to View Your On-Chain Scorecard &amp; SBTs
-          </h2>
-          <p className="text-sm sm:text-base text-text-secondary leading-relaxed">
-            Link your Solana wallet to view anchored evaluation proofs, track your 30-day verified streak, and inspect minted Soulbound credentials.
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-            <Link href="/auth?callbackUrl=/on-chain">
-              <Button variant="primary" size="lg">
-                Sign In to Continue →
-              </Button>
-            </Link>
-            {!publicKey && (
-              <Button variant="outline" size="lg" onClick={openConnectModal}>
-                Connect Solana Wallet
-              </Button>
-            )}
-          </div>
-        </div>
-      ) : (
-        <ProfileOnChainPanel />
-      )}
+      <ProfileOnChainPanel />
     </div>
   );
 }

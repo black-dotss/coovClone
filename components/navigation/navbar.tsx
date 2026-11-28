@@ -161,9 +161,9 @@ export const Navbar: React.FC = () => {
   const navLinks = [
     { label: "New Review", href: "/evaluations/new" },
     { label: "Bounties", href: "/bounties" },
-    { label: "On-Chain & SBT", href: "/on-chain" },
+    ...(session ? [{ label: "On-Chain & SBT", href: "/on-chain" }] : []),
     { label: "Role Compare", href: "/comparisons" },
-    { label: "History", href: "/evaluations" },
+    ...(session ? [{ label: "History", href: "/evaluations" }] : []),
     { label: "Plans", href: "/billing" },
     ...(isSuperAdmin ? [{ label: "Admin", href: "/admin" }] : []),
   ];

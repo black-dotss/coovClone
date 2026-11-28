@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SolanaIdentityCard } from "@/components/solana/solana-identity-card";
 import { apiFetch } from "@/lib/client/api";
@@ -364,7 +364,11 @@ export const EvaluationOnChainPanel: React.FC<{
         message={error}
         onDismiss={() => setError(null)}
       />
-      {notice && <Alert variant="success">{notice}</Alert>}
+      <SuccessPopup
+        title="On-Chain Confirmed"
+        message={notice}
+        onDismiss={() => setNotice(null)}
+      />
       {state.rpcError && (
         <Alert variant="warning" title="RPC Warning">
           {state.rpcError}
