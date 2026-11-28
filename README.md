@@ -1,149 +1,162 @@
-# CookMyCv 🍳📄
+# COOV — AI Hiring Agents & Verified Credential Protocol on Solana
 
-> A recruitment simulation SaaS that evaluates a candidate's CV and job description through a structured panel of AI agents debating evidence and producing actionable reports.
+COOV (`coov_protocol`) is an adversarial multi-agent CV evaluation platform, **Token-2022 Non-Transferable Soulbound Credential (SBT)** issuer, and **anti-fraud Devnet USDC Bounty Escrow** built on Solana and Next.js 16.
 
----
-
-## 🛠️ Technology Stack
-
-- **Framework**: Next.js 16 (App Router with Turbopack, strict TypeScript)
-- **Database**: Neon PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/)
-- **Authentication**: [Better Auth](https://better-auth.com/) (Neon-compatible)
-- **AI Orchestration**: [LangGraph](https://langchain-ai.github.io/langgraph/) multi-agent panel
-- **Payment Verification**: Verify.ET server-to-server verification & HMAC-SHA256 webhooks
-- **Validation**: Zod schema validation
-- **Testing**: Vitest with Node environment
+Candidates are screened by a 6-agent LangGraph hiring committee plus a Fake Resume Detector Gate, earn cryptographically hashed on-chain `EvaluationRecord` proofs co-signed by an Oracle keypair, mint Soulbound Token-2022 credentials, and compete for USDC bounties locked in program-controlled Vault PDAs with a 24-hour optimistic recruiter review window.
 
 ---
 
-## 📂 Repository & Module Layout
+## Solana Architecture & Multi-Language SDK Usage
 
-```text
-├── app/                  # Next.js App Router pages and API route handlers
-│   ├── api/              # Backend HTTP endpoints
-│   │   └── health/       # Healthcheck endpoint (x-request-id & standard envelopes)
-│   ├── layout.tsx        # Root layout
-│   └── page.tsx          # Landing page
-├── drizzle/              # Generated SQL migrations (managed by drizzle-kit)
-├── lib/                  # Core domain and infrastructure modules
-│   ├── agents/           # 6 recruitment agents, roles, and schemas
-│   ├── auth/             # Better Auth integration & session utilities
-│   ├── billing/          # Plans, quotas, and Ethiopia calendar day boundaries
-│   ├── db/               # Neon client & Drizzle schema definitions
-│   │   └── schema/       # Database tables, relations, and indexes
-│   ├── devices/          # One-device-one-account protection & recovery
-│   ├── documents/        # PDF/DOCX upload validation & text extraction
-│   ├── env.ts            # Strict Zod environment variable validation
-│   ├── evaluations/      # Workflow state, scoring dimensions & verdicts
-│   ├── interviews/       # Mock interview coaching & rubric scoring
-│   ├── payments/         # Payment orders & Verify.ET verification client
-│   ├── reports/          # Report synthesis, PDF generation & share links
-│   ├── shared/           # Cross-cutting engineering infrastructure
-│   │   ├── api-response.ts # Uniform success/error response helpers & middleware
-│   │   ├── errors.ts     # AppError hierarchy with typed error codes
-│   │   ├── logger.ts     # Structured JSON logging with automatic secret redaction
-│   │   └── request-id.ts # Standard x-request-id handling
-│   └── users/            # User profile management & account lifecycle
-├── tests/                # Test suite
-│   ├── unit/             # Fast, isolated unit tests
-│   └── integration/      # End-to-end and database integration tests
-├── .env.example          # Template with required variables documented
-├── drizzle.config.ts     # Drizzle Kit configuration
-└── vitest.config.mts     # Vitest configuration
+- **Deployed Devnet Program ID:** [`FXboyZZ2em2FqXrcr4Uz5nfrHHQ4K1NaJ6kP9VMBJ3Yt`](https://explorer.solana.com/address/FXboyZZ2em2FqXrcr4Uz5nfrHHQ4K1NaJ6kP9VMBJ3Yt?cluster=devnet)
+- **Devnet USDC SPL Mint:** [`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`](https://explorer.solana.com/address/4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU?cluster=devnet)
+- **Token Extensions Program:** [`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`](https://explorer.solana.com/address/TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb?cluster=devnet) (SPL Token-2022 `NonTransferable` + `MetadataPointer` + on-chain TokenMetadata)
+
+### End-to-End Protocol Flow
+
+```mermaid
+flowchart LR
+    CV["Candidate CV + Target JD"] --> Gate["SHA-256 Duplicate & Fake Resume Gate"]
+    Gate --> Agents["6-Agent LangGraph Committee + Defense Chat"]
+    Agents --> Hash["Canonical SHA-256 Report Digest (32B)"]
+    Hash --> Oracle["Backend Oracle Partial Sign (requireAllSignatures: false)"]
+    Wallet["Wallet Standard UI Signer (Phantom / Solflare / Backpack)"] --> Oracle
+    Oracle --> AnchorProg["COOV Anchor Program (FXboyZZ2em2FqXrcr4Uz5nfrHHQ4K1NaJ6kP9VMBJ3Yt)"]
+
+    AnchorProg --> PDAs["ProgramConfig / CandidateProfile / EvaluationRecord PDAs"]
+    AnchorProg --> SBT["Token-2022 NonTransferable SBT Mint & Metadata"]
+    AnchorProg --> Escrow["BountyEscrow + EscrowVault PDAs (Devnet USDC)"]
+    Recruiter["Recruiter 24h Optimistic Review or Timeout Auto-Claim"] --> Escrow
+    Blinks["Solana Actions / Blinks (/api/actions/bounty/:jobId)"] --> AnchorProg
 ```
 
+### On-Chain Account & PDA Map
+
+| Account Struct | PDA Seeds | Responsibility |
+| :--- | :--- | :--- |
+| `ProgramConfig` | `[b"config"]` | Global admin, authorized `oracle_authority` pubkey, pause circuit-breaker |
+| `CandidateProfile` | `[b"profile", candidate_pubkey]` | Aggregate evaluation counter, `highest_score`, verified skill tags, role title |
+| `EvaluationRecord` | `[b"eval", candidate_pubkey, eval_id_16b]` | Immutable Proof PDA: initial & defended SHA-256 report hashes, 6 per-agent scores, SBT mint flag |
+| `BountyEscrow` | `[b"escrow", job_id_16b]` | Recruiter address, USDC mint, `reward_per_winner_micros`, `max_winners`, `min_score`, expiry |
+| `EscrowVault` | `[b"escrow_vault", escrow_pda]` | Program-owned SPL Token PDA holding locked Devnet USDC bounty pool |
+| `BountyClaim` | `[b"claim", escrow_pda, candidate_pubkey]` | On-chain one-claim-per-candidate receipt linked to `EvaluationRecord` |
+
 ---
 
-## 🚀 Getting Started
+## Multi-Language SDK File Matrix
 
-### Prerequisites
+Note: TypeScript application modules live under root `lib/` and `app/` (mapped via `@/* -> ./*` in `tsconfig.json`).
 
-- Node.js `v20.9+` or `v22+`
-- PostgreSQL or [Neon](https://neon.tech) account
+### 1. Rust / Anchor On-Chain Program (`solana/`)
 
-### 1. Clone & Install
+| File | Stack / SDK | Purpose |
+| :--- | :--- | :--- |
+| [solana/programs/coov_solana/src/lib.rs](solana/programs/coov_solana/src/lib.rs) | `anchor-lang`, `anchor-spl` (`token_2022`, `associated_token`) | Live Devnet Anchor program implementing `initialize_config`, `init_profile`, `record_evaluation`, `update_evaluation_after_defense`, `mint_credential` (Token-2022 NonTransferable SBT + inline TLV metadata), `create_bounty_escrow`, `claim_bounty`, and `withdraw_expired_escrow` |
+| [solana/programs/coov_solana/Cargo.toml](solana/programs/coov_solana/Cargo.toml) | Cargo / Anchor 0.29 | Program manifest enabling `token_2022` and `associated_token` CPI features |
+| [solana/Anchor.toml](solana/Anchor.toml) | Anchor CLI | Cluster configuration binding `[programs.devnet]` to `FXboyZZ2em2FqXrcr4Uz5nfrHHQ4K1NaJ6kP9VMBJ3Yt` |
+| [solana/idl/coov_solana.json](solana/idl/coov_solana.json) | Anchor IDL JSON | Compiled IDL artifact for instructions, accounts, events, and custom error codes (`6000–6019`) |
+| [solana/tests/coov_solana.ts](solana/tests/coov_solana.ts) | `@coral-xyz/anchor`, `@solana/web3.js`, `@solana/spl-token`, `vitest` | Anchor integration tests verifying PDA derivation, `BountyEscrow` / `ProgramConfig` instruction coding, Token-2022 Non-Transferable mint layout, Devnet USDC accounting, and live RPC checks |
+
+### 2. TypeScript SDK, Wallet Standard & Solana Actions (`lib/solana/`, `components/`, `app/`)
+
+| File | Stack / SDK | Purpose |
+| :--- | :--- | :--- |
+| [lib/solana/codec.ts](lib/solana/codec.ts) | `@solana/web3.js`, `@solana/spl-token` | Deterministic PDA derivations (`deriveConfigPda`, `deriveProfilePda`, `deriveEvaluationPda`, `deriveEscrowPda`, `deriveEscrowVaultPda`, `deriveClaimReceiptPda`), Anchor 8-byte discriminators, and Borsh instruction/account codecs |
+| [lib/solana/anchor-client.ts](lib/solana/anchor-client.ts) | `@coral-xyz/anchor` (`Program`, `AnchorProvider`) | Legacy-to-v0.32 IDL adapter (`normalizeIdlForAnchor`), read-only `AnchorProvider`, and `program.account.*.fetchNullable` account deserialization over Helius / Devnet RPC |
+| [lib/solana/config.ts](lib/solana/config.ts) | `@solana/web3.js` | Multi-endpoint RPC failover (`SOLANA_RPC_URL` / Helius -> Devnet), HTTP signature polling (`confirmSignatureViaPolling` for serverless runtimes), and Oracle keypair parser |
+| [lib/solana/oracle.ts](lib/solana/oracle.ts) | `@solana/web3.js`, `@solana/spl-token` | Partial-signed (`requireAllSignatures: false`) co-signing flows for evaluation recording, defense upgrades, Token-2022 SBT minting, USDC escrow creation, candidate claim, and expired refund |
+| [lib/solana/canonical-hash.ts](lib/solana/canonical-hash.ts) | Web Crypto SHA-256 | Canonical JSON serialization producing deterministic 32-byte report digests attested on-chain |
+| [lib/solana/signature.ts](lib/solana/signature.ts) | Ed25519 / Web Crypto | Wallet ownership proof verification (`SignMessage`) before binding a wallet address to a user profile |
+| [components/providers/solana-wallet-provider.tsx](components/providers/solana-wallet-provider.tsx) | `@wallet-standard/app`, `@solana/wallet-standard-features` | Framework-agnostic Wallet Standard provider supporting `standard:connect`, `solana:signMessage`, `solana:signTransaction`, and `solana:signAndSendTransaction` |
+| [components/solana/solana-identity-card.tsx](components/solana/solana-identity-card.tsx) | React 19 + HTML5 Canvas | Portrait A4-proportioned On-Chain & SBT Identity Card with borderless mascot showcase and client-side high-DPI PNG exporter |
+| [app/api/actions/bounty/[jobId]/route.ts](app/api/actions/bounty/[jobId]/route.ts) | `@solana/actions` (`createPostResponse`, `ACTIONS_CORS_HEADERS`) | Solana Actions / Blinks `GET` / `POST` / `OPTIONS` endpoint to inspect live escrow PDAs or generate `create_bounty_escrow` funding transactions |
+| [app/actions.json/route.ts](app/actions.json/route.ts) | `@solana/actions` | Root Blinks rule discovery manifest mapping `/bounties/*` to `/api/actions/bounty/*` |
+| `app/api/solana/**` | Next.js App Router + Drizzle (`Neon`) | Authenticated REST routes for wallet linking, admin `init-config`, SBT minting, bounty escrow submit/review/claim/refund, and RPC broadcast |
+
+### 3. Python Independent Verification CLI (`solana/scripts/`)
+
+| File | Stack / SDK | Purpose |
+| :--- | :--- | :--- |
+| [solana/scripts/verify_onchain.py](solana/scripts/verify_onchain.py) | `solders`, `solana` (`AsyncClient`), `base58`, `python-dotenv` | Independent CLI auditor that derives PDAs, fetches live Devnet account state, Borsh-decodes all 5 Anchor structs, validates Token-2022 Non-Transferable mint TLV extensions, and prints a structured terminal or `--json` audit report |
+| [solana/scripts/requirements.txt](solana/scripts/requirements.txt) | `pip` | Python runtime dependencies (`solana>=0.35.0`, `solders>=0.21.0`) |
+
+---
+
+## Key Platform Capabilities
+
+1. **Adversarial Multi-Agent Screening & Defense Chat:** 6 specialist AI agents (HR Recruiter, Technical Interviewer, ATS Scanner, Hiring Manager, Career Strategist, Red Flag Analyst) evaluate a CV against a target JD, followed by an interactive candidate defense workflow (`update_evaluation_after_defense`).
+2. **Anti-Fraud Bounty Gating:**
+   - **SHA-256 Duplicate Gate:** Normalized CV hashes block duplicate or recycled submissions per bounty in Neon PostgreSQL (`bounty_submissions` + `bounty_restrictions`).
+   - **Fake Resume Detector Gate:** Screens submissions for fabricated credentials, AI keyword stuffing, or unverifiable claims prior to reserving a bounty winner slot.
+3. **24h Optimistic Recruiter Review & On-Chain USDC Settlement:**
+   - Qualifying candidates (`score >= min_score`) lock a winner slot in `pending_review` for 24 hours.
+   - Bounty creators inspect candidate CVs and 6-agent audits from the publisher review panel to approve payout (`claim_bounty`) or reject/flag and free the slot; after 24 hours without action, candidates can auto-claim on-chain.
+4. **Verified Token-2022 Soulbound Credentials:** Candidates mint permanent, non-transferable Token-2022 NFTs storing role title, score tier, `EvaluationRecord` PDA hash, and evaluation UUID directly in on-chain TokenMetadata.
+
+---
+
+## Local Setup & Verification
+
+### 1. Environment Configuration
+
+Copy `.env.example` to `.env.local` and provide your Neon PostgreSQL URL, Gemini API key, Helius/Solana Devnet RPC, and funded Oracle keypair:
 
 ```bash
-git clone https://github.com/your-org/cookmycv.git
-cd cookmycv
+cp .env.example .env.local
 npm install
 ```
 
-### 2. Configure Environment
+Key Solana variables in `.env.local`:
 
-Copy `.env.example` to `.env` and configure your credentials:
-
-```bash
-cp .env.example .env
+```env
+SOLANA_CLUSTER=devnet
+SOLANA_RPC_URL=https://api.devnet.solana.com
+NEXT_PUBLIC_SOLANA_RPC_URL=https://api.devnet.solana.com
+NEXT_PUBLIC_SOLANA_CLUSTER=devnet
+NEXT_PUBLIC_SOLANA_PROGRAM_ID=FXboyZZ2em2FqXrcr4Uz5nfrHHQ4K1NaJ6kP9VMBJ3Yt
+NEXT_PUBLIC_SOLANA_USDC_MINT=4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+COOV_ORACLE_PRIVATE_KEY=[...]
 ```
 
-Key environment variables:
-- `DATABASE_URL`: Neon PostgreSQL connection string (must have `sslmode=require`)
-- `BETTER_AUTH_SECRET`: Random 32+ character string
-- `DEVICE_TOKEN_SECRET`: Random secret for signing HttpOnly device cookies
-- `VERIFY_ET_API_KEY`: Verify.ET verification API key
-- `VERIFY_ET_WEBHOOK_SECRET`: HMAC-SHA256 webhook secret
-
-### 3. Database Migrations
-
-Generate and run migrations with Drizzle Kit:
+### 2. Run Database Migrations & Next.js Dev Server
 
 ```bash
-# Generate SQL migrations from schema
-npm run db:generate
-
-# Apply migrations to database
-npm run db:migrate
-
-# Open Drizzle Studio database browser
-npm run db:studio
-```
-
-### 4. Run Development Server
-
-```bash
+npm run db:push
 npm run dev
 ```
 
-Visit [http://localhost:3000](http://localhost:3000) to view the application, or test `GET /api/health`:
+### 3. Run Unit & Anchor Integration Tests
 
 ```bash
-curl http://localhost:3000/api/health
+# Typecheck, Vitest unit suite, and production build
+npx next typegen && npm run typecheck && npm test && npm run build:next
+
+# Run Anchor TypeScript integration & Devnet checks
+npx vitest run solana/tests/coov_solana.ts
 ```
 
----
-
-## 🧪 Testing & Code Quality
+### 4. Inspect Solana Actions / Blinks Locally
 
 ```bash
-# Run unit tests
-npm test
+# Actions discovery rules
+curl http://localhost:3000/actions.json
 
-# Run tests in watch mode
-npm run test:watch
-
-# TypeScript type checking
-npm run typecheck
-
-# ESLint check
-npm run lint
-
-# Production build check
-npm run build
+# Inspect or generate a funding transaction for any Bounty job UUID
+curl http://localhost:3000/api/actions/bounty/<JOB_UUID>
 ```
 
----
+### 5. Run Independent Python Devnet Audit CLI
 
-## 🔒 Security & Logging Standards
+```bash
+pip install -r solana/scripts/requirements.txt
 
-1. **Safe Log Redaction**: The structured logger in `lib/shared/logger.ts` automatically redacts sensitive data (passwords, tokens, API keys, full CV text, cover letters, and bank details) from log entries. Never log sensitive candidate documents or secrets.
-2. **Device-Based Account Protection**: Enforces the one-device-one-account policy to prevent repeated free-trial claims via HttpOnly signed tokens.
-3. **Server-Side Enforcement**: Quotas, pricing, trial status, and payment verification are strictly evaluated and settled server-side in Neon transactions.
+# Audit deployed program, ProgramConfig PDA, and Devnet USDC Mint
+python solana/scripts/verify_onchain.py
 
----
-
-## 📦 Deployment
-
-- **Vercel / Next.js hosting**: Connect repository and set environment variables matching `.env.example`.
-- **Database**: Neon serverless Postgres with pooling enabled for serverless routes.
-- **Workers**: Background evaluation jobs run in a dedicated background worker runtime or event-driven serverless processor.
+# Full audit for a candidate wallet, evaluation proof, bounty escrow, and SBT mint
+python solana/scripts/verify_onchain.py \
+  --wallet <CANDIDATE_PUBKEY> \
+  --eval-id <EVALUATION_UUID> \
+  --job-id <JOB_UUID> \
+  --mint <TOKEN_2022_SBT_MINT>
+```
