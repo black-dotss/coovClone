@@ -2,6 +2,8 @@ import { db } from "@/lib/db";
 import {
   evaluations,
   agentRuns,
+  bounties,
+  bountySubmissions,
   debateMessages,
   reports,
   cvVersions,
@@ -27,6 +29,10 @@ import { storage } from "@/lib/documents/storage";
 import { extractDocumentText } from "@/lib/documents/extraction";
 import { settleEvaluationCredit, releaseEvaluationCredit } from "@/lib/billing/ledger";
 import { CreditReservation } from "@/lib/billing/types";
+import {
+  runFakeResumeDetectorAgent,
+  type FakeResumeDetectorReport,
+} from "@/lib/bounties/fraud-detector";
 import { syncEvaluationToBountySubmission } from "@/lib/bounties/service";
 import { AppError, NotFoundError, ForbiddenError, BadRequestError } from "@/lib/shared/errors";
 import { logger } from "@/lib/shared/logger";
@@ -212,50 +218,93 @@ export async function executeEvaluationWithCheckpoints(
       recoveredCount: Object.keys(completedAgentsMap).length,
     });
 
-    // Execute only missing agents
+    // Kick off deep Fake Resume Detector LLM audit concurrently with agents if linked to a bounty
+    let detectorReportPromise: Promise<FakeResumeDetectorReport | null> = Promise.resolve(null);
+    try {
+      const [linkedBounty] = await db
+        .select({
+          id: bounties.id,
+          title: bounties.title,
+        })
+        .from(bounties)
+        .where(eq(bounties.jobDescriptionId, evaluation.jobDescriptionId))
+        .limit(1);
+
+      if (linkedBounty) {
+        const [existingSub] = await db
+          .select({ fakeDetectorStatus: bountySubmissions.fakeDetectorStatus })
+          .from(bountySubmissions)
+          .where(
+            and(
+              eq(bountySubmissions.bountyId, linkedBounty.id),
+              eq(bountySubmissions.evaluationId, evaluationId)
+            )
+          )
+          .limit(1);
+
+        if (!existingSub || existingSub.fakeDetectorStatus === "pending") {
+          detectorReportPromise = runFakeResumeDetectorAgent({
+            cvText,
+            jdText,
+            bountyTitle: linkedBounty.title,
+            provider,
+          }).catch(() => null);
+        }
+      }
+    } catch {
+      // Optional check in isolated unit tests without bounties schema mock
+    }
+
+    // Execute only missing agents alongside deep fraud check
     const missingRoles = AGENT_ROLES.filter((role) => !completedAgentsMap[role]);
 
-    if (missingRoles.length > 0) {
-      const agentPromises = missingRoles.map((role) =>
-        limiter.run(async () => {
-          // Check cancellation before launching agent
-          await assertNotCancelled(evaluationId);
+    const agentBatchPromise =
+      missingRoles.length > 0
+        ? Promise.all(
+            missingRoles.map((role) =>
+              limiter.run(async () => {
+                // Check cancellation before launching agent
+                await assertNotCancelled(evaluationId);
 
-          const res = await executeAgent(
-            {
-              agentRole: role,
-              cvText,
-              jdText,
-              tone: evaluation.tone as EvaluationTone,
-            },
-            provider
-          );
+                const res = await executeAgent(
+                  {
+                    agentRole: role,
+                    cvText,
+                    jdText,
+                    tone: evaluation.tone as EvaluationTone,
+                  },
+                  provider
+                );
 
-          completedAgentsMap[role] = res.output;
+                completedAgentsMap[role] = res.output;
 
-          // Persist agent run immediately as a checkpoint
-          await db.insert(agentRuns).values({
-            evaluationId,
-            agentRole: role,
-            status: "completed",
-            modelVersion: res.model,
-            structuredResult: res.output as unknown as Record<string, unknown>,
-            scoreContribution: Math.round(res.output.scoreContribution),
-            promptTokens: res.promptTokens,
-            completionTokens: res.completionTokens,
-            durationMs: res.durationMs,
-          });
+                // Persist agent run immediately as a checkpoint
+                await db.insert(agentRuns).values({
+                  evaluationId,
+                  agentRole: role,
+                  status: "completed",
+                  modelVersion: res.model,
+                  structuredResult: res.output as unknown as Record<string, unknown>,
+                  scoreContribution: Math.round(res.output.scoreContribution),
+                  promptTokens: res.promptTokens,
+                  completionTokens: res.completionTokens,
+                  durationMs: res.durationMs,
+                });
 
-          // Touch evaluation updatedAt as a live heartbeat
-          await db
-            .update(evaluations)
-            .set({ updatedAt: new Date() })
-            .where(eq(evaluations.id, evaluationId));
-        })
-      );
+                // Touch evaluation updatedAt as a live heartbeat
+                await db
+                  .update(evaluations)
+                  .set({ updatedAt: new Date() })
+                  .where(eq(evaluations.id, evaluationId));
+              })
+            )
+          )
+        : Promise.resolve();
 
-      await Promise.all(agentPromises);
-    }
+    const [, parallelDetectorReport] = await Promise.all([
+      agentBatchPromise,
+      detectorReportPromise,
+    ]);
 
     // Check cancellation before debate
     await assertNotCancelled(evaluationId);
@@ -392,7 +441,10 @@ export async function executeEvaluationWithCheckpoints(
       })
       .where(eq(evaluations.id, evaluationId));
 
-    await syncEvaluationToBountySubmission({ evaluationId });
+    await syncEvaluationToBountySubmission({
+      evaluationId,
+      detectorReport: parallelDetectorReport ?? undefined,
+    });
 
     logger.info("Evaluation completed successfully", {
       evaluationId,

@@ -428,9 +428,9 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
                 {account.address}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Link href="/profile?tab=solana" onClick={() => setIsModalOpen(false)}>
+                <Link href="/on-chain" onClick={() => setIsModalOpen(false)}>
                   <Button variant="primary" size="sm">
-                    On-Chain & SBT →
+                    On-Chain &amp; SBT →
                   </Button>
                 </Link>
                 <Button

@@ -4,6 +4,7 @@ import React, {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useSyncExternalStore,
   useState,
@@ -16,6 +17,7 @@ export interface ErrorPopupProps {
   title?: string;
   onDismiss?: () => void;
   action?: React.ReactNode;
+  autoDismissMs?: number;
 }
 
 function subscribeNoop() {
@@ -39,10 +41,26 @@ export function ErrorPopup({
   title = "Notice",
   onDismiss,
   action,
+  autoDismissMs = 5000,
 }: ErrorPopupProps) {
   const mounted = useIsClient();
+  const [dismissedMsg, setDismissedMsg] = useState<string | null>(null);
 
-  if (!message || !mounted) {
+  useEffect(() => {
+    if (!message || !autoDismissMs || autoDismissMs <= 0) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (onDismiss) {
+        onDismiss();
+      } else {
+        setDismissedMsg(message);
+      }
+    }, autoDismissMs);
+    return () => clearTimeout(timer);
+  }, [message, autoDismissMs, onDismiss]);
+
+  if (!message || !mounted || (!onDismiss && dismissedMsg === message)) {
     return null;
   }
 

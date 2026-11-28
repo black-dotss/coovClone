@@ -178,407 +178,371 @@ export const ProfileOnChainPanel: React.FC = () => {
     return <FullPageLoading />;
   }
 
+  const activeWallet = data?.linkedWallet || publicKey;
+  const rep = data?.onChainReputation;
+  const profile = data?.onChainProfile;
+
+  const reputationStatusLabel =
+    rep && rep.fraudFlags > 0
+      ? `Fraud Penalty (${rep.fraudFlags} flag${rep.fraudFlags === 1 ? "" : "s"})`
+      : rep?.isZeroStakeVip
+      ? "Zero-Stake VIP Unlocked (0 USDC Stake)"
+      : rep?.isFresh
+      ? `Active Streak · ${rep.daysUntilDecay ?? 0}d left before decay`
+      : rep && rep.verifiedStreak > 0
+      ? "Streak Decayed (>30 days idle — re-verify to restore)"
+      : "Score 75+ twice within 30 days to unlock 0 USDC Stake";
+
   return (
-    <div className="space-y-6">
-      <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-4">
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h2 className="text-xl font-extrabold text-text">
-                On-Chain Identity & Skill Registry
-              </h2>
-              <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
-                Solana {clusterLabel}
-              </span>
-            </div>
-            <p className="text-xs text-text-secondary mt-1">
-              Link Phantom or Solflare to publish verified committee scores and mint Token-2022 Soulbound credentials.
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void loadWalletState()}
-            disabled={loading}
-          >
-            {loading ? "Refreshing..." : "Refresh"}
-          </Button>
+    <div className="space-y-8">
+      <ErrorPopup
+        title="Solana Error"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
+      {success && (
+        <Alert variant="success" title="Wallet Verified">
+          {success}
+        </Alert>
+      )}
+      {data?.onChainError && (
+        <Alert variant="warning" title="RPC Notice">
+          {data.onChainError}
+        </Alert>
+      )}
+
+      {/* Main Two-Column Overview */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        {/* Left: Portrait Scorecard */}
+        <div className="lg:col-span-5">
+          <SolanaIdentityCard
+            badgeLabel={
+              data?.credentials?.length
+                ? `${data.credentials.length} SBT Minted`
+                : "Candidate ID"
+            }
+            clusterLabel={clusterLabel}
+            roleTitle={profile?.lastRoleTitle || "Solana Verified Candidate"}
+            score={profile?.highestScore ?? 0}
+            scoreTier={
+              profile
+                ? `${profile.evalCount} Anchored Audits`
+                : "Pending On-Chain Audit"
+            }
+            verifiedSkills={profile?.topSkills ?? []}
+            subtitle={
+              rep
+                ? `Streak ${rep.effectiveStreak}x · ${rep.totalEarnedUsdc.toFixed(2)} USDC`
+                : null
+            }
+            issuedLabel={
+              rep?.isZeroStakeVip
+                ? "Zero-Stake VIP"
+                : data?.linkedWallet
+                ? "Wallet Verified"
+                : "Link Wallet"
+            }
+            onFooterAction={
+              data?.linkedWallet
+                ? undefined
+                : publicKey
+                ? () => void handleLinkWallet()
+                : openConnectModal
+            }
+            downloadFileName="coov-solana-profile-card.png"
+            onDownloadError={(msg) => setError(msg)}
+          />
         </div>
 
-        <ErrorPopup
-          title="Solana Error"
-          message={error}
-          onDismiss={() => setError(null)}
-        />
-        {success && (
-          <Alert variant="success" title="Wallet Verified">
-            {success}
-          </Alert>
-        )}
-        {data?.onChainError && (
-          <Alert variant="warning" title="RPC Notice">
-            {data.onChainError}
-          </Alert>
-        )}
-
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-            {/* Portrait A4-shaped Solana Identity Card */}
-            <div className="xl:col-span-5">
-              <SolanaIdentityCard
-                badgeLabel={
-                  data?.credentials?.length
-                    ? `${data.credentials.length} SBT Minted`
-                    : "Candidate ID"
-                }
-                clusterLabel={clusterLabel}
-                roleTitle={data?.onChainProfile?.lastRoleTitle || "Solana Verified Candidate"}
-                score={data?.onChainProfile?.highestScore ?? 0}
-                scoreTier={
-                  data?.onChainProfile
-                    ? `${data.onChainProfile.evalCount} Anchored Audits`
-                    : "Pending On-Chain Audit"
-                }
-                verifiedSkills={data?.onChainProfile?.topSkills ?? []}
-                subtitle={
-                  data?.onChainReputation
-                    ? `Streak ${data.onChainReputation.effectiveStreak}x · ${data.onChainReputation.totalEarnedUsdc.toFixed(2)} USDC`
-                    : null
-                }
-                issuedLabel={
-                  data?.onChainReputation?.isZeroStakeVip
-                    ? "Zero-Stake VIP"
-                    : data?.linkedWallet
-                    ? "Wallet Verified"
-                    : "Link Wallet"
-                }
-                onFooterAction={
-                  data?.linkedWallet
-                    ? undefined
-                    : publicKey
-                    ? () => void handleLinkWallet()
-                    : openConnectModal
-                }
-                downloadFileName="coov-solana-profile-card.png"
-                onDownloadError={(msg) => setError(msg)}
-              />
-            </div>
-
-            <div className="xl:col-span-7 space-y-5">
-              {/* Wallet Linking Controls */}
-              <div className="p-4 rounded-lg bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="space-y-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-text-muted">
-                      Linked Wallet
-                    </span>
-                    <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-purple-400">
-                      {data?.linkedWallet ? "Verified" : "Not Linked"}
-                    </span>
-                  </div>
-                  {data?.linkedWallet ? (
-                    <p className="font-mono text-xs sm:text-sm text-text break-all">
-                      {data.linkedWallet}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-text-secondary">
-                      {publicKey
-                        ? `Connected: ${publicKey} — click Sign & Link Wallet.`
-                        : "Connect Phantom or Solflare to verify wallet ownership."}
-                    </p>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {!publicKey && (
-                    <Button variant="primary" size="sm" onClick={openConnectModal}>
-                      Connect Wallet
-                    </Button>
-                  )}
-                  {publicKey && data?.linkedWallet !== publicKey && (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      isLoading={linking}
-                      onClick={() => void handleLinkWallet()}
-                    >
-                      Sign & Link Wallet
-                    </Button>
-                  )}
-                  {data?.linkedWallet && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      isLoading={unlinking}
-                      onClick={() => void handleUnlinkWallet()}
-                    >
-                      Unlink
-                    </Button>
-                  )}
-                </div>
+        {/* Right: Simple Bold Cards */}
+        <div className="lg:col-span-7 space-y-6">
+          {/* Card 1: Wallet & On-Chain PDAs */}
+          <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <h2 className="text-2xl font-black text-text">
+                  Verified Wallet
+                </h2>
+                <span className="px-3 py-1 text-xs font-mono font-bold rounded-lg bg-surface-elevated border border-border text-purple-400">
+                  {data?.linkedWallet ? "Verified" : activeWallet ? "Connected" : "Not Linked"}
+                </span>
               </div>
 
-              {/* Candidate Profile PDA State */}
-              <div className="rounded-lg border border-border bg-surface-elevated p-5 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border pb-3">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-text">
-                      CandidateProfile PDA
-                    </h3>
-                    <p className="text-[11px] font-mono text-text-muted mt-0.5">
-                      Full on-chain addresses &amp; Token-2022 Soulbound credentials
-                    </p>
-                  </div>
-                  {data?.explorerProfileUrl && (
-                    <a
-                      href={data.explorerProfileUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs font-bold text-purple-400 hover:underline shrink-0"
-                    >
-                      View on Explorer →
-                    </a>
-                  )}
-                </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void loadWalletState()}
+                  disabled={loading}
+                >
+                  {loading ? "Refreshing..." : "Refresh"}
+                </Button>
+                {!publicKey && (
+                  <Button variant="primary" size="sm" onClick={openConnectModal}>
+                    Connect Wallet
+                  </Button>
+                )}
+                {publicKey && data?.linkedWallet !== publicKey && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    isLoading={linking}
+                    onClick={() => void handleLinkWallet()}
+                  >
+                    Sign &amp; Link Wallet
+                  </Button>
+                )}
+                {data?.linkedWallet && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    isLoading={unlinking}
+                    onClick={() => void handleUnlinkWallet()}
+                  >
+                    Unlink
+                  </Button>
+                )}
+              </div>
+            </div>
 
-                {/* Full Addresses & SBT Count */}
-                <div className="space-y-2.5 text-xs font-mono p-3.5 rounded-lg bg-surface border border-border">
-                  <div className="space-y-0.5">
-                    <span className="text-[10px] uppercase text-text-muted block">
-                      Wallet
-                    </span>
-                    <p className="text-text break-all">
-                      {data?.linkedWallet || publicKey || "Not linked"}
-                    </p>
-                  </div>
+            <div className="space-y-3 pt-2 border-t border-border">
+              <div>
+                <span className="text-xs font-bold uppercase tracking-wider text-text-secondary block mb-1">
+                  Solana Wallet Address ({clusterLabel})
+                </span>
+                <p className="font-mono text-sm sm:text-base font-bold text-text break-all">
+                  {activeWallet || "No wallet connected — connect Phantom or Solflare."}
+                </p>
+              </div>
+
+              {(data?.profilePdaAddress || data?.reputationPdaAddress) && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                   {data?.profilePdaAddress && (
-                    <div className="space-y-0.5 pt-2 border-t border-border/60">
-                      <span className="text-[10px] uppercase text-text-muted block">
+                    <div>
+                      <span className="text-xs font-bold uppercase tracking-wider text-text-secondary block mb-1">
                         Profile PDA
                       </span>
-                      <p className="text-purple-400 break-all">
-                        {data.profilePdaAddress}
-                      </p>
+                      {data.explorerProfileUrl ? (
+                        <a
+                          href={data.explorerProfileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-mono text-xs sm:text-sm font-semibold text-purple-400 hover:underline break-all"
+                        >
+                          {data.profilePdaAddress}
+                        </a>
+                      ) : (
+                        <p className="font-mono text-xs sm:text-sm text-purple-400 break-all">
+                          {data.profilePdaAddress}
+                        </p>
+                      )}
                     </div>
                   )}
                   {data?.reputationPdaAddress && (
-                    <div className="space-y-0.5 pt-2 border-t border-border/60">
-                      <span className="text-[10px] uppercase text-text-muted block">
-                        Reputation PDA (Decay &amp; Streak)
+                    <div>
+                      <span className="text-xs font-bold uppercase tracking-wider text-text-secondary block mb-1">
+                        Reputation PDA
                       </span>
-                      <p className="text-purple-400 break-all">
+                      <p className="font-mono text-xs sm:text-sm font-semibold text-purple-400 break-all">
                         {data.reputationPdaAddress}
                       </p>
                     </div>
                   )}
-                  <div className="space-y-0.5 pt-2 border-t border-border/60">
-                    <span className="text-[10px] uppercase text-text-muted block">
-                      Soulbound SBTs
-                    </span>
-                    <p className="text-text break-all">
-                      {data?.credentials && data.credentials.length > 0
-                        ? `${data.credentials.length} Token-2022 SBT(s) · Latest Mint: ${data.credentials[0].mint}`
-                        : "0 Token-2022 SBT(s)"}
-                    </p>
-                  </div>
                 </div>
+              )}
+            </div>
+          </div>
 
-                {/* On-Chain Trust Multiplier, 30-Day Decay & Zero-Stake VIP Perk */}
-                <div className="rounded-lg border border-border bg-surface p-4 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-extrabold uppercase tracking-wider text-text font-mono">
-                      On-Chain Trust Multiplier &amp; Streak
-                    </span>
-                    <span
-                      className={`px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface-elevated border border-border ${
-                        data?.onChainReputation && data.onChainReputation.fraudFlags > 0
-                          ? "text-red-400"
-                          : data?.onChainReputation?.isZeroStakeVip
-                          ? "text-purple-400 font-bold"
-                          : "text-text-secondary"
-                      }`}
-                    >
-                      {data?.onChainReputation && data.onChainReputation.fraudFlags > 0
-                        ? `Fraud Penalty (${data.onChainReputation.fraudFlags} flag)`
-                        : data?.onChainReputation?.isZeroStakeVip
-                        ? "Zero-Stake Fast-Track Unlocked (0 USDC Stake)"
-                        : data?.onChainReputation?.isFresh
-                        ? `Active · ${data.onChainReputation.daysUntilDecay ?? 0}d decay window`
-                        : data?.onChainReputation && data.onChainReputation.verifiedStreak > 0
-                        ? "Decayed (>30 days idle — re-verify to restore)"
-                        : "Score 75+ twice within 30d to unlock 0 USDC Stake"}
-                    </span>
-                  </div>
+          {/* Card 2: Big Bold Standing Stats */}
+          <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-5">
+            <div className="space-y-1">
+              <h2 className="text-2xl font-black text-text">
+                On-Chain Standing
+              </h2>
+              <p
+                className={`text-sm font-medium ${
+                  rep && rep.fraudFlags > 0
+                    ? "text-red-400"
+                    : rep?.isZeroStakeVip
+                    ? "text-purple-400 font-semibold"
+                    : "text-text-secondary"
+                }`}
+              >
+                {reputationStatusLabel}
+              </p>
+            </div>
 
-                  <div className="grid grid-cols-3 gap-2.5">
-                    <div className="p-3 rounded-lg bg-surface-elevated border border-border">
-                      <span className="text-[10px] font-mono uppercase text-text-muted block">
-                        Active Streak
-                      </span>
-                      <p className="text-xl font-extrabold text-purple-400 mt-0.5 font-mono">
-                        {data?.onChainReputation?.effectiveStreak ?? 0}x
-                      </p>
-                    </div>
-                    <div className="p-3 rounded-lg bg-surface-elevated border border-border">
-                      <span className="text-[10px] font-mono uppercase text-text-muted block">
-                        Bounty Earned
-                      </span>
-                      <p className="text-xl font-extrabold text-text mt-0.5 font-mono">
-                        {(data?.onChainReputation?.totalEarnedUsdc ?? 0).toFixed(2)}{" "}
-                        <span className="text-[10px] text-text-muted font-normal">USDC</span>
-                      </p>
-                    </div>
-                    <div className="p-3 rounded-lg bg-surface-elevated border border-border">
-                      <span className="text-[10px] font-mono uppercase text-text-muted block">
-                        Fraud Flags
-                      </span>
-                      <p
-                        className={`text-xl font-extrabold mt-0.5 font-mono ${
-                          (data?.onChainReputation?.fraudFlags ?? 0) > 0
-                            ? "text-red-400"
-                            : "text-text"
-                        }`}
-                      >
-                        {data?.onChainReputation?.fraudFlags ?? 0}
-                      </p>
-                    </div>
-                  </div>
-                </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-5 rounded-xl bg-surface-elevated border border-border">
+                <span className="text-xs sm:text-sm font-bold uppercase tracking-wider text-text-secondary block">
+                  Highest Score
+                </span>
+                <p className="text-3xl sm:text-4xl font-black text-purple-400 mt-2 font-mono">
+                  {profile?.highestScore ?? 0}
+                  <span className="text-lg sm:text-xl text-text-muted font-bold">/100</span>
+                </p>
+              </div>
 
-                {data?.onChainProfile ? (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="p-3.5 rounded-lg bg-surface border border-border">
-                        <span className="text-[11px] text-text-muted uppercase font-mono">
-                          Highest Score
-                        </span>
-                        <p className="text-2xl font-extrabold text-purple-400 mt-1">
-                          {data.onChainProfile.highestScore}/100
-                        </p>
-                      </div>
-                      <div className="p-3.5 rounded-lg bg-surface border border-border">
-                        <span className="text-[11px] text-text-muted uppercase font-mono">
-                          Anchored Audits
-                        </span>
-                        <p className="text-2xl font-extrabold text-text mt-1">
-                          {data.onChainProfile.evalCount}
-                        </p>
-                      </div>
-                      <div className="p-3.5 rounded-lg bg-surface border border-border">
-                        <span className="text-[11px] text-text-muted uppercase font-mono">
-                          Latest Role
-                        </span>
-                        <p className="text-sm font-bold text-text mt-2 truncate">
-                          {data.onChainProfile.lastRoleTitle || "—"}
-                        </p>
-                      </div>
-                    </div>
+              <div className="p-5 rounded-xl bg-surface-elevated border border-border">
+                <span className="text-xs sm:text-sm font-bold uppercase tracking-wider text-text-secondary block">
+                  Verified Streak
+                </span>
+                <p className="text-3xl sm:text-4xl font-black text-text mt-2 font-mono">
+                  {rep?.effectiveStreak ?? 0}x
+                </p>
+              </div>
 
-                    <div>
-                      <span className="text-[11px] font-mono uppercase text-text-muted block mb-2">
-                        Verified Skills ({data.onChainProfile.topSkills.length})
-                      </span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {data.onChainProfile.topSkills.map((skill) => (
-                          <span
-                            key={skill}
-                            className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface border border-border text-text-secondary"
-                          >
-                            {skill}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="p-4 rounded-lg bg-surface border border-border text-xs text-text-secondary flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <span>
-                      No CandidateProfile PDA exists yet. Open any completed report’s On-Chain & SBT section to anchor it.
-                    </span>
-                    <Link href="/evaluations">
-                      <Button variant="outline" size="sm" className="shrink-0">
-                        Go to History →
-                      </Button>
-                    </Link>
-                  </div>
-                )}
+              <div className="p-5 rounded-xl bg-surface-elevated border border-border">
+                <span className="text-xs sm:text-sm font-bold uppercase tracking-wider text-text-secondary block">
+                  Bounty Earned
+                </span>
+                <p className="text-3xl sm:text-4xl font-black text-text mt-2 font-mono">
+                  {(rep?.totalEarnedUsdc ?? 0).toFixed(2)}{" "}
+                  <span className="text-base sm:text-lg text-text-muted font-bold">USDC</span>
+                </p>
+              </div>
+
+              <div className="p-5 rounded-xl bg-surface-elevated border border-border">
+                <span className="text-xs sm:text-sm font-bold uppercase tracking-wider text-text-secondary block">
+                  Anchored Audits
+                </span>
+                <p className="text-3xl sm:text-4xl font-black text-text mt-2 font-mono">
+                  {profile?.evalCount ?? 0}
+                </p>
+                <p
+                  className={`text-xs font-mono mt-1 ${
+                    (rep?.fraudFlags ?? 0) > 0 ? "text-red-400 font-bold" : "text-text-muted"
+                  }`}
+                >
+                  {rep?.fraudFlags ?? 0} Fraud Flags
+                </p>
               </div>
             </div>
           </div>
+
+          {/* Card 3: Verified Skills & Latest Role */}
+          <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <span className="text-xs font-bold uppercase tracking-wider text-text-secondary block">
+                  Latest Audited Role
+                </span>
+                <h3 className="text-xl sm:text-2xl font-black text-text mt-1">
+                  {profile?.lastRoleTitle || "No Anchored Audits Yet"}
+                </h3>
+              </div>
+              {data?.explorerProfileUrl && (
+                <a
+                  href={data.explorerProfileUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-sm font-bold text-purple-400 hover:underline shrink-0"
+                >
+                  Inspect on Explorer →
+                </a>
+              )}
+            </div>
+
+            {profile && profile.topSkills.length > 0 ? (
+              <div className="pt-2 flex flex-wrap gap-2">
+                {profile.topSkills.map((skill) => (
+                  <span
+                    key={skill}
+                    className="px-3.5 py-1.5 text-sm font-semibold rounded-lg bg-surface-elevated border border-border text-text"
+                  >
+                    {skill}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="p-5 rounded-xl bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <p className="text-sm text-text-secondary">
+                  Complete an evaluation and anchor the proof to populate your permanent Solana skills registry.
+                </p>
+                <Link href="/evaluations" className="shrink-0">
+                  <Button variant="outline" size="md">
+                    Go to History →
+                  </Button>
+                </Link>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* Token-2022 Non-Transferable Soulbound Credentials */}
-      <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border pb-4">
+      {/* Bottom Section: Token-2022 Non-Transferable Soulbound Credentials */}
+      <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-5">
           <div>
-            <h2 className="text-xl font-extrabold text-text">
+            <h2 className="text-2xl sm:text-3xl font-black text-text">
               Soulbound Credentials (Token-2022 SBT)
             </h2>
-            <p className="text-xs text-text-secondary mt-1">
+            <p className="text-sm sm:text-base text-text-secondary mt-1">
               Permanent non-transferable credentials minted for evaluations scoring 85/100 or higher.
             </p>
           </div>
-          <span className="px-2.5 py-0.5 text-xs font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
+          <span className="px-3.5 py-1.5 text-sm font-mono font-bold rounded-lg bg-surface-elevated border border-border text-purple-400 shrink-0 self-start sm:self-auto">
             {data?.credentials.length || 0} Minted
           </span>
         </div>
 
         {!data?.credentials || data.credentials.length === 0 ? (
-          <div className="p-6 rounded-lg bg-surface-elevated border border-border text-center space-y-2">
-            <p className="text-sm font-bold text-text">No Soulbound Credentials Yet</p>
-            <p className="text-xs text-text-secondary max-w-lg mx-auto">
-              Score 85/100+ on any COOV evaluation, open its On-Chain & SBT menu, anchor the proof, and mint your SBT credential.
+          <div className="p-8 sm:p-10 rounded-xl bg-surface-elevated border border-border text-center space-y-3">
+            <p className="text-lg font-extrabold text-text">No Soulbound Credentials Yet</p>
+            <p className="text-sm sm:text-base text-text-secondary max-w-xl mx-auto">
+              Score 85/100 or higher on any COOV review, open its report, anchor the proof on Solana, and mint your permanent Token-2022 SBT.
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {data.credentials.map((cred) => (
               <div
                 key={cred.mint}
-                className="p-5 rounded-lg border border-border bg-surface-elevated space-y-3"
+                className="p-6 sm:p-7 rounded-2xl border border-border bg-surface-elevated space-y-4"
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-purple-400">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2.5 py-1 text-xs font-mono font-bold rounded-md bg-surface border border-border text-purple-400">
                         {cred.symbol || "COOV-SBT"}
                       </span>
-                      <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-text-muted">
+                      <span className="px-2.5 py-1 text-xs font-mono font-semibold rounded-md bg-surface border border-border text-text-secondary">
                         Soulbound
                       </span>
                     </div>
-                    <h4 className="text-base font-extrabold text-text mt-2">
+                    <h4 className="text-xl font-black text-text">
                       {cred.roleTitle || cred.name}
                     </h4>
                   </div>
                   {cred.scoreTier && (
-                    <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-text">
+                    <span className="px-3 py-1 text-sm font-mono font-black rounded-lg bg-surface border border-border text-purple-400 shrink-0">
                       {cred.scoreTier}
                     </span>
                   )}
                 </div>
 
-                <div className="space-y-1 text-[11px] font-mono text-text-muted">
+                <div className="space-y-1.5 text-xs sm:text-sm font-mono text-text-secondary">
                   <p className="truncate">Mint: {cred.mint}</p>
                   {cred.reportHash && (
                     <p className="truncate">SHA-256: {cred.reportHash}</p>
                   )}
                 </div>
 
-                <div className="pt-2 border-t border-border/70 flex items-center justify-between">
+                <div className="pt-3 border-t border-border flex items-center justify-between">
                   <a
                     href={cred.explorerUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-xs font-bold text-purple-400 hover:underline"
+                    className="text-sm font-bold text-purple-400 hover:underline"
                   >
                     Inspect Mint →
                   </a>
                   {cred.evalId && (
                     <Link
                       href={`/evaluations/${cred.evalId}/report`}
-                      className="text-xs font-semibold text-text-secondary hover:text-text"
+                      className="text-sm font-bold text-text hover:text-purple-400"
                     >
-                      Report →
+                      Open Report →
                     </Link>
                   )}
                 </div>

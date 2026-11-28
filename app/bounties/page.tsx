@@ -627,9 +627,9 @@ export default function BountiesPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3 shrink-0">
-          <Link href="/profile?tab=solana">
+          <Link href="/on-chain">
             <Button variant="outline" size="md">
-              On-Chain & SBT
+              On-Chain &amp; SBT
             </Button>
           </Link>
           <Button variant="primary" size="md" onClick={handleOpenNewBounty}>

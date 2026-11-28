@@ -186,6 +186,7 @@ export async function confirmSignatureViaPolling(
   timeoutMs = 45_000
 ): Promise<{ confirmed: boolean; slot?: number; err?: unknown }> {
   const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
   while (Date.now() < deadline) {
     const statusRes = await connection.getSignatureStatuses([signature], {
       searchTransactionHistory: true,
@@ -202,7 +203,10 @@ export async function confirmSignatureViaPolling(
         return { confirmed: true, slot: status.slot };
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    attempt += 1;
+    // Fast initial polls catch typical ~400-800ms Solana confirmations without wasting 1.2s/tick
+    const delayMs = attempt <= 4 ? 300 : attempt <= 10 ? 450 : 750;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
   return { confirmed: false, err: "Transaction confirmation timed out" };
 }
