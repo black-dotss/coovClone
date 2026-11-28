@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
 export function PricingSection() {
-  const [currency, setCurrency] = useState<"USD" | "ETB">("ETB");
+  const [currency, setCurrency] = useState<"USDC" | "USD" | "ETB">("USDC");
 
   return (
     <section className="py-16 sm:py-20 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto w-full border-t border-border">
@@ -19,7 +19,9 @@ export function PricingSection() {
           Simple, Transparent Plans
         </h2>
         <p className="mt-1.5 text-xs sm:text-sm text-text-secondary">
-          {currency === "USD"
+          {currency === "USDC"
+            ? "Instant checkout on Solana Devnet with USDC directly from Phantom or Solflare."
+            : currency === "USD"
             ? "Global checkout with credit card, Apple Pay, or Google Pay via Polar.sh."
             : "Instant activation via Telebirr and CBE bank transfer with zero recurring surprises."}
         </p>
@@ -27,6 +29,17 @@ export function PricingSection() {
         {/* Currency Switcher */}
         <div className="flex items-center justify-center mt-5">
           <div className="flex items-center p-1 bg-surface-elevated border border-border rounded-xl">
+            <button
+              type="button"
+              onClick={() => setCurrency("USDC")}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer whitespace-nowrap ${
+                currency === "USDC"
+                  ? "bg-purple-600 text-white shadow-sm shadow-purple-950/40"
+                  : "text-text-muted hover:text-text"
+              }`}
+            >
+              USDC (Solana)
+            </button>
             <button
               type="button"
               onClick={() => setCurrency("USD")}
@@ -120,7 +133,7 @@ export function PricingSection() {
               </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text">
-                  {currency === "USD" ? "5" : "150"}
+                  {currency === "ETB" ? "150" : "5"}
                 </span>
                 <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-400">{currency}</span>
                 <span className="text-xs font-mono text-text-muted ml-1">/ mo</span>
@@ -160,7 +173,11 @@ export function PricingSection() {
               <div className="pt-2">
                 <Link href="/billing">
                   <Button variant="outline" className="w-full text-xs h-9 font-bold">
-                    {currency === "USD" ? "Select $5 USD" : "Select 150 ETB"}
+                    {currency === "USDC"
+                      ? "Pay 5 USDC (Solana)"
+                      : currency === "USD"
+                      ? "Select $5 USD"
+                      : "Select 150 ETB"}
                   </Button>
                 </Link>
               </div>
@@ -176,7 +193,7 @@ export function PricingSection() {
               </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text dark:text-white">
-                  {currency === "USD" ? "9" : "300"}
+                  {currency === "ETB" ? "300" : "9"}
                 </span>
                 <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-300">{currency}</span>
                 <span className="text-xs font-mono text-text-muted dark:text-purple-200 ml-1">/ mo</span>
@@ -216,7 +233,11 @@ export function PricingSection() {
               <div className="pt-2">
                 <Link href="/billing">
                   <Button variant="primary" className="w-full text-xs h-9 font-bold bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30 dark:shadow-purple-900/50">
-                    {currency === "USD" ? "Select $9 USD" : "Select 300 ETB"}
+                    {currency === "USDC"
+                      ? "Pay 9 USDC (Solana)"
+                      : currency === "USD"
+                      ? "Select $9 USD"
+                      : "Select 300 ETB"}
                   </Button>
                 </Link>
               </div>
@@ -232,7 +253,7 @@ export function PricingSection() {
             <div className="flex items-center gap-2">
               <h3 className="text-lg font-bold text-text">Annual & Unlimited Plans</h3>
               <Badge variant="success" size="sm" className="font-mono">
-                {currency === "USD" ? "Save 55%" : "Save 1,600 ETB"}
+                {currency === "ETB" ? "Save 1,600 ETB" : "Save 55%"}
               </Badge>
             </div>
             <p className="text-xs text-text-secondary mt-0.5">
@@ -247,13 +268,13 @@ export function PricingSection() {
             <CardHeader className="border-b border-border pb-4">
               <div className="flex items-center justify-between mb-3">
                 <Badge variant="success" size="sm">
-                  {currency === "USD" ? "Save 55%" : "Save 1,600 ETB"}
+                  {currency === "ETB" ? "Save 1,600 ETB" : "Save 55%"}
                 </Badge>
                 <span className="text-[10px] font-mono text-text-muted">Annual Access</span>
               </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text">
-                  {currency === "USD" ? "49" : "2,000"}
+                  {currency === "ETB" ? "2,000" : "49"}
                 </span>
                 <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-300">{currency}</span>
                 <span className="text-xs font-mono text-text-muted ml-1">/ yr</span>
@@ -293,7 +314,11 @@ export function PricingSection() {
               <div className="pt-2">
                 <Link href="/billing">
                   <Button variant="outline" className="w-full text-xs h-9 font-semibold">
-                    {currency === "USD" ? "Select $49 USD" : "Select 2,000 ETB"}
+                    {currency === "USDC"
+                      ? "Pay 49 USDC (Solana)"
+                      : currency === "USD"
+                      ? "Select $49 USD"
+                      : "Select 2,000 ETB"}
                   </Button>
                 </Link>
               </div>
@@ -309,7 +334,7 @@ export function PricingSection() {
               </div>
               <div className="flex items-baseline gap-1">
                 <span className="text-3xl sm:text-4xl font-extrabold font-mono text-text dark:text-white">
-                  {currency === "USD" ? "99" : "4,000"}
+                  {currency === "ETB" ? "4,000" : "99"}
                 </span>
                 <span className="text-base font-bold font-mono text-purple-600 dark:text-purple-300">{currency}</span>
                 <span className="text-xs font-mono text-text-muted dark:text-purple-200 ml-1">/ 1-yr</span>
@@ -349,7 +374,11 @@ export function PricingSection() {
               <div className="pt-2">
                 <Link href="/billing">
                   <Button variant="primary" className="w-full text-xs h-9 font-bold bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-600/30 dark:shadow-purple-900/50">
-                    {currency === "USD" ? "Get Unlimited ($99 USD)" : "Get Unlimited (4,000 ETB)"}
+                    {currency === "USDC"
+                      ? "Get Unlimited (99 USDC)"
+                      : currency === "USD"
+                      ? "Get Unlimited ($99 USD)"
+                      : "Get Unlimited (4,000 ETB)"}
                   </Button>
                 </Link>
               </div>

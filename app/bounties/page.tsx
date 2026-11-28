@@ -8,6 +8,7 @@ import { ProgressBar } from "@/components/ui/progress-bar";
 import { ErrorPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
+import { executeBountyClaimFlow } from "@/lib/solana/client-claim";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
 
@@ -204,7 +205,11 @@ export default function BountiesPage() {
     }
   };
 
-  const handleClaim = async (bounty: BountyItem, evalId: string) => {
+  const handleClaim = async (
+    bounty: BountyItem,
+    evalId: string,
+    isEvalAnchored: boolean
+  ) => {
     if (!publicKey) {
       openConnectModal();
       return;
@@ -213,30 +218,13 @@ export default function BountiesPage() {
     setError(null);
     setNotice(null);
     try {
-      const prepared = await apiFetch<{ serializedTxBase64: string }>(
-        `/api/solana/bounties/${bounty.id}/claim`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            walletAddress: publicKey,
-            evaluationId: evalId,
-          }),
-        }
-      );
-
-      const txSignature = await signAndSubmitTx(prepared.serializedTxBase64);
-
-      const confirmed = await apiFetch<{ amountPaidUsdc: number }>(
-        `/api/solana/bounties/${bounty.id}/claim`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            walletAddress: publicKey,
-            evaluationId: evalId,
-            txSignature,
-          }),
-        }
-      );
+      const confirmed = await executeBountyClaimFlow({
+        bountyId: bounty.id,
+        evaluationId: evalId,
+        walletAddress: publicKey,
+        isEvalAnchored,
+        signAndSubmitTx,
+      });
 
       setNotice(
         `Claimed ${confirmed.amountPaidUsdc} USDC directly from escrow PDA into your wallet!`
@@ -522,6 +510,9 @@ export default function BountiesPage() {
                     <div className="flex items-center justify-between text-xs font-mono text-text-muted">
                       <span>
                         Slots: {bounty.claimsCount} paid
+                        {bounty.approvedCount > 0
+                          ? ` · ${bounty.approvedCount} approved`
+                          : ""}
                         {bounty.pendingReviewCount > 0
                           ? ` · ${bounty.pendingReviewCount} in review`
                           : ""}{" "}
@@ -571,6 +562,26 @@ export default function BountiesPage() {
                     </div>
                   )}
 
+                  {!myClaim &&
+                    !myRestriction &&
+                    mySub?.reviewStatus === "approved" && (
+                      <div className="p-3.5 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-purple-400 uppercase font-mono">
+                            Approved · Payout Ready to Claim
+                          </span>
+                          <span className="font-mono font-bold text-text">
+                            {bounty.rewardPerWinnerUsdc} USDC
+                          </span>
+                        </div>
+                        <p className="text-text-secondary">
+                          {claimableEval
+                            ? "Publisher approved your submission. Click Claim Approved USDC below to transfer escrow funds to your wallet."
+                            : "Publisher approved your submission. Click below to anchor your evaluation proof and claim USDC directly into your wallet."}
+                        </p>
+                      </div>
+                    )}
+
                   {!isCreator &&
                     mySub &&
                     mySub.reviewStatus === "pending_review" &&
@@ -613,10 +624,33 @@ export default function BountiesPage() {
                             Publisher Review Panel
                             {bounty.pendingReviewCount > 0
                               ? ` (${bounty.pendingReviewCount} pending)`
+                              : bounty.approvedCount > 0
+                              ? ` (${bounty.approvedCount} approved)`
                               : ""}{" "}
                             →
                           </Button>
                         </Link>
+                        {!myClaim &&
+                          isSubUnlocked &&
+                          (claimableEval || qualifyingUnanchored) && (
+                            <Button
+                              variant="secondary"
+                              size="md"
+                              isLoading={busyBountyId === bounty.id}
+                              onClick={() =>
+                                void handleClaim(
+                                  bounty,
+                                  (claimableEval ?? qualifyingUnanchored)!.id,
+                                  Boolean(claimableEval)
+                                )
+                              }
+                            >
+                              {!claimableEval
+                                ? `Anchor Proof & Claim ${bounty.rewardPerWinnerUsdc} USDC`
+                                : `Claim Approved ${bounty.rewardPerWinnerUsdc} USDC`}{" "}
+                              →
+                            </Button>
+                          )}
                         {isExpired && bounty.status !== "refunded" && (
                           <Button
                             variant="outline"
@@ -636,24 +670,26 @@ export default function BountiesPage() {
                       mySub.reviewStatus !== "below_threshold" &&
                       mySub.reviewStatus !== "evaluating" ? (
                       isSubUnlocked ? (
-                        claimableEval ? (
+                        (claimableEval || qualifyingUnanchored) ? (
                           <Button
                             variant="primary"
                             size="md"
                             isLoading={busyBountyId === bounty.id}
-                            onClick={() => void handleClaim(bounty, claimableEval.id)}
+                            onClick={() =>
+                              void handleClaim(
+                                bounty,
+                                (claimableEval ?? qualifyingUnanchored)!.id,
+                                Boolean(claimableEval)
+                              )
+                            }
                           >
-                            {mySub.reviewStatus === "approved"
+                            {!claimableEval
+                              ? `Anchor Proof & Claim ${bounty.rewardPerWinnerUsdc} USDC`
+                              : mySub.reviewStatus === "approved"
                               ? `Claim Approved ${bounty.rewardPerWinnerUsdc} USDC`
                               : `Auto-Claim ${bounty.rewardPerWinnerUsdc} USDC`}{" "}
                             →
                           </Button>
-                        ) : qualifyingUnanchored ? (
-                          <Link href={`/evaluations/${qualifyingUnanchored.id}/report`}>
-                            <Button variant="secondary" size="md">
-                              Anchor Proof to Claim {bounty.rewardPerWinnerUsdc} USDC →
-                            </Button>
-                          </Link>
                         ) : null
                       ) : mySub.reviewStatus === "pending_review" && qualifyingUnanchored ? (
                         <Link href={`/evaluations/${qualifyingUnanchored.id}/report`}>
