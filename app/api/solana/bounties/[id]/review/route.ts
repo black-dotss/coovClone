@@ -7,7 +7,8 @@ import {
   reviewBountySubmissionDecision,
 } from "@/lib/bounties/service";
 import { db } from "@/lib/db";
-import { bounties, bountySubmissions } from "@/lib/db/schema";
+import { bounties, bountySubmissions, evaluations } from "@/lib/db/schema";
+import { DISPUTE_MIN_SCORE } from "@/lib/solana";
 import {
   BadRequestError,
   createApiHandler,
@@ -86,6 +87,12 @@ export const POST = createApiHandler(
       throw new NotFoundError("Bounty submission not found");
     }
 
+    const [evalRow] = await db
+      .select({ overallScore: evaluations.overallScore })
+      .from(evaluations)
+      .where(eq(evaluations.id, sub.evaluationId))
+      .limit(1);
+
     // Check if this candidate holds an active Pending ConvictionStake PDA on-chain
     let hasPendingOnChainStake = sub.stakeStatus === "pending";
     if (!hasPendingOnChainStake && sub.candidateWallet) {
@@ -100,6 +107,29 @@ export const POST = createApiHandler(
       } catch {
         // Fallback to DB state if RPC temporarily unavailable
       }
+    }
+
+    const isDisputeEligibleScore =
+      (evalRow?.overallScore ?? 0) >= DISPUTE_MIN_SCORE &&
+      sub.fakeDetectorStatus !== "flagged";
+
+    // When rejecting a dispute-eligible (>= 90, non-flagged) candidate, hold their ConvictionStake
+    // in Pending escrow so a 2-of-3 Jury Dispute can cleanly refund + pay OR slash on consensus.
+    if (parsed.action === "reject" && hasPendingOnChainStake && isDisputeEligibleScore) {
+      const updated = await reviewBountySubmissionDecision({
+        bountyId: id,
+        submissionId: parsed.submissionId,
+        recruiterUserId: session.user.id,
+        action: "reject",
+        recruiterNotes: parsed.recruiterNotes,
+      });
+
+      return successResponse({
+        requiresSignature: false,
+        disputeEligibleHold: true,
+        submission: updated,
+        payoutUnlocked: false,
+      });
     }
 
     if (hasPendingOnChainStake && sub.candidateWallet) {

@@ -4,7 +4,9 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::{invoke, invoke_signed},
 };
-use anchor_lang::system_program::{create_account, transfer, CreateAccount, Transfer};
+use anchor_lang::system_program::{
+    allocate, assign, create_account, transfer, Allocate, Assign, CreateAccount, Transfer,
+};
 use anchor_spl::associated_token::{
     self, get_associated_token_address_with_program_id, AssociatedToken,
 };
@@ -33,11 +35,15 @@ pub const DEFAULT_STAKE_BPS: u16 = 1_000; // 10%
 pub const MAX_STAKE_BPS: u16 = 10_000; // 100%
 pub const LEGACY_ESCROW_SPACE: usize = 144;
 pub const V2_ESCROW_SPACE: usize = 154;
+pub const V3_ESCROW_SPACE: usize = 155;
 pub const LEGACY_ESCROW_DISC: [u8; 8] = [59, 18, 13, 80, 225, 187, 6, 16];
 pub const STREAK_QUALIFY_SCORE: u8 = 75;
 pub const STREAK_ZERO_STAKE_THRESHOLD: u8 = 2;
 pub const STREAK_DECAY_SECONDS: i64 = 30 * 86_400; // 2,592,000 seconds (30 days)
 pub const SCOUT_SPLIT_BPS: u64 = 1_000; // 10% referral cut, 90% candidate
+pub const DISPUTE_MIN_SCORE: u8 = 90;
+pub const JURY_MAX_VOTES: u8 = 3;
+pub const JURY_CONSENSUS_THRESHOLD: u8 = 2;
 
 fn resolve_stake_bps(stake_bps: u16) -> u16 {
     if stake_bps == 0 {
@@ -97,6 +103,21 @@ fn apply_verified_streak_update(rep: &mut ReputationState, now: i64) {
         rep.verified_streak = 1;
     }
     rep.last_verified_at = now;
+}
+
+fn load_program_account<T: AccountDeserialize>(info: &AccountInfo) -> Result<T> {
+    let data = info.try_borrow_data()?;
+    let mut slice: &[u8] = &data;
+    T::try_deserialize(&mut slice)
+}
+
+fn save_program_account<T: AccountSerialize>(info: &AccountInfo, val: &T) -> Result<()> {
+    use std::io::Write;
+    let mut data = info.try_borrow_mut_data()?;
+    let mut writer: &mut [u8] = &mut data;
+    val.try_serialize(&mut writer)?;
+    writer.flush()?;
+    Ok(())
 }
 
 #[program]
@@ -587,14 +608,16 @@ pub mod coov_protocol {
         Ok(())
     }
 
-    /// Safely upgrades a legacy 144-byte or v2 154-byte `BountyEscrow` PDA to the v3 155-byte
-    /// layout (`stake_bps`, `slashed_pool_amount`, `min_streak`).
+    /// Safely upgrades a legacy 144-byte, v2 154-byte, or v3 155-byte `BountyEscrow` PDA to
+    /// the v4 157-byte layout (`stake_bps`, `slashed_pool_amount`, `min_streak`, `open_disputes_count`).
     pub fn migrate_escrow(ctx: Context<MigrateEscrow>) -> Result<()> {
         let escrow_info = ctx.accounts.escrow.to_account_info();
         require_keys_eq!(*escrow_info.owner, crate::ID, CoovError::InvalidEscrowAccount);
         let old_len = escrow_info.data_len();
         require!(
-            old_len == LEGACY_ESCROW_SPACE || old_len == V2_ESCROW_SPACE,
+            old_len == LEGACY_ESCROW_SPACE
+                || old_len == V2_ESCROW_SPACE
+                || old_len == V3_ESCROW_SPACE,
             CoovError::InvalidEscrowAccount
         );
 
@@ -640,7 +663,10 @@ pub mod coov_protocol {
             data[LEGACY_ESCROW_SPACE + 2..V2_ESCROW_SPACE]
                 .copy_from_slice(&0u64.to_le_bytes());
         }
-        data[V2_ESCROW_SPACE] = 0u8; // min_streak default 0
+        if old_len <= V2_ESCROW_SPACE {
+            data[V2_ESCROW_SPACE] = 0u8; // min_streak default 0
+        }
+        data[V3_ESCROW_SPACE..BountyEscrow::SPACE].copy_from_slice(&0u16.to_le_bytes());
 
         Ok(())
     }
@@ -703,6 +729,7 @@ pub mod coov_protocol {
         escrow.stake_bps = effective_stake_bps;
         escrow.slashed_pool_amount = 0;
         escrow.min_streak = min_streak;
+        escrow.open_disputes_count = 0;
 
         emit!(BountyCreated {
             escrow: escrow.key(),
@@ -1021,16 +1048,18 @@ pub mod coov_protocol {
             .checked_add(amount_slashed)
             .ok_or(CoovError::MathOverflow)?;
 
-        if let Some(rep) = ctx.accounts.reputation.as_deref_mut() {
-            let rep_key = rep.key();
-            verify_reputation_pda(rep, &candidate_key, &rep_key)?;
-            rep.verified_streak = 0;
-            rep.fraud_flags = rep.fraud_flags.saturating_add(1);
-            emit!(FraudPenaltyApplied {
-                candidate: rep.wallet,
-                fraud_flags: rep.fraud_flags,
-                timestamp: now,
-            });
+        if reason_code != 3 {
+            if let Some(rep) = ctx.accounts.reputation.as_deref_mut() {
+                let rep_key = rep.key();
+                verify_reputation_pda(rep, &candidate_key, &rep_key)?;
+                rep.verified_streak = 0;
+                rep.fraud_flags = rep.fraud_flags.saturating_add(1);
+                emit!(FraudPenaltyApplied {
+                    candidate: rep.wallet,
+                    fraud_flags: rep.fraud_flags,
+                    timestamp: now,
+                });
+            }
         }
 
         emit!(FraudStakeSlashed {
@@ -1214,8 +1243,516 @@ pub mod coov_protocol {
         Ok(())
     }
 
+    /// Feature 8 ("No-Chill" 2-of-3 Dispute Jury): Opens a DisputeTicket PDA
+    /// (`seeds = [b"dispute_ticket", escrow, candidate]`) before `escrow.expires_at`.
+    /// Requires a verified `EvaluationRecord` PDA for the same `job_id` with `composite_score >= 90`
+    /// and `fraud_flags == 0`. Increments `escrow.open_disputes_count` to freeze early reclaim.
+    pub fn open_dispute(ctx: Context<OpenDispute>) -> Result<()> {
+        require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
+        let now = Clock::get()?.unix_timestamp;
+        let candidate_key = ctx.accounts.candidate.key();
+        let escrow = &mut ctx.accounts.escrow;
+
+        require!(!escrow.is_closed, CoovError::EscrowClosed);
+        require!(now <= escrow.expires_at, CoovError::EscrowExpired);
+        require!(
+            escrow.claims_count < escrow.max_winners,
+            CoovError::BountyFullyClaimed
+        );
+
+        let eval_rec = &ctx.accounts.evaluation;
+        require!(eval_rec.job_id == escrow.job_id, CoovError::JobMismatch);
+        require!(
+            eval_rec.composite_score >= DISPUTE_MIN_SCORE,
+            CoovError::DisputeScoreBelowThreshold
+        );
+
+        // Canonical ReputationState PDA check: prevent Dispute abuse when fraud_flags > 0
+        if !ctx.accounts.reputation.data_is_empty()
+            && *ctx.accounts.reputation.owner == crate::ID
+        {
+            let rep_info = ctx.accounts.reputation.to_account_info();
+            let rep: ReputationState = load_program_account(&rep_info)?;
+            require_keys_eq!(rep.wallet, candidate_key, CoovError::UnauthorizedCandidate);
+            require!(rep.fraud_flags == 0, CoovError::DisputeBlockedByFraudFlags);
+        }
+
+        // Hold canonical ConvictionStake PDA safely during Jury deliberation
+        if !ctx.accounts.conviction_stake.data_is_empty()
+            && *ctx.accounts.conviction_stake.owner == crate::ID
+        {
+            let stake_info = ctx.accounts.conviction_stake.to_account_info();
+            let mut stake_acc: ConvictionStake = load_program_account(&stake_info)?;
+            require_keys_eq!(stake_acc.escrow, escrow.key(), CoovError::InvalidEscrowAccount);
+            require_keys_eq!(stake_acc.candidate, candidate_key, CoovError::UnauthorizedCandidate);
+            require!(
+                stake_acc.status != ConvictionStatus::Approved
+                    && stake_acc.status != ConvictionStatus::Refunded,
+                CoovError::StakeAlreadyResolved
+            );
+
+            // If recruiter already called slash_fraud_stake(3), reserve staked principal back
+            // out of slashed_pool_amount into Pending hold so another claimant cannot consume it.
+            if stake_acc.status == ConvictionStatus::Slashed && stake_acc.amount_staked > 0 {
+                require!(
+                    escrow.slashed_pool_amount >= stake_acc.amount_staked,
+                    CoovError::InsufficientDisputedStakePool
+                );
+                escrow.slashed_pool_amount = escrow
+                    .slashed_pool_amount
+                    .checked_sub(stake_acc.amount_staked)
+                    .ok_or(CoovError::MathOverflow)?;
+                stake_acc.status = ConvictionStatus::Pending;
+                stake_acc.resolved_at = 0;
+                save_program_account(&stake_info, &stake_acc)?;
+            }
+        }
+
+        escrow.open_disputes_count = escrow
+            .open_disputes_count
+            .checked_add(1)
+            .ok_or(CoovError::MathOverflow)?;
+
+        let ticket = &mut ctx.accounts.dispute_ticket;
+        ticket.bounty = escrow.key();
+        ticket.candidate = candidate_key;
+        ticket.evaluation_score = eval_rec.composite_score;
+        ticket.votes_for_candidate = 0;
+        ticket.votes_for_recruiter = 0;
+        ticket.jurors = [Pubkey::default(); 3];
+        ticket.status = DisputeStatus::Open;
+        ticket.opened_at = now;
+        ticket.evaluation = eval_rec.key();
+        ticket.bump = ctx.bumps.dispute_ticket;
+
+        emit!(DisputeOpened {
+            escrow: escrow.key(),
+            dispute_ticket: ticket.key(),
+            candidate: candidate_key,
+            evaluation: eval_rec.key(),
+            evaluation_score: eval_rec.composite_score,
+            timestamp: now,
+        });
+
+        Ok(())
+    }
+
+    /// Feature 8 ("No-Chill" 2-of-3 Consensus Override): Independent peer jurors with either
+    /// a verified `CandidateProfile` + `verified_streak >= 1` OR a COOV Token-2022 Non-Transferable
+    /// Soulbound Credential (`amount >= 1`) cast binding consensus votes:
+    /// - At `votes_for_candidate == 2`: sets `ResolvedCandidate`, pays USDC reward (90/10 split if
+    ///   referred) + refunded stake + pro-rata bonus to candidate ATA, unlocks dispute lock.
+    /// - At `votes_for_recruiter == 2`: sets `ResolvedRecruiter`, slashes pending stake into
+    ///   `slashed_pool_amount`, records permanent fraud penalty, unlocks dispute lock.
+    pub fn cast_jury_vote(
+        ctx: Context<CastJuryVote>,
+        approve_candidate: bool,
+    ) -> Result<()> {
+        require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
+        let now = Clock::get()?.unix_timestamp;
+        let juror_key = ctx.accounts.juror.key();
+        let candidate_key = ctx.accounts.candidate.key();
+        let config_key = ctx.accounts.config.key();
+        let escrow_key = ctx.accounts.escrow.key();
+        let recruiter_key = ctx.accounts.escrow.recruiter;
+
+        require!(
+            juror_key != candidate_key && juror_key != recruiter_key,
+            CoovError::JurorConflictOfInterest
+        );
+
+        let ticket = &ctx.accounts.dispute_ticket;
+        require!(
+            ticket.status == DisputeStatus::Open,
+            CoovError::DisputeAlreadyResolved
+        );
+        let vote_idx = (ticket.votes_for_candidate as usize)
+            .checked_add(ticket.votes_for_recruiter as usize)
+            .ok_or(CoovError::MathOverflow)?;
+        require!(
+            vote_idx < JURY_MAX_VOTES as usize,
+            CoovError::JuryFull
+        );
+        for prev in ticket.jurors.iter().take(vote_idx) {
+            require!(*prev != juror_key, CoovError::DuplicateJuryVote);
+        }
+
+        // Verify Juror Credential: CandidateProfile + ReputationState (`verified_streak >= 1`)
+        // OR COOV Token-2022 NonTransferable SBT ATA (`amount >= 1`).
+        let mut has_verified_profile_streak = false;
+        if !ctx.accounts.juror_profile.data_is_empty()
+            && !ctx.accounts.juror_reputation.data_is_empty()
+            && *ctx.accounts.juror_profile.owner == crate::ID
+            && *ctx.accounts.juror_reputation.owner == crate::ID
+        {
+            let profile_info = ctx.accounts.juror_profile.to_account_info();
+            let rep_info = ctx.accounts.juror_reputation.to_account_info();
+            let profile: CandidateProfile = load_program_account(&profile_info)?;
+            let rep: ReputationState = load_program_account(&rep_info)?;
+            if profile.wallet == juror_key
+                && rep.wallet == juror_key
+                && rep.fraud_flags == 0
+                && rep.verified_streak >= 1
+            {
+                has_verified_profile_streak = true;
+            }
+        }
+
+        let mut has_sbt_credential = false;
+        if !has_verified_profile_streak {
+            let mint_info = ctx.accounts.juror_sbt_mint.to_account_info();
+            let ata_info = ctx.accounts.juror_sbt_ata.to_account_info();
+            let token_2022_id = ctx.accounts.token_2022_program.key();
+            if token_2022_id == anchor_spl::token_2022::ID
+                && mint_info.key() != crate::ID
+                && ata_info.key() != crate::ID
+                && *mint_info.owner == token_2022_id
+                && *ata_info.owner == token_2022_id
+            {
+                let expected_ata = get_associated_token_address_with_program_id(
+                    &juror_key,
+                    &mint_info.key(),
+                    &token_2022_id,
+                );
+                if ata_info.key() == expected_ata {
+                    use spl_token_2022::extension::{
+                        metadata_pointer::MetadataPointer, non_transferable::NonTransferable,
+                        BaseStateWithExtensions, StateWithExtensions,
+                    };
+                    let ata_data = ata_info.try_borrow_data()?;
+                    let ata_state =
+                        StateWithExtensions::<spl_token_2022::state::Account>::unpack(&ata_data)?;
+                    let mint_data = mint_info.try_borrow_data()?;
+                    let mint_state =
+                        StateWithExtensions::<spl_token_2022::state::Mint>::unpack(&mint_data)?;
+                    let is_non_transferable = mint_state.get_extension::<NonTransferable>().is_ok();
+                    let valid_authority = mint_state
+                        .get_extension::<MetadataPointer>()
+                        .ok()
+                        .and_then(|ptr| Option::<Pubkey>::from(ptr.authority))
+                        == Some(config_key);
+
+                    if ata_state.base.mint == mint_info.key()
+                        && ata_state.base.owner == juror_key
+                        && ata_state.base.amount >= 1
+                        && mint_state.base.decimals == 0
+                        && mint_state.base.supply == 1
+                        && is_non_transferable
+                        && valid_authority
+                    {
+                        has_sbt_credential = true;
+                    }
+                }
+            }
+        }
+
+        require!(
+            has_verified_profile_streak || has_sbt_credential,
+            CoovError::IneligibleJuror
+        );
+
+        let ticket_mut = &mut ctx.accounts.dispute_ticket;
+        ticket_mut.jurors[vote_idx] = juror_key;
+        if approve_candidate {
+            ticket_mut.votes_for_candidate = ticket_mut
+                .votes_for_candidate
+                .checked_add(1)
+                .ok_or(CoovError::MathOverflow)?;
+        } else {
+            ticket_mut.votes_for_recruiter = ticket_mut
+                .votes_for_recruiter
+                .checked_add(1)
+                .ok_or(CoovError::MathOverflow)?;
+        }
+
+        let votes_for_cand = ticket_mut.votes_for_candidate;
+        let votes_for_rec = ticket_mut.votes_for_recruiter;
+        let evaluation_key = ticket_mut.evaluation;
+
+        emit!(JuryVoteCast {
+            escrow: escrow_key,
+            dispute_ticket: ticket_mut.key(),
+            candidate: candidate_key,
+            juror: juror_key,
+            approve_candidate,
+            votes_for_candidate: votes_for_cand,
+            votes_for_recruiter: votes_for_rec,
+            timestamp: now,
+        });
+
+        if votes_for_cand >= JURY_CONSENSUS_THRESHOLD {
+            let escrow_info = ctx.accounts.escrow.to_account_info();
+            let job_id = ctx.accounts.escrow.job_id;
+            let bump = ctx.accounts.escrow.bump;
+            let reward_per_winner = ctx.accounts.escrow.reward_per_winner;
+            let max_winners = ctx.accounts.escrow.max_winners;
+            let claims_count = ctx.accounts.escrow.claims_count;
+            let is_closed = ctx.accounts.escrow.is_closed;
+            let slashed_pool_amount = ctx.accounts.escrow.slashed_pool_amount;
+
+            require!(!is_closed, CoovError::EscrowClosed);
+            require!(claims_count < max_winners, CoovError::BountyFullyClaimed);
+            require!(
+                ctx.accounts.claim_receipt.data_is_empty(),
+                CoovError::AlreadyClaimed
+            );
+
+            let candidate_ata = ctx
+                .accounts
+                .candidate_token_account
+                .as_ref()
+                .ok_or(CoovError::InvalidTokenAccount)?;
+            require_keys_eq!(
+                candidate_ata.mint,
+                ctx.accounts.usdc_mint.key(),
+                CoovError::InvalidTokenAccount
+            );
+            require_keys_eq!(
+                candidate_ata.owner,
+                candidate_key,
+                CoovError::InvalidTokenAccount
+            );
+
+            let mut stake_refund: u64 = 0;
+            let mut referrer: Option<Pubkey> = None;
+            let stake_pda_key = ctx.accounts.conviction_stake.key();
+
+            if !ctx.accounts.conviction_stake.data_is_empty()
+                && *ctx.accounts.conviction_stake.owner == crate::ID
+            {
+                let stake_info = ctx.accounts.conviction_stake.to_account_info();
+                let mut stake_acc: ConvictionStake = load_program_account(&stake_info)?;
+                require_keys_eq!(stake_acc.escrow, escrow_key, CoovError::InvalidEscrowAccount);
+                require_keys_eq!(stake_acc.candidate, candidate_key, CoovError::UnauthorizedCandidate);
+                require!(
+                    stake_acc.status == ConvictionStatus::Pending,
+                    CoovError::StakeAlreadyResolved
+                );
+                referrer = stake_acc.referrer;
+                stake_refund = stake_acc.amount_staked;
+                stake_acc.status = ConvictionStatus::Approved;
+                stake_acc.resolved_at = now;
+                save_program_account(&stake_info, &stake_acc)?;
+            }
+
+            let (candidate_reward, scout_cut) =
+                compute_scout_split(reward_per_winner, referrer.is_some())?;
+            let remaining_slots = (max_winners - claims_count) as u64;
+            let bonus_share = slashed_pool_amount
+                .checked_div(remaining_slots)
+                .unwrap_or(0);
+            let candidate_payout = candidate_reward
+                .checked_add(stake_refund)
+                .ok_or(CoovError::MathOverflow)?
+                .checked_add(bonus_share)
+                .ok_or(CoovError::MathOverflow)?;
+
+            let escrow_seeds: &[&[u8]] = &[b"escrow", job_id.as_ref(), &[bump]];
+            let signer_seeds: &[&[&[u8]]] = &[escrow_seeds];
+
+            transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.vault.to_account_info(),
+                        mint: ctx.accounts.usdc_mint.to_account_info(),
+                        to: candidate_ata.to_account_info(),
+                        authority: escrow_info.clone(),
+                    },
+                    signer_seeds,
+                ),
+                candidate_payout,
+                ctx.accounts.usdc_mint.decimals,
+            )?;
+
+            if let Some(ref_pk) = referrer {
+                let ref_ata = ctx
+                    .accounts
+                    .referrer_token_account
+                    .as_ref()
+                    .ok_or(CoovError::InvalidReferrerAccount)?;
+                require_keys_eq!(
+                    ref_ata.mint,
+                    ctx.accounts.usdc_mint.key(),
+                    CoovError::InvalidReferrerAccount
+                );
+                require_keys_eq!(ref_ata.owner, ref_pk, CoovError::InvalidReferrerAccount);
+
+                if scout_cut > 0 {
+                    transfer_checked(
+                        CpiContext::new_with_signer(
+                            ctx.accounts.token_program.to_account_info(),
+                            TransferChecked {
+                                from: ctx.accounts.vault.to_account_info(),
+                                mint: ctx.accounts.usdc_mint.to_account_info(),
+                                to: ref_ata.to_account_info(),
+                                authority: escrow_info,
+                            },
+                            signer_seeds,
+                        ),
+                        scout_cut,
+                        ctx.accounts.usdc_mint.decimals,
+                    )?;
+                }
+            }
+
+            let escrow_mut = &mut ctx.accounts.escrow;
+            escrow_mut.slashed_pool_amount = escrow_mut
+                .slashed_pool_amount
+                .checked_sub(bonus_share)
+                .ok_or(CoovError::MathOverflow)?;
+            escrow_mut.claims_count = escrow_mut
+                .claims_count
+                .checked_add(1)
+                .ok_or(CoovError::MathOverflow)?;
+            escrow_mut.open_disputes_count = escrow_mut.open_disputes_count.saturating_sub(1);
+            if escrow_mut.claims_count >= escrow_mut.max_winners {
+                escrow_mut.is_closed = true;
+            }
+
+            if !ctx.accounts.candidate_reputation.data_is_empty()
+                && *ctx.accounts.candidate_reputation.owner == crate::ID
+            {
+                let rep_info = ctx.accounts.candidate_reputation.to_account_info();
+                let mut rep_acc: ReputationState = load_program_account(&rep_info)?;
+                require_keys_eq!(rep_acc.wallet, candidate_key, CoovError::UnauthorizedCandidate);
+                rep_acc.total_earned_usdc = rep_acc
+                    .total_earned_usdc
+                    .checked_add(candidate_payout)
+                    .ok_or(CoovError::MathOverflow)?;
+                apply_verified_streak_update(&mut rep_acc, now);
+                emit!(ReputationUpdated {
+                    candidate: rep_acc.wallet,
+                    verified_streak: rep_acc.verified_streak,
+                    total_earned_usdc: rep_acc.total_earned_usdc,
+                    fraud_flags: rep_acc.fraud_flags,
+                    last_verified_at: rep_acc.last_verified_at,
+                });
+                save_program_account(&rep_info, &rep_acc)?;
+            }
+
+            let claim_bump = ctx.bumps.claim_receipt;
+            let claim_seeds: &[&[u8]] =
+                &[b"claim", escrow_key.as_ref(), candidate_key.as_ref(), &[claim_bump]];
+            let claim_info = ctx.accounts.claim_receipt.to_account_info();
+            create_program_pda_account(
+                ctx.accounts.juror.to_account_info(),
+                claim_info.clone(),
+                ctx.accounts.system_program.to_account_info(),
+                BountyClaim::SPACE,
+                claim_seeds,
+            )?;
+            let receipt_data = BountyClaim {
+                escrow: escrow_key,
+                candidate: candidate_key,
+                evaluation: evaluation_key,
+                amount_paid: candidate_payout,
+                claimed_at: now,
+                bump: claim_bump,
+            };
+            save_program_account(&claim_info, &receipt_data)?;
+
+            ticket_mut.status = DisputeStatus::ResolvedCandidate;
+
+            emit!(ConvictionStakeApproved {
+                escrow: escrow_key,
+                candidate: candidate_key,
+                stake_pda: stake_pda_key,
+                reward_paid: candidate_reward,
+                stake_refunded: stake_refund,
+                bonus_share,
+                scout_paid: scout_cut,
+                referrer,
+                total_paid: candidate_payout,
+                timestamp: now,
+            });
+
+            emit!(BountyClaimed {
+                escrow: escrow_key,
+                candidate: candidate_key,
+                evaluation: evaluation_key,
+                amount_paid: candidate_payout,
+                claims_count: escrow_mut.claims_count,
+                timestamp: now,
+            });
+
+            emit!(DisputeResolved {
+                escrow: escrow_key,
+                dispute_ticket: ticket_mut.key(),
+                candidate: candidate_key,
+                approved_candidate: true,
+                total_paid: candidate_payout,
+                slashed_amount: 0,
+                timestamp: now,
+            });
+        } else if votes_for_rec >= JURY_CONSENSUS_THRESHOLD {
+            ticket_mut.status = DisputeStatus::ResolvedRecruiter;
+            let escrow_mut = &mut ctx.accounts.escrow;
+            escrow_mut.open_disputes_count = escrow_mut.open_disputes_count.saturating_sub(1);
+
+            let mut amount_slashed: u64 = 0;
+            if !ctx.accounts.conviction_stake.data_is_empty()
+                && *ctx.accounts.conviction_stake.owner == crate::ID
+            {
+                let stake_info = ctx.accounts.conviction_stake.to_account_info();
+                let mut stake_acc: ConvictionStake = load_program_account(&stake_info)?;
+                require_keys_eq!(stake_acc.escrow, escrow_key, CoovError::InvalidEscrowAccount);
+                require_keys_eq!(stake_acc.candidate, candidate_key, CoovError::UnauthorizedCandidate);
+                if stake_acc.status == ConvictionStatus::Pending {
+                    amount_slashed = stake_acc.amount_staked;
+                    stake_acc.status = ConvictionStatus::Slashed;
+                    stake_acc.resolved_at = now;
+                    save_program_account(&stake_info, &stake_acc)?;
+
+                    escrow_mut.slashed_pool_amount = escrow_mut
+                        .slashed_pool_amount
+                        .checked_add(amount_slashed)
+                        .ok_or(CoovError::MathOverflow)?;
+
+                    emit!(FraudStakeSlashed {
+                        escrow: escrow_key,
+                        candidate: candidate_key,
+                        stake_pda: stake_info.key(),
+                        amount_slashed,
+                        slashed_pool_amount: escrow_mut.slashed_pool_amount,
+                        reason_code: 3,
+                        timestamp: now,
+                    });
+                }
+            }
+
+            if !ctx.accounts.candidate_reputation.data_is_empty()
+                && *ctx.accounts.candidate_reputation.owner == crate::ID
+            {
+                let rep_info = ctx.accounts.candidate_reputation.to_account_info();
+                let mut rep_acc: ReputationState = load_program_account(&rep_info)?;
+                require_keys_eq!(rep_acc.wallet, candidate_key, CoovError::UnauthorizedCandidate);
+                rep_acc.verified_streak = 0;
+                rep_acc.fraud_flags = rep_acc.fraud_flags.saturating_add(1);
+                emit!(FraudPenaltyApplied {
+                    candidate: rep_acc.wallet,
+                    fraud_flags: rep_acc.fraud_flags,
+                    timestamp: now,
+                });
+                save_program_account(&rep_info, &rep_acc)?;
+            }
+
+            emit!(DisputeResolved {
+                escrow: escrow_key,
+                dispute_ticket: ticket_mut.key(),
+                candidate: candidate_key,
+                approved_candidate: false,
+                total_paid: 0,
+                slashed_amount: amount_slashed,
+                timestamp: now,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Feature 4: Recruiter reclaims all remaining unclaimed USDC and closes the vault
-    /// once `expires_at` has passed.
+    /// once `expires_at` has passed (blocked while any DisputeTicket is Open).
     pub fn withdraw_expired_escrow(ctx: Context<WithdrawExpiredEscrow>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let escrow_info = ctx.accounts.escrow.to_account_info();
@@ -1224,8 +1761,10 @@ pub mod coov_protocol {
         let bump = ctx.accounts.escrow.bump;
         let expires_at = ctx.accounts.escrow.expires_at;
         let is_closed = ctx.accounts.escrow.is_closed;
+        let open_disputes_count = ctx.accounts.escrow.open_disputes_count;
 
         require!(!is_closed, CoovError::EscrowClosed);
+        require!(open_disputes_count == 0, CoovError::OpenDisputesExist);
         require!(now > expires_at, CoovError::EscrowNotExpired);
 
         let remaining_amount = ctx.accounts.vault.amount;
@@ -1274,8 +1813,69 @@ pub mod coov_protocol {
 }
 
 // ============================================================================
-// Helpers: SPL Token Metadata Interface CPI Builders (Zero External Crates)
+// Helpers: SPL Token Metadata & Program PDA Initialization
 // ============================================================================
+
+fn create_program_pda_account<'info>(
+    payer: AccountInfo<'info>,
+    target: AccountInfo<'info>,
+    system_program: AccountInfo<'info>,
+    space: usize,
+    signer_seeds: &[&[u8]],
+) -> Result<()> {
+    let rent_lamports = Rent::get()?.minimum_balance(space);
+    let seeds_slice: &[&[&[u8]]] = &[signer_seeds];
+    if target.lamports() == 0 {
+        create_account(
+            CpiContext::new_with_signer(
+                system_program,
+                CreateAccount {
+                    from: payer,
+                    to: target,
+                },
+                seeds_slice,
+            ),
+            rent_lamports,
+            space as u64,
+            &crate::ID,
+        )?;
+    } else {
+        let current = target.lamports();
+        if current < rent_lamports {
+            transfer(
+                CpiContext::new(
+                    system_program.clone(),
+                    Transfer {
+                        from: payer,
+                        to: target.clone(),
+                    },
+                ),
+                rent_lamports.saturating_sub(current),
+            )?;
+        }
+        allocate(
+            CpiContext::new_with_signer(
+                system_program.clone(),
+                Allocate {
+                    account_to_allocate: target.clone(),
+                },
+                seeds_slice,
+            ),
+            space as u64,
+        )?;
+        assign(
+            CpiContext::new_with_signer(
+                system_program,
+                Assign {
+                    account_to_assign: target,
+                },
+                seeds_slice,
+            ),
+            &crate::ID,
+        )?;
+    }
+    Ok(())
+}
 
 fn bytes_to_hex(bytes: &[u8; 32]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -1815,6 +2415,153 @@ pub struct ClaimBounty<'info> {
 }
 
 #[derive(Accounts)]
+pub struct OpenDispute<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    #[account(mut)]
+    pub candidate: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.job_id.as_ref()],
+        bump = escrow.bump
+    )]
+    pub escrow: Box<Account<'info, BountyEscrow>>,
+
+    #[account(
+        seeds = [b"eval", candidate.key().as_ref(), evaluation.eval_id.as_ref()],
+        bump = evaluation.bump,
+        has_one = candidate
+    )]
+    pub evaluation: Box<Account<'info, EvaluationRecord>>,
+
+    /// CHECK: Canonical ReputationState PDA derived from [b"reputation", candidate].
+    #[account(
+        seeds = [b"reputation", candidate.key().as_ref()],
+        bump
+    )]
+    pub reputation: UncheckedAccount<'info>,
+
+    /// CHECK: Canonical ConvictionStake PDA derived from [b"conviction_stake", escrow, candidate].
+    #[account(
+        mut,
+        seeds = [b"conviction_stake", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump
+    )]
+    pub conviction_stake: UncheckedAccount<'info>,
+
+    #[account(
+        init,
+        payer = candidate,
+        space = DisputeTicket::SPACE,
+        seeds = [b"dispute_ticket", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump
+    )]
+    pub dispute_ticket: Box<Account<'info, DisputeTicket>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CastJuryVote<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, ProgramConfig>>,
+
+    #[account(mut)]
+    pub juror: Signer<'info>,
+
+    /// CHECK: Candidate wallet matching dispute_ticket.candidate.
+    pub candidate: UncheckedAccount<'info>,
+
+    pub usdc_mint: InterfaceAccount<'info, Mint>,
+
+    #[account(
+        mut,
+        seeds = [b"escrow", escrow.job_id.as_ref()],
+        bump = escrow.bump,
+        has_one = usdc_mint,
+        has_one = vault
+    )]
+    pub escrow: Box<Account<'info, BountyEscrow>>,
+
+    #[account(mut)]
+    pub vault: InterfaceAccount<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"dispute_ticket", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump = dispute_ticket.bump,
+        constraint = dispute_ticket.bounty == escrow.key() @ CoovError::InvalidEscrowAccount,
+        has_one = candidate
+    )]
+    pub dispute_ticket: Box<Account<'info, DisputeTicket>>,
+
+    /// CHECK: Canonical CandidateProfile PDA for juror.
+    #[account(
+        seeds = [b"profile", juror.key().as_ref()],
+        bump
+    )]
+    pub juror_profile: UncheckedAccount<'info>,
+
+    /// CHECK: Canonical ReputationState PDA for juror.
+    #[account(
+        seeds = [b"reputation", juror.key().as_ref()],
+        bump
+    )]
+    pub juror_reputation: UncheckedAccount<'info>,
+
+    /// CHECK: Optional Token-2022 NonTransferable SBT Mint held by juror (or program_id).
+    pub juror_sbt_mint: UncheckedAccount<'info>,
+
+    /// CHECK: Optional Token-2022 ATA holding >= 1 SBT for juror (or program_id).
+    pub juror_sbt_ata: UncheckedAccount<'info>,
+
+    /// CHECK: Canonical ConvictionStake PDA for disputed candidate.
+    #[account(
+        mut,
+        seeds = [b"conviction_stake", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump
+    )]
+    pub conviction_stake: UncheckedAccount<'info>,
+
+    /// CHECK: Canonical BountyClaim PDA created at 2-of-3 Candidate consensus.
+    #[account(
+        mut,
+        seeds = [b"claim", escrow.key().as_ref(), candidate.key().as_ref()],
+        bump
+    )]
+    pub claim_receipt: UncheckedAccount<'info>,
+
+    /// CHECK: Canonical ReputationState PDA for disputed candidate.
+    #[account(
+        mut,
+        seeds = [b"reputation", candidate.key().as_ref()],
+        bump
+    )]
+    pub candidate_reputation: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub candidate_token_account: Option<InterfaceAccount<'info, TokenAccount>>,
+
+    #[account(mut)]
+    pub referrer_token_account: Option<InterfaceAccount<'info, TokenAccount>>,
+
+    pub token_program: Interface<'info, TokenInterface>,
+
+    /// CHECK: SPL Token-2022 program when juror authenticates with SBT (or program_id).
+    pub token_2022_program: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct WithdrawExpiredEscrow<'info> {
     #[account(mut)]
     pub recruiter: Signer<'info>,
@@ -1948,11 +2695,37 @@ pub struct BountyEscrow {
     pub stake_bps: u16,
     pub slashed_pool_amount: u64,
     pub min_streak: u8,
+    pub open_disputes_count: u16,
 }
 
 impl BountyEscrow {
     pub const SPACE: usize =
-        8 + 32 + 16 + 32 + 32 + 8 + 2 + 2 + 1 + 8 + 1 + 1 + 1 + 2 + 8 + 1; // 155
+        8 + 32 + 16 + 32 + 32 + 8 + 2 + 2 + 1 + 8 + 1 + 1 + 1 + 2 + 8 + 1 + 2; // 157
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DisputeStatus {
+    Open,
+    ResolvedCandidate,
+    ResolvedRecruiter,
+}
+
+#[account]
+pub struct DisputeTicket {
+    pub bounty: Pubkey,
+    pub candidate: Pubkey,
+    pub evaluation_score: u8,
+    pub votes_for_candidate: u8,
+    pub votes_for_recruiter: u8,
+    pub jurors: [Pubkey; 3],
+    pub status: DisputeStatus,
+    pub opened_at: i64,
+    pub evaluation: Pubkey,
+    pub bump: u8,
+}
+
+impl DisputeTicket {
+    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 1 + (32 * 3) + 1 + 8 + 32 + 1; // 213
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -2132,6 +2905,39 @@ pub struct BountyWithdrawn {
     pub timestamp: i64,
 }
 
+#[event]
+pub struct DisputeOpened {
+    pub escrow: Pubkey,
+    pub dispute_ticket: Pubkey,
+    pub candidate: Pubkey,
+    pub evaluation: Pubkey,
+    pub evaluation_score: u8,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct JuryVoteCast {
+    pub escrow: Pubkey,
+    pub dispute_ticket: Pubkey,
+    pub candidate: Pubkey,
+    pub juror: Pubkey,
+    pub approve_candidate: bool,
+    pub votes_for_candidate: u8,
+    pub votes_for_recruiter: u8,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct DisputeResolved {
+    pub escrow: Pubkey,
+    pub dispute_ticket: Pubkey,
+    pub candidate: Pubkey,
+    pub approved_candidate: bool,
+    pub total_paid: u64,
+    pub slashed_amount: u64,
+    pub timestamp: i64,
+}
+
 #[error_code]
 pub enum CoovError {
     #[msg("COOV protocol is currently paused")]
@@ -2180,7 +2986,7 @@ pub enum CoovError {
     StakeAlreadyResolved,
     #[msg("Signer is not authorized as recruiter, oracle, or expired-stake owner")]
     UnauthorizedAuthority,
-    #[msg("Escrow account is not a valid legacy 144-byte or 154-byte BountyEscrow PDA")]
+    #[msg("Escrow account is not a valid legacy 144-byte, 154-byte, or 155-byte BountyEscrow PDA")]
     InvalidEscrowAccount,
     #[msg("Self-referrals are not allowed for Scout rewards")]
     SelfReferralNotAllowed,
@@ -2190,4 +2996,24 @@ pub enum CoovError {
     InvalidReputationAccount,
     #[msg("Candidate active verified streak is below the bounty minimum streak requirement")]
     StreakBelowBountyRequirement,
+    #[msg("Candidate score must be >= 90 to open a No-Chill Dispute Jury ticket")]
+    DisputeScoreBelowThreshold,
+    #[msg("Candidates with verified fraud flags cannot open a Jury Dispute")]
+    DisputeBlockedByFraudFlags,
+    #[msg("Cannot withdraw or close escrow while DisputeTickets remain Open")]
+    OpenDisputesExist,
+    #[msg("This DisputeTicket has already been resolved by 2-of-3 Jury consensus")]
+    DisputeAlreadyResolved,
+    #[msg("All 3 jury seats have already voted on this dispute")]
+    JuryFull,
+    #[msg("Wallet has already cast a jury vote on this DisputeTicket")]
+    DuplicateJuryVote,
+    #[msg("Candidate and bounty creator are barred from serving as jurors")]
+    JurorConflictOfInterest,
+    #[msg("Juror must hold a verified CandidateProfile with streak >= 1 or a COOV Token-2022 SBT")]
+    IneligibleJuror,
+    #[msg("Escrow slashed pool does not cover restoring disputed stake")]
+    InsufficientDisputedStakePool,
+    #[msg("Bounty claim receipt PDA is already initialized")]
+    AlreadyClaimed,
 }

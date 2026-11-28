@@ -38,8 +38,9 @@ flowchart LR
 | `CandidateProfile` | `[b"profile", candidate_pubkey]` | Aggregate evaluation counter, `highest_score`, verified skill tags, role title |
 | `ReputationState` | `[b"reputation", candidate_pubkey]` | Reputation decay (`30d`), `verified_streak`, `total_earned_usdc`, `fraud_flags`, Zero-Stake Fast-Track unlock (`streak >= 2`) |
 | `EvaluationRecord` | `[b"eval", candidate_pubkey, eval_id_16b]` | Immutable Proof PDA: initial & defended SHA-256 report hashes, 6 per-agent scores, SBT mint flag |
-| `BountyEscrow` | `[b"escrow", job_id_16b]` | Recruiter address, USDC mint, `reward_per_winner`, `stake_bps` (default 10%), `slashed_pool_amount`, `min_streak`, `max_winners`, `min_score`, expiry |
+| `BountyEscrow` | `[b"escrow", job_id_16b]` | Recruiter address, USDC mint, `reward_per_winner`, `stake_bps` (default 10%), `slashed_pool_amount`, `min_streak`, `open_disputes_count`, `max_winners`, `min_score`, expiry |
 | `ConvictionStake` | `[b"conviction_stake", escrow_pda, candidate_pubkey]` | Locks candidate's refundable USDC stake before review (`Pending` → `Approved`, `Slashed`, or `Refunded`), stores `referrer: Option<Pubkey>` and `is_zero_stake_vip` |
+| `DisputeTicket` | `[b"dispute_ticket", escrow_pda, candidate_pubkey]` | Stores 2-of-3 No-Chill Dispute Jury state (`evaluation_score`, `votes_for_candidate`, `votes_for_recruiter`, `jurors: [Pubkey; 3]`, `DisputeStatus`, `opened_at`), freezing escrow withdrawal while `Open` |
 | `EscrowVault` | `[b"escrow_vault", escrow_pda]` | Program-owned SPL Token PDA holding bounty pool, pending stakes, and slashed spam yield |
 | `BountyClaim` | `[b"claim", escrow_pda, candidate_pubkey]` | On-chain one-claim-per-candidate receipt linked to `EvaluationRecord` |
 
@@ -95,10 +96,14 @@ Note: TypeScript application modules live under root `lib/` and `app/` (mapped v
    - Qualifying evaluations (`composite_score >= 75`) and bounty wins increment `verified_streak` if within `30 days` (`2,592,000s`), or decay back to `1` if idle >30 days.
    - **Fast-Track Zero-Stake Perk:** Candidates maintaining `verified_streak >= 2`, `fraud_flags == 0`, and active 30d freshness waive Conviction Stake USDC deposits automatically (**0 USDC Stake VIP**).
    - Recruiter bounties can also gate entry via `min_streak` (`0`, `1+`, `2+`, etc.).
-4. **24h Optimistic Recruiter Review & On-Chain USDC Settlement:**
+4. **On-Chain "No-Chill" Dispute Jury (2-of-3 Consensus Override):**
+   - Rejected candidates holding a verified `EvaluationRecord` PDA with `composite_score >= 90` and `fraud_flags == 0` can invoke `open_dispute` before bounty expiration, creating a `DisputeTicket` PDA and freezing early escrow withdrawal while open.
+   - Up to 3 independent verified peer jurors (holding a Token-2022 SBT or verified `CandidateProfile` + `verified_streak >= 1`) cast `cast_jury_vote(approve_candidate)` after reviewing anonymized evaluation breakdowns on `/bounties`.
+   - At **2-of-3 Pay Candidate**, `cast_jury_vote` overrides the rejection and atomically executes `transfer_checked` CPI releasing the USDC reward (including 90/10 Scout split if referred) + refunded Conviction Stake + pro-rata bonus yield; at **2-of-3 Uphold Rejection**, it slashes any disputed stake into `slashed_pool_amount` and unlocks the escrow.
+5. **24h Optimistic Recruiter Review & On-Chain USDC Settlement:**
    - Qualifying candidates (`score >= min_score`) lock a winner slot in `pending_review` for 24 hours.
    - Bounty creators inspect candidate CVs and 6-agent audits from the publisher review panel to approve payout (`approve_and_payout` / `claim_bounty`) or reject/flag and free the slot; after 24 hours without action, candidates can auto-claim on-chain.
-5. **Verified Token-2022 Soulbound Credentials:** Candidates mint permanent, non-transferable Token-2022 NFTs storing role title, score tier, `EvaluationRecord` PDA hash, and evaluation UUID directly in on-chain TokenMetadata.
+6. **Verified Token-2022 Soulbound Credentials:** Candidates mint permanent, non-transferable Token-2022 NFTs storing role title, score tier, `EvaluationRecord` PDA hash, and evaluation UUID directly in on-chain TokenMetadata.
 
 ---
 

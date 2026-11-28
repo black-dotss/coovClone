@@ -150,6 +150,14 @@ def derive_reputation_pda(candidate: Pubkey, program_id: Pubkey) -> tuple[Pubkey
     return Pubkey.find_program_address([b"reputation", bytes(candidate)], program_id)
 
 
+def derive_dispute_ticket_pda(
+    escrow_pda: Pubkey, candidate: Pubkey, program_id: Pubkey
+) -> tuple[Pubkey, int]:
+    return Pubkey.find_program_address(
+        [b"dispute_ticket", bytes(escrow_pda), bytes(candidate)], program_id
+    )
+
+
 @dataclass
 class DecodedProgramConfig:
     pda: str
@@ -211,6 +219,7 @@ class DecodedBountyEscrow:
     stake_bps: int = 1000
     slashed_pool_amount_micros: int = 0
     min_streak: int = 0
+    open_disputes_count: int = 0
     is_legacy_layout: bool = False
     vault_balance_usdc: Optional[float] = None
 
@@ -238,6 +247,53 @@ class DecodedReputationState:
     total_earned_usdc_micros: int
     fraud_flags: int
     bump: int
+
+
+@dataclass
+class DecodedDisputeTicket:
+    pda: str
+    bounty: str
+    candidate: str
+    evaluation_score: int
+    votes_for_candidate: int
+    votes_for_recruiter: int
+    jurors: list[str]
+    status: str
+    opened_at: int
+    evaluation: str
+    bump: int
+
+
+def decode_dispute_ticket(pda: Pubkey, raw: bytes) -> DecodedDisputeTicket:
+    r = BorshReader(raw)
+    r.assert_discriminator("DisputeTicket")
+    bounty = r.read_pubkey()
+    candidate = r.read_pubkey()
+    evaluation_score = r.read_u8()
+    votes_for_candidate = r.read_u8()
+    votes_for_recruiter = r.read_u8()
+    jurors_raw = [r.read_pubkey(), r.read_pubkey(), r.read_pubkey()]
+    total_votes = min(3, votes_for_candidate + votes_for_recruiter)
+    default_pk = str(Pubkey.default())
+    jurors = [j for j in jurors_raw[:total_votes] if j != default_pk]
+    status_idx = r.read_u8()
+    status_map = {0: "Open", 1: "ResolvedCandidate", 2: "ResolvedRecruiter"}
+    opened_at = r.read_i64()
+    evaluation = r.read_pubkey()
+    bump = r.read_u8()
+    return DecodedDisputeTicket(
+        pda=str(pda),
+        bounty=bounty,
+        candidate=candidate,
+        evaluation_score=evaluation_score,
+        votes_for_candidate=votes_for_candidate,
+        votes_for_recruiter=votes_for_recruiter,
+        jurors=jurors,
+        status=status_map.get(status_idx, f"Unknown({status_idx})"),
+        opened_at=opened_at,
+        evaluation=evaluation,
+        bump=bump,
+    )
 
 
 def decode_program_config(pda: Pubkey, raw: bytes) -> DecodedProgramConfig:
@@ -325,6 +381,7 @@ def decode_bounty_escrow(pda: Pubkey, vault_pda: Pubkey, raw: bytes) -> DecodedB
     stake_bps = 1000
     slashed_pool_amount_micros = 0
     min_streak = 0
+    open_disputes_count = 0
     is_legacy_layout = True
     if len(raw) >= 154:
         parsed_bps = r.read_u16()
@@ -332,6 +389,8 @@ def decode_bounty_escrow(pda: Pubkey, vault_pda: Pubkey, raw: bytes) -> DecodedB
         slashed_pool_amount_micros = r.read_u64()
     if len(raw) >= 155:
         min_streak = r.read_u8()
+    if len(raw) >= 157:
+        open_disputes_count = r.read_u16()
         is_legacy_layout = False
 
     return DecodedBountyEscrow(
@@ -352,6 +411,7 @@ def decode_bounty_escrow(pda: Pubkey, vault_pda: Pubkey, raw: bytes) -> DecodedB
         stake_bps=stake_bps,
         slashed_pool_amount_micros=slashed_pool_amount_micros,
         min_streak=min_streak,
+        open_disputes_count=open_disputes_count,
         is_legacy_layout=is_legacy_layout,
     )
 
@@ -559,6 +619,18 @@ async def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                     "claimed": claim_resp.value is not None,
                 }
 
+                dispute_pda, _ = derive_dispute_ticket_pda(escrow_pda, candidate_pk, program_id)
+                dispute_resp = await client.get_account_info(dispute_pda)
+                if dispute_resp.value and dispute_resp.value.owner == program_id:
+                    report["checks"]["dispute_ticket"] = asdict(
+                        decode_dispute_ticket(dispute_pda, bytes(dispute_resp.value.data))
+                    )
+                else:
+                    report["checks"]["dispute_ticket"] = {
+                        "pda": str(dispute_pda),
+                        "initialized": False,
+                    }
+
         # 7. Token-2022 Soulbound Mint Verification (if --mint specified)
         if args.mint:
             mint_pk = Pubkey.from_string(args.mint)
@@ -658,6 +730,15 @@ def print_audit_report(report: dict[str, Any]) -> None:
     if "bounty_claim" in checks:
         cl = checks["bounty_claim"]
         print(f"[BountyClaim]     pda={cl['pda']} claimed={cl['claimed']}")
+
+    if "dispute_ticket" in checks:
+        dt = checks["dispute_ticket"]
+        if "status" in dt:
+            print(
+                f"[DisputeTicket]   pda={dt['pda']} status={dt['status']} score={dt['evaluation_score']} cand={dt['votes_for_candidate']}/2 rec={dt['votes_for_recruiter']}/2"
+            )
+        else:
+            print(f"[DisputeTicket]   pda={dt['pda']} initialized=False")
 
     if "soulbound_mint" in checks:
         sbt = checks["soulbound_mint"]

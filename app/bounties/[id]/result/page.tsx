@@ -59,6 +59,13 @@ interface BountyResultResponse {
     txSignature: string;
     txUrl: string;
   } | null;
+  dispute?: {
+    id: string;
+    disputeTicketPda: string;
+    status: string;
+    votesForCandidate: number;
+    votesForRecruiter: number;
+  } | null;
   spotSecured: number | null;
   metrics: {
     claimsCount: number;
@@ -307,6 +314,86 @@ function BountyResultContent() {
 
           {/* Minimal Actions */}
           <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-border">
+            {subStatus === "rejected" &&
+              score >= 90 &&
+              data.submission?.fakeDetectorStatus !== "flagged" &&
+              (data.dispute ? (
+                <Link href="/bounties#active-jury-disputes">
+                  <Button variant="primary" size="md">
+                    Dispute Jury ({data.dispute.votesForCandidate}/2 Override · {data.dispute.votesForRecruiter}/2 Uphold) →
+                  </Button>
+                </Link>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="md"
+                  isLoading={claiming}
+                  onClick={async () => {
+                    if (!publicKey) {
+                      openConnectModal();
+                      return;
+                    }
+                    setClaiming(true);
+                    setError(null);
+                    try {
+                      if (!data.evaluation!.evalTxSignature) {
+                        const anchorPrep = await apiFetch<{ serializedTxBase64: string }>(
+                          `/api/solana/evaluations/${data.evaluation!.id}`,
+                          {
+                            method: "POST",
+                            body: JSON.stringify({ walletAddress: publicKey }),
+                          }
+                        );
+                        const anchorSig = await signAndSubmitTx(anchorPrep.serializedTxBase64);
+                        await apiFetch(`/api/solana/evaluations/${data.evaluation!.id}`, {
+                          method: "PATCH",
+                          body: JSON.stringify({
+                            walletAddress: publicKey,
+                            txSignature: anchorSig,
+                          }),
+                        });
+                      }
+                      const prep = await apiFetch<{
+                        serializedTxBase64: string;
+                        disputeTicketPda: string;
+                      }>(`/api/solana/bounties/${data.bounty.id}/dispute`, {
+                        method: "POST",
+                        body: JSON.stringify({
+                          walletAddress: publicKey,
+                          evaluationId: data.evaluation!.id,
+                        }),
+                      });
+                      const sig = await signAndSubmitTx(prep.serializedTxBase64);
+                      await apiFetch(`/api/solana/bounties/${data.bounty.id}/dispute`, {
+                        method: "PATCH",
+                        body: JSON.stringify({
+                          walletAddress: publicKey,
+                          evaluationId: data.evaluation!.id,
+                          txSignature: sig,
+                        }),
+                      });
+                      setClaimNotice(
+                        `Opened On-Chain Jury Dispute (${prep.disputeTicketPda.slice(0, 8)}...)! 2-of-3 peer votes now override rejection.`
+                      );
+                      const qs = evalId ? `?evalId=${encodeURIComponent(evalId)}` : "";
+                      const refreshed = await apiFetch<BountyResultResponse>(
+                        `/api/solana/bounties/${bountyId}/result${qs}`
+                      );
+                      setData(refreshed);
+                    } catch (err) {
+                      setError(
+                        err instanceof Error
+                          ? err.message
+                          : "Failed to open On-Chain Jury Dispute."
+                      );
+                    } finally {
+                      setClaiming(false);
+                    }
+                  }}
+                >
+                  Open On-Chain Jury Dispute →
+                </Button>
+              ))}
             {subStatus === "below_threshold" &&
               data.submission?.stakeStatus === "pending" &&
               !data.restriction && (

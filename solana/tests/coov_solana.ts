@@ -17,14 +17,17 @@ import {
   DEFAULT_DEVNET_USDC_MINT,
   DEFAULT_SOLANA_PROGRAM_ID,
   buildApproveAndPayoutIx,
+  buildCastJuryVoteIx,
   buildClaimBountyIx,
   buildCreateBountyEscrowIx,
+  buildOpenDisputeIx,
   buildSlashFraudStakeIx,
   buildSubmitWithConvictionStakeIx,
   computeConvictionStakeMicros,
   computeScoutSplitMicros,
   decodeBountyEscrow,
   decodeConvictionStake,
+  decodeDisputeTicket,
   decodeReputationState,
   getCoovAnchorProgram,
   normalizeIdlForAnchor,
@@ -47,6 +50,7 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     expect(program.account).toHaveProperty("reputationState");
     expect(program.account).toHaveProperty("evaluationRecord");
     expect(program.account).toHaveProperty("bountyEscrow");
+    expect(program.account).toHaveProperty("disputeTicket");
     expect(program.account).toHaveProperty("bountyClaim");
     expect(program.account).toHaveProperty("convictionStake");
   });
@@ -88,6 +92,15 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     const [escrowPda] = COOV_PDAS.deriveEscrowPda(jobId, PROGRAM_ID);
     const [vaultPda] = COOV_PDAS.deriveEscrowVaultPda(escrowPda, PROGRAM_ID);
     const [claimPda] = COOV_PDAS.deriveClaimReceiptPda(escrowPda, candidate, PROGRAM_ID);
+    const [disputePda] = COOV_PDAS.deriveDisputeTicketPda(escrowPda, candidate, PROGRAM_ID);
+    expect(
+      disputePda.equals(
+        PublicKey.findProgramAddressSync(
+          [Buffer.from("dispute_ticket"), escrowPda.toBuffer(), candidate.toBuffer()],
+          PROGRAM_ID
+        )[0]
+      )
+    ).toBe(true);
 
     expect(
       escrowPda.equals(
@@ -214,15 +227,16 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     expect(decodedLegacy.slashedPoolAmountMicros).toBe("0");
 
     const slashedMicros = BigInt(4_000_000); // 4.00 USDC from 2 slashed scammers
-    const v3EscrowBuf = Buffer.concat([
+    const v4EscrowBuf = Buffer.concat([
       legacyEscrowBuf,
       Buffer.from(new Uint8Array([1000 & 0xff, (1000 >> 8) & 0xff])), // stakeBps = 1000 (10%)
       Buffer.from(new BN(slashedMicros.toString()).toArray("le", 8)),
       Buffer.from([2]), // minStreak = 2
+      Buffer.from(new Uint8Array([1, 0])), // openDisputesCount = 1
     ]);
-    expect(v3EscrowBuf.length).toBe(155);
+    expect(v4EscrowBuf.length).toBe(157);
 
-    const decodedCodec = decodeBountyEscrow(v3EscrowBuf);
+    const decodedCodec = decodeBountyEscrow(v4EscrowBuf);
     const decodedAnchor = program.coder.accounts.decode<{
       recruiter: PublicKey;
       minScore: number;
@@ -232,7 +246,8 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
       stakeBps: number;
       slashedPoolAmount: BN;
       minStreak: number;
-    }>("bountyEscrow", v3EscrowBuf);
+      openDisputesCount: number;
+    }>("bountyEscrow", v4EscrowBuf);
 
     expect(decodedCodec.isLegacyLayout).toBe(false);
     expect(decodedAnchor.recruiter.toBase58()).toBe(decodedCodec.recruiter);
@@ -243,6 +258,7 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     expect(decodedAnchor.stakeBps).toBe(1000);
     expect(decodedAnchor.slashedPoolAmount.toString()).toBe("4000000");
     expect(decodedAnchor.minStreak).toBe(2);
+    expect(decodedAnchor.openDisputesCount).toBe(1);
 
     // Verify v3 ConvictionStake with Scout Referrer + 90/10 split math + Anchor parity
     const scout = Keypair.generate().publicKey;
@@ -340,6 +356,60 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     });
     expect(claimIx.keys[2].pubkey.equals(escrowPda)).toBe(true);
     expect(claimIx.keys[3].pubkey.equals(vaultPda)).toBe(true);
+
+    // Verify open_dispute & cast_jury_vote Anchor coder + DisputeTicket parity
+    const openDisputeIx = buildOpenDisputeIx({
+      candidate,
+      jobId,
+      evalId,
+      programId: PROGRAM_ID,
+    });
+    expect(ixCoder.decode(Buffer.from(openDisputeIx.data))?.name).toBe("openDispute");
+
+    const juror1 = Keypair.generate().publicKey;
+    const castVoteIx = buildCastJuryVoteIx({
+      juror: juror1,
+      candidate,
+      usdcMint: DEVNET_USDC_MINT,
+      jobId,
+      approveCandidate: true,
+      referrer: scout,
+      tokenProgramId: TOKEN_PROGRAM_ID,
+      programId: PROGRAM_ID,
+    });
+    const decodedCastVote = ixCoder.decode(Buffer.from(castVoteIx.data));
+    expect(decodedCastVote?.name).toBe("castJuryVote");
+    expect((decodedCastVote?.data as { approveCandidate: boolean }).approveCandidate).toBe(true);
+
+    const [disputeTicketPda] = COOV_PDAS.deriveDisputeTicketPda(escrowPda, candidate, PROGRAM_ID);
+    const evalPda = COOV_PDAS.deriveEvaluationPda(candidate, evalId, PROGRAM_ID)[0];
+    const ticketBuf = Buffer.alloc(213);
+    Buffer.from(ACCOUNT_DISCRIMINATORS.DisputeTicket).copy(ticketBuf, 0);
+    escrowPda.toBuffer().copy(ticketBuf, 8);
+    candidate.toBuffer().copy(ticketBuf, 40);
+    ticketBuf.writeUInt8(94, 72);
+    ticketBuf.writeUInt8(2, 73);
+    ticketBuf.writeUInt8(0, 74);
+    juror1.toBuffer().copy(ticketBuf, 75);
+    scout.toBuffer().copy(ticketBuf, 107);
+    PublicKey.default.toBuffer().copy(ticketBuf, 139);
+    ticketBuf.writeUInt8(1, 171); // ResolvedCandidate
+    ticketBuf.writeBigInt64LE(BigInt(nowUnix), 172);
+    evalPda.toBuffer().copy(ticketBuf, 180);
+    ticketBuf.writeUInt8(252, 212);
+
+    const decodedTicket = decodeDisputeTicket(ticketBuf);
+    const decodedTicketAnchor = program.coder.accounts.decode<{
+      evaluationScore: number;
+      votesForCandidate: number;
+      votesForRecruiter: number;
+    }>("disputeTicket", ticketBuf);
+    expect(decodedTicket.status).toBe("resolved_candidate");
+    expect(decodedTicket.jurors).toEqual([juror1.toBase58(), scout.toBase58()]);
+    expect(decodedTicketAnchor.evaluationScore).toBe(94);
+    expect(decodedTicketAnchor.votesForCandidate).toBe(2);
+    expect(decodedTicketAnchor.votesForRecruiter).toBe(0);
+    expect(openDisputeIx.keys[6].pubkey.equals(disputeTicketPda)).toBe(true);
   });
 
   it("inspects live Solana Devnet program, USDC mint (6 decimals), and ProgramConfig PDA", async () => {

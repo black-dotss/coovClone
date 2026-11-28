@@ -42,6 +42,7 @@ interface BountyItem {
   proRataBonusUsdc?: number;
   maxWinners: number;
   claimsCount: number;
+  openDisputesCount?: number;
   pendingReviewCount: number;
   approvedCount: number;
   occupiedSlots: number;
@@ -108,6 +109,57 @@ interface RestrictionSummary {
   createdAt: string;
 }
 
+interface JurorEligibilitySummary {
+  eligible: boolean;
+  method: "sbt" | "streak" | "none";
+  activeStreak: number;
+  fraudFlags: number;
+  sbtMint: string | null;
+  sbtAta: string | null;
+  sbtCount: number;
+}
+
+interface JuryDisputeItem {
+  id: string;
+  bountyId: string;
+  bountyTitle: string;
+  company: string;
+  companyLogoUrl: string | null;
+  recruiterUserId: string;
+  recruiterWallet: string;
+  rewardPerWinnerUsdc: number;
+  stakeAmountUsdc: number;
+  candidateWallet: string;
+  candidateWalletMasked: string;
+  disputeTicketPda: string;
+  openTxSignature: string;
+  resolveTxSignature: string | null;
+  evaluationScore: number;
+  rejectionReason: string;
+  votesForCandidate: number;
+  votesForRecruiter: number;
+  jurorWallets: string[];
+  status: string;
+  openedAt: string;
+  resolvedAt: string | null;
+  isCurrentUserCandidate: boolean;
+  isCurrentUserCreator: boolean;
+  hasCurrentUserVoted: boolean;
+  anonymizedBreakdown: {
+    overallScore: number;
+    verdict: string | null;
+    explanation: string;
+    strengths: string[];
+    weaknesses: string[];
+    redFlags: Array<{ flag: string; evidenceSnippet: string }>;
+    agentSummaries: Array<{
+      agentRole: string;
+      scoreContribution: number | null;
+      position: string | null;
+    }>;
+  };
+}
+
 interface BountiesApiResponse {
   cluster: string;
   currentUserId: string | null;
@@ -117,6 +169,9 @@ interface BountiesApiResponse {
   mySubmissions?: CandidateSubmissionSummary[];
   myRestrictions?: RestrictionSummary[];
   candidateReputation?: CandidateReputationSummary | null;
+  jurorEligibility?: JurorEligibilitySummary;
+  activeDisputes?: JuryDisputeItem[];
+  disputes?: JuryDisputeItem[];
 }
 
 export default function BountiesPage() {
@@ -150,6 +205,8 @@ export default function BountiesPage() {
     }
   });
   const [busyBountyId, setBusyBountyId] = useState<string | null>(null);
+  const [busyDisputeKey, setBusyDisputeKey] = useState<string | null>(null);
+  const [expandedDisputes, setExpandedDisputes] = useState<Record<string, boolean>>({});
   const [copiedScoutBountyId, setCopiedScoutBountyId] = useState<string | null>(null);
   const [capturedScoutRef, setCapturedScoutRef] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
@@ -412,6 +469,131 @@ export default function BountiesPage() {
     }
   };
 
+  const handleOpenDispute = async (
+    bounty: BountyItem,
+    evalItem: CandidateEvalSummary
+  ) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+    setBusyBountyId(bounty.id);
+    setError(null);
+    setNotice(null);
+    try {
+      if (!evalItem.evalTxSignature) {
+        const anchorPrep = await apiFetch<{ serializedTxBase64: string }>(
+          `/api/solana/evaluations/${evalItem.id}`,
+          {
+            method: "POST",
+            body: JSON.stringify({ walletAddress: publicKey }),
+          }
+        );
+        const anchorSig = await signAndSubmitTx(anchorPrep.serializedTxBase64);
+        await apiFetch(`/api/solana/evaluations/${evalItem.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            walletAddress: publicKey,
+            txSignature: anchorSig,
+          }),
+        });
+      }
+
+      const prep = await apiFetch<{
+        serializedTxBase64: string;
+        disputeTicketPda: string;
+      }>(`/api/solana/bounties/${bounty.id}/dispute`, {
+        method: "POST",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          evaluationId: evalItem.id,
+        }),
+      });
+
+      const txSignature = await signAndSubmitTx(prep.serializedTxBase64);
+
+      await apiFetch(`/api/solana/bounties/${bounty.id}/dispute`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          evaluationId: evalItem.id,
+          txSignature,
+        }),
+      });
+
+      setNotice(
+        `Opened On-Chain No-Chill Dispute Jury ticket (${prep.disputeTicketPda.slice(0, 8)}...) for ${bounty.title}. 2-of-3 peer votes now override rejection.`
+      );
+      await loadBounties();
+    } catch (err) {
+      showError(err, "Failed to open On-Chain Jury Dispute.");
+    } finally {
+      setBusyBountyId(null);
+    }
+  };
+
+  const handleCastJuryVote = async (
+    dispute: JuryDisputeItem,
+    approveCandidate: boolean
+  ) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+    const lockKey = `${dispute.id}:${approveCandidate ? "pay" : "uphold"}`;
+    setBusyDisputeKey(lockKey);
+    setError(null);
+    setNotice(null);
+    try {
+      const prep = await apiFetch<{
+        serializedTxBase64: string;
+        willReachConsensus: boolean;
+      }>(`/api/solana/disputes/${dispute.id}/vote`, {
+        method: "POST",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          approveCandidate,
+        }),
+      });
+
+      const txSignature = await signAndSubmitTx(prep.serializedTxBase64);
+
+      const confirmed = await apiFetch<{
+        status: string;
+        votesForCandidate: number;
+        votesForRecruiter: number;
+        totalPaidUsdc: number;
+        slashedAmountUsdc: number;
+      }>(`/api/solana/disputes/${dispute.id}/vote`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          approveCandidate,
+          txSignature,
+        }),
+      });
+
+      if (confirmed.status === "resolved_candidate") {
+        setNotice(
+          `2-of-3 Jury Override Reached! Paid ${confirmed.totalPaidUsdc.toFixed(2)} USDC directly from escrow to the candidate and unlocked the dispute lock.`
+        );
+      } else if (confirmed.status === "resolved_recruiter") {
+        setNotice(
+          `2-of-3 Jury Upheld Rejection! Slashed ${confirmed.slashedAmountUsdc.toFixed(2)} USDC into Slashed Spam Yield pool and unlocked the escrow.`
+        );
+      } else {
+        setNotice(
+          `Jury vote recorded on-chain (${confirmed.votesForCandidate}/2 Pay Candidate · ${confirmed.votesForRecruiter}/2 Uphold).`
+        );
+      }
+      await loadBounties();
+    } catch (err) {
+      showError(err, "Failed to submit on-chain jury vote.");
+    } finally {
+      setBusyDisputeKey(null);
+    }
+  };
+
   if (navigatingToNew || (loading && !data)) {
     return <FullPageLoading />;
   }
@@ -597,11 +779,38 @@ export default function BountiesPage() {
                   typeof ev.overallScore === "number" && ev.overallScore < bounty.minScore
               )
               .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))[0];
+            const bestDisputeEval = matchingEvals
+              .filter(
+                (ev) =>
+                  typeof ev.overallScore === "number" && ev.overallScore >= 90
+              )
+              .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))[0];
 
             const isExpired = bounty.isExpired;
             const isCreator =
               Boolean(data.currentUserId) &&
               data.currentUserId === bounty.recruiterUserId;
+
+            const isDisputeEligible = Boolean(
+              bestDisputeEval &&
+                (bestDisputeEval.overallScore ?? 0) >= 90 &&
+                (mySub?.reviewStatus === "rejected" ||
+                  myRestriction?.reason === "recruiter_rejected") &&
+                mySub?.fakeDetectorStatus !== "flagged" &&
+                myRestriction?.reason !== "fake_resume_detected" &&
+                myRestriction?.reason !== "duplicate_resume"
+            );
+            const myDispute = data.disputes?.find(
+              (d) => d.bountyId === bounty.id && d.isCurrentUserCandidate
+            );
+            const canOpenDispute = Boolean(
+              !isCreator &&
+                !myClaim &&
+                !myDispute &&
+                isDisputeEligible &&
+                !isExpired &&
+                bounty.status === "active"
+            );
 
             const isSubUnlocked =
               mySub &&
@@ -785,12 +994,52 @@ export default function BountiesPage() {
                     </button>
                   </div>
 
-                  {!isCreator && myRestriction && (
+                  {!isCreator && myRestriction && !canOpenDispute && !myDispute && (
                     <div className="p-3.5 rounded-lg border border-border bg-surface-elevated text-xs space-y-1">
                       <span className="font-bold text-purple-400 uppercase font-mono">
                         Restricted ({myRestriction.reason.replace(/_/g, " ")})
                       </span>
                       <p className="text-text-secondary">{myRestriction.details}</p>
+                    </div>
+                  )}
+
+                  {!isCreator && canOpenDispute && (
+                    <div className="p-3.5 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-purple-400 uppercase font-mono">
+                          Rejected With {bestDisputeEval?.overallScore ?? 90}/100 · Dispute Eligible
+                        </span>
+                        <span className="font-mono text-text-muted">2-of-3 Jury</span>
+                      </div>
+                      <p className="text-text-secondary">
+                        {mySub?.recruiterNotes ||
+                          myRestriction?.details ||
+                          "Publisher rejected this submission."}
+                      </p>
+                    </div>
+                  )}
+
+                  {!isCreator && myDispute && (
+                    <div className="p-3.5 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-purple-400 uppercase font-mono">
+                          {myDispute.status === "resolved_candidate"
+                            ? "Jury Override Won (2/3)"
+                            : myDispute.status === "resolved_recruiter"
+                            ? "Jury Upheld Rejection (2/3)"
+                            : `Dispute Jury Open (${myDispute.votesForCandidate}/2 Pay · ${myDispute.votesForRecruiter}/2 Uphold)`}
+                        </span>
+                        <span className="font-mono text-text-muted">
+                          Score {myDispute.evaluationScore}/100
+                        </span>
+                      </div>
+                      <p className="text-text-secondary">
+                        {myDispute.status === "resolved_candidate"
+                          ? "2-of-3 peer jurors overrode the rejection and released your USDC reward + refunded stake on-chain."
+                          : myDispute.status === "resolved_recruiter"
+                          ? "2-of-3 peer jurors upheld the rejection and slashed any disputed stake into the bounty spam pool."
+                          : "Escrow early withdrawal is frozen while peer SBT/streak jurors vote in the Active Jury Disputes panel below."}
+                      </p>
                     </div>
                   )}
 
@@ -884,20 +1133,42 @@ export default function BountiesPage() {
                             </Button>
                           )}
                         {isExpired && bounty.status !== "refunded" && (
-                          <Button
-                            variant="outline"
-                            size="md"
-                            isLoading={busyBountyId === bounty.id}
-                            onClick={() => void handleRefund(bounty)}
-                          >
-                            Withdraw Expired Escrow USDC
-                          </Button>
+                          (bounty.openDisputesCount ?? 0) > 0 ? (
+                            <Button variant="outline" size="md" disabled>
+                              Escrow Frozen ({bounty.openDisputesCount} Open Dispute)
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="md"
+                              isLoading={busyBountyId === bounty.id}
+                              onClick={() => void handleRefund(bounty)}
+                            >
+                              Withdraw Expired Escrow USDC
+                            </Button>
+                          )
                         )}
                       </>
                     ) : myClaim ? (
                       <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-purple-400 font-bold">
                         Claimed {Number(myClaim.amountMicros) / 1_000_000} USDC
                       </span>
+                    ) : canOpenDispute && bestDisputeEval ? (
+                      <Button
+                        variant="primary"
+                        size="md"
+                        isLoading={busyBountyId === bounty.id}
+                        onClick={() => void handleOpenDispute(bounty, bestDisputeEval)}
+                      >
+                        Open On-Chain Jury Dispute →
+                      </Button>
+                    ) : myDispute ? (
+                      <a
+                        href="#active-jury-disputes"
+                        className="px-3 py-1.5 text-xs font-mono rounded-md bg-surface-elevated border border-purple-500/40 text-purple-400 font-bold hover:border-purple-400 transition-colors"
+                      >
+                        View Jury Ticket ({myDispute.votesForCandidate}/2 Override) →
+                      </a>
                     ) : myRestriction ? null : mySub &&
                       mySub.reviewStatus === "below_threshold" &&
                       mySub.stakeStatus === "pending" ? (
@@ -1042,6 +1313,279 @@ export default function BountiesPage() {
           })}
         </div>
       )}
+
+      {/* On-Chain "No-Chill" Dispute Jury Panel */}
+      <section
+        id="active-jury-disputes"
+        className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-6"
+      >
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-border">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h2 className="text-xl sm:text-2xl font-extrabold text-text">
+                Active Jury Disputes
+              </h2>
+              <span className="px-2.5 py-0.5 text-xs font-mono rounded-md bg-surface-elevated border border-border text-purple-400 font-bold">
+                {(data?.activeDisputes?.length ?? 0)} OPEN · 2-OF-3 CONSENSUS
+              </span>
+            </div>
+            <p className="text-xs sm:text-sm text-text-secondary">
+              Independent Token-2022 SBT or active streak (&ge; 1) peers inspect anonymized evaluations to override wrongful recruiter rejections or uphold slashes.
+            </p>
+          </div>
+
+          <div className="shrink-0">
+            {!publicKey ? (
+              <Button variant="outline" size="sm" onClick={openConnectModal}>
+                Connect Wallet to Verify Juror Status
+              </Button>
+            ) : data?.jurorEligibility?.eligible ? (
+              <span className="px-3 py-1.5 text-xs font-mono rounded-md bg-surface-elevated border border-purple-500/40 text-purple-400 font-bold inline-block">
+                {data.jurorEligibility.method === "sbt"
+                  ? `Verified Juror · Token-2022 SBT (${data.jurorEligibility.sbtCount})`
+                  : `Verified Juror · Streak ${data.jurorEligibility.activeStreak}+`}
+              </span>
+            ) : (
+              <span className="px-3 py-1.5 text-xs font-mono rounded-md bg-surface-elevated border border-border text-text-muted inline-block">
+                Requires COOV SBT or Active Streak &ge; 1 to Vote
+              </span>
+            )}
+          </div>
+        </div>
+
+        {!data?.disputes || data.disputes.length === 0 ? (
+          <div className="rounded-lg border border-border bg-surface-elevated p-6 text-center space-y-1.5">
+            <p className="text-sm font-bold text-text">No On-Chain Jury Disputes Open</p>
+            <p className="text-xs text-text-secondary">
+              Rejected candidates holding a verified 90/100+ evaluation proof (and 0 fraud flags) can open a 2-of-3 Jury Dispute directly from their bounty card before expiration.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {data.disputes.map((dispute) => {
+              const isOpen = dispute.status === "open";
+              const isExpanded = Boolean(expandedDisputes[dispute.id]);
+              const overridePct = Math.min(100, Math.round((dispute.votesForCandidate / 2) * 100));
+              const upholdPct = Math.min(100, Math.round((dispute.votesForRecruiter / 2) * 100));
+              const canVote =
+                isOpen &&
+                Boolean(data.jurorEligibility?.eligible) &&
+                !dispute.isCurrentUserCandidate &&
+                !dispute.isCurrentUserCreator &&
+                !dispute.hasCurrentUserVoted;
+
+              const statusTag =
+                dispute.status === "resolved_candidate"
+                  ? "RESOLVED · PAID CANDIDATE (2/3)"
+                  : dispute.status === "resolved_recruiter"
+                  ? "RESOLVED · UPHELD REJECTION (2/3)"
+                  : `${dispute.votesForCandidate} / 2 Votes to Override`;
+
+              return (
+                <div
+                  key={dispute.id}
+                  className="rounded-xl border border-border bg-surface-elevated p-5 sm:p-6 space-y-5"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="flex items-start gap-3.5 min-w-0">
+                      <BountyCompanyLogo
+                        company={dispute.company}
+                        logoUrl={dispute.companyLogoUrl}
+                        size="md"
+                      />
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] font-mono text-purple-400 font-bold uppercase">
+                            {dispute.company}
+                          </span>
+                          <span className="text-[11px] font-mono text-text-muted">
+                            Candidate #{dispute.candidateWalletMasked}
+                          </span>
+                        </div>
+                        <h3 className="text-base sm:text-lg font-extrabold text-text">
+                          {dispute.bountyTitle}
+                        </h3>
+                        <p className="text-[11px] font-mono text-text-muted">
+                          Score: <strong className="text-purple-400">{dispute.evaluationScore}/100</strong> · Reward:{" "}
+                          <strong className="text-text">{dispute.rewardPerWinnerUsdc} USDC</strong> · Stake:{" "}
+                          <strong className="text-text">{dispute.stakeAmountUsdc.toFixed(2)} USDC</strong>
+                        </p>
+                      </div>
+                    </div>
+
+                    <span className="px-2.5 py-1 text-[11px] font-mono rounded-md bg-surface border border-border text-purple-400 font-bold shrink-0">
+                      {statusTag}
+                    </span>
+                  </div>
+
+                  {/* Rejection Reason */}
+                  <div className="p-3.5 rounded-lg bg-surface border border-border space-y-1 text-xs">
+                    <span className="text-[10px] font-mono uppercase text-text-muted block">
+                      Recruiter Rejection Reason
+                    </span>
+                    <p className="text-text-secondary leading-relaxed">
+                      {dispute.rejectionReason}
+                    </p>
+                  </div>
+
+                  {/* Live 2-of-3 Tally */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-mono">
+                        <span className="text-purple-400 font-semibold">
+                          Pay Candidate (Override)
+                        </span>
+                        <span className="text-text font-bold">
+                          {dispute.votesForCandidate} / 2 Votes
+                        </span>
+                      </div>
+                      <ProgressBar value={overridePct} color="purple" size="sm" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-mono">
+                        <span className="text-text-secondary font-semibold">
+                          Uphold Rejection (Slash)
+                        </span>
+                        <span className="text-text font-bold">
+                          {dispute.votesForRecruiter} / 2 Votes
+                        </span>
+                      </div>
+                      <ProgressBar value={upholdPct} color="purple" size="sm" />
+                    </div>
+                  </div>
+
+                  {/* Anonymized Evaluation Breakdown Drawer */}
+                  <div className="space-y-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedDisputes((prev) => ({
+                          ...prev,
+                          [dispute.id]: !prev[dispute.id],
+                        }))
+                      }
+                      className="text-xs font-mono text-purple-400 hover:underline cursor-pointer"
+                    >
+                      {isExpanded
+                        ? "Hide Anonymized Evaluation Breakdown ↑"
+                        : "Inspect Anonymized Evaluation Breakdown (PII-Redacted) ↓"}
+                    </button>
+
+                    {isExpanded && (
+                      <div className="p-4 rounded-lg bg-surface border border-border space-y-4 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-border/70">
+                          <span className="font-mono font-bold text-text">
+                            AI Committee Consensus: {dispute.anonymizedBreakdown.verdict || "Verified"} ({dispute.anonymizedBreakdown.overallScore}/100)
+                          </span>
+                          <span className="text-[11px] font-mono text-text-muted">
+                            Ticket PDA: {dispute.disputeTicketPda.slice(0, 8)}...{dispute.disputeTicketPda.slice(-6)}
+                          </span>
+                        </div>
+                        <p className="text-text-secondary leading-relaxed">
+                          {dispute.anonymizedBreakdown.explanation}
+                        </p>
+
+                        {dispute.anonymizedBreakdown.agentSummaries.length > 0 && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                            {dispute.anonymizedBreakdown.agentSummaries.map((ag) => (
+                              <div
+                                key={ag.agentRole}
+                                className="p-2.5 rounded-md bg-surface-elevated border border-border space-y-1"
+                              >
+                                <div className="flex items-center justify-between font-mono text-[11px]">
+                                  <span className="text-text font-semibold uppercase">
+                                    {ag.agentRole.replace(/_/g, " ")}
+                                  </span>
+                                  <span className="text-purple-400 font-bold">
+                                    {ag.scoreContribution ?? "—"}/100
+                                  </span>
+                                </div>
+                                {ag.position && (
+                                  <p className="text-[11px] text-text-muted line-clamp-2">
+                                    {ag.position}
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {dispute.anonymizedBreakdown.strengths.length > 0 && (
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-mono uppercase text-purple-400 font-bold block">
+                              Verified Strengths (Redacted)
+                            </span>
+                            <ul className="list-disc list-inside text-text-secondary space-y-0.5">
+                              {dispute.anonymizedBreakdown.strengths.map((s, idx) => (
+                                <li key={idx}>{s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {dispute.anonymizedBreakdown.redFlags.length > 0 && (
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-mono uppercase text-red-400 font-bold block">
+                              Recorded Red Flags
+                            </span>
+                            <ul className="list-disc list-inside text-text-secondary space-y-0.5">
+                              {dispute.anonymizedBreakdown.redFlags.map((rf, idx) => (
+                                <li key={idx}>
+                                  <strong>{rf.flag}</strong>: {rf.evidenceSnippet}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Peer Juror Vote Actions */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-border/70">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={!canVote}
+                        isLoading={busyDisputeKey === `${dispute.id}:pay`}
+                        onClick={() => void handleCastJuryVote(dispute, true)}
+                      >
+                        Vote: Pay Candidate
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        disabled={!canVote}
+                        isLoading={busyDisputeKey === `${dispute.id}:uphold`}
+                        onClick={() => void handleCastJuryVote(dispute, false)}
+                      >
+                        Vote: Uphold Rejection
+                      </Button>
+                    </div>
+
+                    <span className="text-[11px] font-mono text-text-muted">
+                      {!isOpen
+                        ? `Closed (${dispute.jurorWallets.length}/3 jurors voted)`
+                        : dispute.isCurrentUserCandidate
+                        ? "Disputed candidate cannot vote"
+                        : dispute.isCurrentUserCreator
+                        ? "Bounty creator cannot vote"
+                        : dispute.hasCurrentUserVoted
+                        ? "Your wallet already voted"
+                        : !publicKey
+                        ? "Connect wallet to vote"
+                        : !data?.jurorEligibility?.eligible
+                        ? "Requires SBT or Active Streak >= 1"
+                        : `${dispute.jurorWallets.length}/3 jury seats filled`}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

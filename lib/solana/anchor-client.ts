@@ -7,6 +7,7 @@ import {
   deriveClaimReceiptPda,
   deriveConfigPda,
   deriveConvictionStakePda,
+  deriveDisputeTicketPda,
   deriveEscrowPda,
   deriveEscrowVaultPda,
   deriveEvaluationPda,
@@ -34,6 +35,9 @@ export const EVENT_DISCRIMINATORS = {
   ConvictionStakeApproved: [200, 162, 19, 134, 144, 162, 130, 112],
   FraudStakeSlashed: [40, 239, 240, 23, 60, 143, 226, 40],
   ConvictionStakeRefunded: [143, 215, 48, 4, 230, 22, 182, 136],
+  DisputeOpened: [239, 222, 102, 235, 193, 85, 1, 214],
+  JuryVoteCast: [6, 229, 155, 164, 92, 124, 61, 37],
+  DisputeResolved: [121, 64, 249, 153, 139, 128, 236, 187],
 } as const;
 
 type LegacyIdlType =
@@ -394,6 +398,33 @@ export async function fetchReputationViaAnchor(
 }
 
 /**
+ * Fetches and deserializes a `DisputeTicket` PDA (`["dispute_ticket", escrow, candidate]`) via Anchor.
+ */
+export async function fetchDisputeTicketViaAnchor(
+  jobId: string,
+  candidateWallet: string | PublicKey,
+  programId: PublicKey = getProgramId()
+) {
+  const candidatePubkey =
+    typeof candidateWallet === "string" ? new PublicKey(candidateWallet) : candidateWallet;
+  const [escrowPda] = deriveEscrowPda(uuidToBytes16(jobId), programId);
+  const [disputeTicketPda] = deriveDisputeTicketPda(escrowPda, candidatePubkey, programId);
+  const account = await withSolanaConnection(async (connection) => {
+    const program = getCoovAnchorProgram(connection, programId);
+    const ns = program.account as Record<
+      string,
+      { fetchNullable: (addr: PublicKey) => Promise<Record<string, unknown> | null> }
+    >;
+    return ns.disputeTicket.fetchNullable(disputeTicketPda);
+  });
+  return {
+    escrowPda: escrowPda.toBase58(),
+    disputeTicketPda: disputeTicketPda.toBase58(),
+    account,
+  };
+}
+
+/**
  * Convenience re-exports grouping PDA derivation helpers alongside Anchor deserialization.
  */
 export const COOV_PDAS = {
@@ -405,4 +436,5 @@ export const COOV_PDAS = {
   deriveEscrowVaultPda,
   deriveClaimReceiptPda,
   deriveConvictionStakePda,
+  deriveDisputeTicketPda,
 } as const;

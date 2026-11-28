@@ -36,6 +36,7 @@ interface BountyDetailItem {
   proRataBonusUsdc?: number;
   maxWinners: number;
   claimsCount: number;
+  openDisputesCount?: number;
   pendingReviewCount: number;
   approvedCount: number;
   occupiedSlots: number;
@@ -62,16 +63,49 @@ interface BountiesDetailApiResponse {
   currentUserId: string | null;
   bounties: BountyDetailItem[];
   candidateReputation?: CandidateReputationSummary | null;
+  disputes?: Array<{
+    id: string;
+    bountyId: string;
+    status: string;
+    votesForCandidate: number;
+    votesForRecruiter: number;
+    isCurrentUserCandidate: boolean;
+  }>;
+  mySubmissions?: Array<{
+    bountyId: string;
+    evaluationId: string;
+    reviewStatus: string;
+    fakeDetectorStatus: string;
+  }>;
+  myEvaluations?: Array<{
+    id: string;
+    jobDescriptionId: string;
+    overallScore: number | null;
+    evalTxSignature: string | null;
+  }>;
 }
 
 export default function BountyDetailPage() {
   const params = useParams<{ id: string }>();
   const rawId = params?.id ?? "";
-  const { publicKey, openConnectModal, clusterLabel } = useSolanaWallet();
+  const { publicKey, openConnectModal, signAndSubmitTx, clusterLabel } = useSolanaWallet();
 
   const [bounty, setBounty] = useState<BountyDetailItem | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [reputation, setReputation] = useState<CandidateReputationSummary | null>(null);
+  const [myDispute, setMyDispute] = useState<{
+    id: string;
+    status: string;
+    votesForCandidate: number;
+    votesForRecruiter: number;
+  } | null>(null);
+  const [disputeEval, setDisputeEval] = useState<{
+    id: string;
+    overallScore: number;
+    evalTxSignature: string | null;
+  } | null>(null);
+  const [openingDispute, setOpeningDispute] = useState(false);
+  const [disputeNotice, setDisputeNotice] = useState<string | null>(null);
   const [scoutRef, setScoutRef] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     captureScoutReferralFromSearch(window.location.search, [rawId]);
@@ -98,6 +132,36 @@ export default function BountyDetailPage() {
         setBounty(match);
         setCurrentUserId(res.currentUserId);
         setReputation(res.candidateReputation ?? null);
+
+        if (match) {
+          const foundDispute =
+            res.disputes?.find(
+              (d) => d.bountyId === match.id && d.isCurrentUserCandidate
+            ) ?? null;
+          setMyDispute(foundDispute);
+
+          const rejSub = res.mySubmissions?.find(
+            (s) =>
+              s.bountyId === match.id &&
+              s.reviewStatus === "rejected" &&
+              s.fakeDetectorStatus !== "flagged"
+          );
+          const matchingEv = rejSub
+            ? res.myEvaluations?.find(
+                (e) =>
+                  e.id === rejSub.evaluationId && (e.overallScore ?? 0) >= 90
+              )
+            : null;
+          setDisputeEval(
+            matchingEv && typeof matchingEv.overallScore === "number"
+              ? {
+                  id: matchingEv.id,
+                  overallScore: matchingEv.overallScore,
+                  evalTxSignature: matchingEv.evalTxSignature,
+                }
+              : null
+          );
+        }
 
         if (match && typeof window !== "undefined") {
           const ids = [match.id, match.jobDescriptionId, rawId];
@@ -182,6 +246,73 @@ export default function BountyDetailPage() {
   const activeStreak = reputation?.effectiveStreak ?? 0;
   const candidate90Usdc = bounty.candidate90Usdc ?? bounty.rewardPerWinnerUsdc * 0.9;
   const scout10Usdc = bounty.scout10Usdc ?? bounty.rewardPerWinnerUsdc * 0.1;
+
+  const handleOpenDispute = async () => {
+    if (!disputeEval) return;
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+    setOpeningDispute(true);
+    setError(null);
+    setDisputeNotice(null);
+    try {
+      if (!disputeEval.evalTxSignature) {
+        const anchorPrep = await apiFetch<{ serializedTxBase64: string }>(
+          `/api/solana/evaluations/${disputeEval.id}`,
+          {
+            method: "POST",
+            body: JSON.stringify({ walletAddress: publicKey }),
+          }
+        );
+        const anchorSig = await signAndSubmitTx(anchorPrep.serializedTxBase64);
+        await apiFetch(`/api/solana/evaluations/${disputeEval.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            walletAddress: publicKey,
+            txSignature: anchorSig,
+          }),
+        });
+      }
+
+      const prep = await apiFetch<{
+        serializedTxBase64: string;
+        disputeTicketPda: string;
+      }>(`/api/solana/bounties/${bounty.id}/dispute`, {
+        method: "POST",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          evaluationId: disputeEval.id,
+        }),
+      });
+      const sig = await signAndSubmitTx(prep.serializedTxBase64);
+      const conf = await apiFetch<{
+        dispute: {
+          id: string;
+          status: string;
+          votesForCandidate: number;
+          votesForRecruiter: number;
+        };
+      }>(`/api/solana/bounties/${bounty.id}/dispute`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          walletAddress: publicKey,
+          evaluationId: disputeEval.id,
+          txSignature: sig,
+        }),
+      });
+      setMyDispute(conf.dispute);
+      setDisputeNotice(
+        `Opened On-Chain Jury Dispute (${prep.disputeTicketPda.slice(0, 8)}...)!`
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to open On-Chain Jury Dispute."
+      );
+    } finally {
+      setOpeningDispute(false);
+    }
+  };
 
   return (
     <div className="w-full max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
@@ -342,12 +473,33 @@ export default function BountyDetailPage() {
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-border">
           <div className="flex flex-wrap items-center gap-2.5">
+            {disputeNotice && (
+              <p className="text-xs font-mono text-purple-400">{disputeNotice}</p>
+            )}
+
             {isCreator ? (
               <Link href={`/bounties/${bounty.id}/review`}>
                 <Button variant="primary" size="md">
                   Open Publisher Review Panel →
                 </Button>
               </Link>
+            ) : myDispute ? (
+              <Link href="/bounties#active-jury-disputes">
+                <Button variant="primary" size="md">
+                  View Jury Dispute ({myDispute.votesForCandidate}/2 Override ·{" "}
+                  {myDispute.votesForRecruiter}/2 Uphold) →
+                </Button>
+              </Link>
+            ) : disputeEval && bounty.status === "active" && !bounty.isExpired ? (
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                isLoading={openingDispute}
+                onClick={() => void handleOpenDispute()}
+              >
+                Open On-Chain Jury Dispute ({disputeEval.overallScore}/100) →
+              </Button>
             ) : bounty.status === "active" && !bounty.isExpired && bounty.availableSlots > 0 ? (
               <Link
                 href={`/evaluations/new?bountyId=${bounty.id}${

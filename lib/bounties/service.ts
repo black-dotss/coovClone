@@ -5,6 +5,7 @@ import {
   auditEvents,
   bounties,
   bountyClaims,
+  bountyDisputes,
   bountyRestrictions,
   bountySubmissions,
   cvVersions,
@@ -14,6 +15,7 @@ import {
   userProfiles,
   users,
 } from "@/lib/db/schema";
+import { redactPersonalInformation } from "@/lib/reports/redaction";
 import type { LLMProvider } from "@/lib/ai/providers/types";
 import {
   computeExactShingleJaccard,
@@ -106,6 +108,7 @@ export interface BountySlotMetrics {
   reservedCount: number;
   pendingReviewCount: number;
   approvedCount: number;
+  openDisputesCount: number;
   occupiedSlots: number;
   availableSlots: number;
   stakeBps: number;
@@ -608,6 +611,33 @@ export async function validatePreBountySubmission(params: {
   };
 }
 
+export async function countOpenDisputesByBounty(
+  bountyIds: string[]
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (bountyIds.length === 0) return map;
+  try {
+    const rows = await db
+      .select({
+        bountyId: bountyDisputes.bountyId,
+        status: bountyDisputes.status,
+      })
+      .from(bountyDisputes)
+      .where(
+        and(
+          inArray(bountyDisputes.bountyId, bountyIds),
+          eq(bountyDisputes.status, "open")
+        )
+      );
+    for (const r of rows) {
+      map.set(r.bountyId, (map.get(r.bountyId) ?? 0) + 1);
+    }
+  } catch {
+    // Non-fatal in unit test DB mocks
+  }
+  return map;
+}
+
 export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof bounties.$inferSelect): Promise<BountySlotMetrics> {
   const bounty =
     bountyRow ??
@@ -623,15 +653,18 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
     throw new NotFoundError("Bounty not found");
   }
 
-  const activeReservations = await db
-    .select({ reviewStatus: bountySubmissions.reviewStatus })
-    .from(bountySubmissions)
-    .where(
-      and(
-        eq(bountySubmissions.bountyId, bounty.id),
-        inArray(bountySubmissions.reviewStatus, [...RESERVED_SUBMISSION_STATUSES])
-      )
-    );
+  const [activeReservations, disputeCounts] = await Promise.all([
+    db
+      .select({ reviewStatus: bountySubmissions.reviewStatus })
+      .from(bountySubmissions)
+      .where(
+        and(
+          eq(bountySubmissions.bountyId, bounty.id),
+          inArray(bountySubmissions.reviewStatus, [...RESERVED_SUBMISSION_STATUSES])
+        )
+      ),
+    countOpenDisputesByBounty([bounty.id]),
+  ]);
 
   const pendingReviewCount = activeReservations.filter(
     (r) => r.reviewStatus === "pending_review"
@@ -639,8 +672,12 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
   const approvedCount = activeReservations.filter(
     (r) => r.reviewStatus === "approved"
   ).length;
+  const openDisputesCount = Math.max(
+    disputeCounts.get(bounty.id) ?? 0,
+    bounty.openDisputesCount ?? 0
+  );
   const reservedCount = activeReservations.length;
-  const occupiedSlots = bounty.claimsCount + reservedCount;
+  const occupiedSlots = bounty.claimsCount + reservedCount + openDisputesCount;
   const availableSlots = Math.max(0, bounty.maxWinners - occupiedSlots);
   const stakeMetrics = computeStakeAndBonusMetrics({
     rewardPerWinnerMicros: bounty.rewardPerWinnerMicros,
@@ -657,6 +694,7 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
     reservedCount,
     pendingReviewCount,
     approvedCount,
+    openDisputesCount,
     occupiedSlots,
     availableSlots,
     stakeBps: stakeMetrics.stakeBps,
@@ -1521,4 +1559,202 @@ export async function reviewBountySubmissionDecision(params: {
   });
 
   return updated;
+}
+
+export interface PublicJuryDisputeItem {
+  id: string;
+  bountyId: string;
+  bountyTitle: string;
+  company: string;
+  companyLogoUrl: string | null;
+  recruiterUserId: string;
+  recruiterWallet: string;
+  rewardPerWinnerUsdc: number;
+  stakeAmountUsdc: number;
+  candidateWallet: string;
+  candidateWalletMasked: string;
+  disputeTicketPda: string;
+  openTxSignature: string;
+  resolveTxSignature: string | null;
+  evaluationScore: number;
+  rejectionReason: string;
+  votesForCandidate: number;
+  votesForRecruiter: number;
+  jurorWallets: string[];
+  status: string;
+  openedAt: string;
+  resolvedAt: string | null;
+  isCurrentUserCandidate: boolean;
+  isCurrentUserCreator: boolean;
+  hasCurrentUserVoted: boolean;
+  anonymizedBreakdown: {
+    overallScore: number;
+    verdict: string | null;
+    explanation: string;
+    strengths: string[];
+    weaknesses: string[];
+    redFlags: Array<{ flag: string; evidenceSnippet: string }>;
+    agentSummaries: Array<{
+      agentRole: string;
+      scoreContribution: number | null;
+      position: string | null;
+    }>;
+  };
+}
+
+export async function listJuryDisputes(params?: {
+  currentUserId?: string | null;
+  viewerWallet?: string | null;
+}): Promise<PublicJuryDisputeItem[]> {
+  try {
+    const rows = await db
+      .select({
+        dispute: bountyDisputes,
+        bountyTitle: bounties.title,
+        company: bounties.company,
+        companyLogoUrl: bounties.companyLogoUrl,
+        recruiterUserId: bounties.recruiterUserId,
+        recruiterWallet: bounties.recruiterWallet,
+        rewardPerWinnerMicros: bounties.rewardPerWinnerMicros,
+        stakeAmountMicros: bountySubmissions.stakeAmountMicros,
+        overallScore: evaluations.overallScore,
+        verdict: evaluations.verdict,
+        redactedSnapshot: reports.redactedSnapshot,
+        structuredReport: reports.structuredReport,
+      })
+      .from(bountyDisputes)
+      .innerJoin(bounties, eq(bountyDisputes.bountyId, bounties.id))
+      .innerJoin(bountySubmissions, eq(bountyDisputes.submissionId, bountySubmissions.id))
+      .innerJoin(evaluations, eq(bountyDisputes.evaluationId, evaluations.id))
+      .leftJoin(reports, eq(evaluations.id, reports.evaluationId))
+      .orderBy(desc(bountyDisputes.openedAt));
+
+    const evalIds = Array.from(new Set(rows.map((r) => r.dispute.evaluationId)));
+    const runs =
+      evalIds.length > 0
+        ? await db
+            .select({
+              evaluationId: agentRuns.evaluationId,
+              agentRole: agentRuns.agentRole,
+              scoreContribution: agentRuns.scoreContribution,
+              structuredResult: agentRuns.structuredResult,
+            })
+            .from(agentRuns)
+            .where(inArray(agentRuns.evaluationId, evalIds))
+        : [];
+
+    const viewerWallet = params?.viewerWallet?.trim() || null;
+    const currentUserId = params?.currentUserId ?? null;
+
+    return rows.map((row) => {
+      const rawReport = (row.redactedSnapshot ?? row.structuredReport ?? {}) as {
+        explanation?: unknown;
+        strengths?: unknown;
+        weaknesses?: unknown;
+        redFlags?: unknown;
+      };
+      const rawExplanation =
+        typeof rawReport.explanation === "string"
+          ? redactPersonalInformation(rawReport.explanation)
+          : "Verified anonymized evaluation summary.";
+      const rawStrengths = Array.isArray(rawReport.strengths)
+        ? rawReport.strengths
+            .filter((s): s is string => typeof s === "string")
+            .slice(0, 4)
+            .map((s) => redactPersonalInformation(s))
+        : [];
+      const rawWeaknesses = Array.isArray(rawReport.weaknesses)
+        ? rawReport.weaknesses
+            .filter((w): w is string => typeof w === "string")
+            .slice(0, 3)
+            .map((w) => redactPersonalInformation(w))
+        : [];
+      const rawRedFlags = Array.isArray(rawReport.redFlags)
+        ? rawReport.redFlags
+            .slice(0, 4)
+            .map((rf) => {
+              const item = rf as { flag?: unknown; evidenceSnippet?: unknown };
+              return {
+                flag:
+                  typeof item.flag === "string"
+                    ? redactPersonalInformation(item.flag)
+                    : "Review flag",
+                evidenceSnippet:
+                  typeof item.evidenceSnippet === "string"
+                    ? redactPersonalInformation(item.evidenceSnippet)
+                    : "",
+              };
+            })
+        : [];
+
+      const evalRuns = runs
+        .filter((r) => r.evaluationId === row.dispute.evaluationId)
+        .map((r) => {
+          const res = (r.structuredResult ?? {}) as {
+            position?: string;
+            voiceCommentary?: string;
+          };
+          const rawPos = res.position || res.voiceCommentary || null;
+          return {
+            agentRole: r.agentRole,
+            scoreContribution: r.scoreContribution,
+            position: rawPos ? redactPersonalInformation(rawPos).slice(0, 220) : null,
+          };
+        });
+
+      const candWallet = row.dispute.candidateWallet;
+      const maskedWallet = `${candWallet.slice(0, 6)}...${candWallet.slice(-4)}`;
+      const jurors = Array.isArray(row.dispute.jurorWallets) ? row.dispute.jurorWallets : [];
+
+      return {
+        id: row.dispute.id,
+        bountyId: row.dispute.bountyId,
+        bountyTitle: row.bountyTitle,
+        company: row.company,
+        companyLogoUrl: row.companyLogoUrl,
+        recruiterUserId: row.recruiterUserId,
+        recruiterWallet: row.recruiterWallet,
+        rewardPerWinnerUsdc: Number(row.rewardPerWinnerMicros) / 1_000_000,
+        stakeAmountUsdc: row.stakeAmountMicros
+          ? Number(row.stakeAmountMicros) / 1_000_000
+          : 0,
+        candidateWallet: candWallet,
+        candidateWalletMasked: maskedWallet,
+        disputeTicketPda: row.dispute.disputeTicketPda,
+        openTxSignature: row.dispute.openTxSignature,
+        resolveTxSignature: row.dispute.resolveTxSignature,
+        evaluationScore: row.dispute.evaluationScore,
+        rejectionReason: row.dispute.rejectionReason
+          ? redactPersonalInformation(row.dispute.rejectionReason)
+          : "Rejected by bounty publisher during manual candidate review.",
+        votesForCandidate: row.dispute.votesForCandidate,
+        votesForRecruiter: row.dispute.votesForRecruiter,
+        jurorWallets: jurors,
+        status: row.dispute.status,
+        openedAt: row.dispute.openedAt.toISOString(),
+        resolvedAt: row.dispute.resolvedAt ? row.dispute.resolvedAt.toISOString() : null,
+        isCurrentUserCandidate:
+          Boolean(currentUserId && currentUserId === row.dispute.candidateUserId) ||
+          Boolean(viewerWallet && viewerWallet === candWallet),
+        isCurrentUserCreator:
+          Boolean(currentUserId && currentUserId === row.recruiterUserId) ||
+          Boolean(viewerWallet && viewerWallet === row.recruiterWallet),
+        hasCurrentUserVoted: Boolean(viewerWallet && jurors.includes(viewerWallet)),
+        anonymizedBreakdown: {
+          overallScore: row.overallScore ?? row.dispute.evaluationScore,
+          verdict: row.verdict,
+          explanation: rawExplanation,
+          strengths: rawStrengths,
+          weaknesses: rawWeaknesses,
+          redFlags: rawRedFlags,
+          agentSummaries: evalRuns,
+        },
+      };
+    });
+  } catch (err) {
+    logger.warn("Could not list bounty jury disputes", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }

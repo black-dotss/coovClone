@@ -26,6 +26,7 @@ import {
 } from "./config";
 import {
   buildApproveAndPayoutIx,
+  buildCastJuryVoteIx,
   buildClaimBountyIx,
   buildCreateBountyEscrowIx,
   buildInitProfileIx,
@@ -33,6 +34,7 @@ import {
   buildInitializeConfigIx,
   buildMigrateEscrowIx,
   buildMintCredentialIx,
+  buildOpenDisputeIx,
   buildRecordEvaluationIx,
   buildRefundConvictionStakeIx,
   buildSlashFraudStakeIx,
@@ -45,24 +47,27 @@ import {
   decodeBountyEscrow,
   decodeCandidateProfile,
   decodeConvictionStake,
+  decodeDisputeTicket,
   decodeEvaluationRecord,
   decodeProgramConfig,
   decodeReputationState,
   DEFAULT_STAKE_BPS,
+  DISPUTE_MIN_SCORE,
   deriveClaimReceiptPda,
   deriveConfigPda,
   deriveConvictionStakePda,
+  deriveDisputeTicketPda,
   deriveEscrowPda,
   deriveEscrowVaultPda,
   deriveEvaluationPda,
   deriveProfilePda,
   deriveReputationPda,
-  LEGACY_ESCROW_SPACE,
-  V3_ESCROW_SPACE,
+  V4_ESCROW_SPACE,
   type DecodedBountyClaim,
   type DecodedBountyEscrow,
   type DecodedCandidateProfile,
   type DecodedConvictionStake,
+  type DecodedDisputeTicket,
   type DecodedEvaluationRecord,
   type DecodedProgramConfig,
   type DecodedReputationState,
@@ -858,7 +863,7 @@ export async function prepareSubmitWithConvictionStakeTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: candidatePubkey,
@@ -1025,7 +1030,7 @@ export async function prepareApproveAndPayoutTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: payerPubkey,
@@ -1182,7 +1187,7 @@ export async function prepareSlashFraudStakeTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: authorityPubkey,
@@ -1284,7 +1289,7 @@ export async function executeOracleSlashFraudStake(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: oracleKeypair.publicKey,
@@ -1405,7 +1410,7 @@ export async function prepareRefundConvictionStakeTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: candidatePubkey,
@@ -1540,7 +1545,7 @@ export async function prepareClaimBountyTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length < V3_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: candidatePubkey,
@@ -1628,6 +1633,11 @@ export async function prepareWithdrawExpiredEscrowTx(params: {
       if (escrow.isClosed) {
         throw new BadRequestError("This bounty escrow is already closed.");
       }
+      if ((escrow.openDisputesCount ?? 0) > 0) {
+        throw new BadRequestError(
+          `Bounty escrow reclaim is frozen while ${escrow.openDisputesCount} DisputeTicket(s) remain Open for Jury resolution.`
+        );
+      }
       if (escrow.recruiter !== recruiterPubkey.toBase58()) {
         throw new BadRequestError("Only the original recruiter wallet can refund this bounty escrow.");
       }
@@ -1658,7 +1668,7 @@ export async function prepareWithdrawExpiredEscrowTx(params: {
         lastValidBlockHeight,
       });
 
-      if (escrowInfo.data.length === LEGACY_ESCROW_SPACE) {
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
         tx.add(
           buildMigrateEscrowIx({
             payer: recruiterPubkey,
@@ -1838,6 +1848,402 @@ export async function fetchOnChainConvictionStake(
     stakePda: stakePda.toBase58(),
     stake: info ? decodeConvictionStake(info.data) : null,
   };
+}
+
+export async function fetchOnChainDisputeTicket(
+  jobId: string,
+  candidateWallet: string
+): Promise<{
+  escrowPda: string;
+  disputeTicketPda: string;
+  dispute: DecodedDisputeTicket | null;
+}> {
+  const programId = getProgramId();
+  const [escrowPda] = deriveEscrowPda(jobId, programId);
+  const [disputeTicketPda] = deriveDisputeTicketPda(
+    escrowPda,
+    new PublicKey(candidateWallet),
+    programId
+  );
+  const info = await withSolanaConnection((connection) =>
+    connection.getAccountInfo(disputeTicketPda, "confirmed")
+  );
+  return {
+    escrowPda: escrowPda.toBase58(),
+    disputeTicketPda: disputeTicketPda.toBase58(),
+    dispute: info ? decodeDisputeTicket(info.data) : null,
+  };
+}
+
+export interface WalletJurorEligibility {
+  eligible: boolean;
+  method: "sbt" | "streak" | "none";
+  activeStreak: number;
+  fraudFlags: number;
+  sbtMint: string | null;
+  sbtAta: string | null;
+  sbtCount: number;
+}
+
+export async function checkWalletJurorEligibility(
+  walletAddress: string
+): Promise<WalletJurorEligibility> {
+  const [profileRes, repRes, credentials] = await Promise.all([
+    fetchOnChainProfile(walletAddress).catch(() => ({ profile: null })),
+    fetchOnChainReputation(walletAddress).catch(() => ({ reputation: null })),
+    fetchWalletCredentials(walletAddress).catch(() => []),
+  ]);
+
+  const activeStreak = repRes.reputation?.verifiedStreak ?? 0;
+  const fraudFlags = repRes.reputation?.fraudFlags ?? 0;
+  const firstSbt = credentials[0] ?? null;
+
+  if (profileRes.profile && repRes.reputation && fraudFlags === 0 && activeStreak >= 1) {
+    return {
+      eligible: true,
+      method: "streak",
+      activeStreak,
+      fraudFlags,
+      sbtMint: firstSbt?.mint ?? null,
+      sbtAta: firstSbt?.tokenAccount ?? null,
+      sbtCount: credentials.length,
+    };
+  }
+
+  if (firstSbt) {
+    return {
+      eligible: true,
+      method: "sbt",
+      activeStreak,
+      fraudFlags,
+      sbtMint: firstSbt.mint,
+      sbtAta: firstSbt.tokenAccount,
+      sbtCount: credentials.length,
+    };
+  }
+
+  return {
+    eligible: false,
+    method: "none",
+    activeStreak,
+    fraudFlags,
+    sbtMint: null,
+    sbtAta: null,
+    sbtCount: 0,
+  };
+}
+
+/**
+ * Prepares `open_dispute` for a rejected candidate holding a verified `EvaluationRecord`
+ * PDA (`composite_score >= 90` and `fraud_flags == 0`) before `bounty.expires_at`.
+ */
+export async function prepareOpenDisputeTx(params: {
+  candidateWallet: string;
+  jobId: string;
+  evalId: string;
+}): Promise<{
+  serializedTxBase64: string;
+  escrowPda: string;
+  disputeTicketPda: string;
+  evaluationPda: string;
+  recentBlockhash: string;
+  lastValidBlockHeight: number;
+}> {
+  try {
+    return await withSolanaConnection(async (connection) => {
+      const programId = getProgramId();
+      const candidatePubkey = new PublicKey(params.candidateWallet);
+
+      const [escrowPda] = deriveEscrowPda(params.jobId, programId);
+      const [evalPda] = deriveEvaluationPda(candidatePubkey, params.evalId, programId);
+      const [repPda] = deriveReputationPda(candidatePubkey, programId);
+      const [disputeTicketPda] = deriveDisputeTicketPda(escrowPda, candidatePubkey, programId);
+
+      const [escrowInfo, evalInfo, repInfo, ticketInfo] = await Promise.all([
+        connection.getAccountInfo(escrowPda, "confirmed"),
+        connection.getAccountInfo(evalPda, "confirmed"),
+        connection.getAccountInfo(repPda, "confirmed"),
+        connection.getAccountInfo(disputeTicketPda, "confirmed"),
+      ]);
+
+      if (!escrowInfo) {
+        throw new BadRequestError("On-chain bounty escrow account was not found.");
+      }
+      const escrow = decodeBountyEscrow(escrowInfo.data);
+      if (escrow.isClosed) {
+        throw new BadRequestError("This bounty escrow is already closed.");
+      }
+      if (escrow.claimsCount >= escrow.maxWinners) {
+        throw new BadRequestError("All bounty winner slots have already been claimed.");
+      }
+      if (Math.floor(Date.now() / 1000) > escrow.expiresAt) {
+        throw new BadRequestError("This bounty has expired and can no longer open new disputes.");
+      }
+      if (ticketInfo) {
+        throw new BadRequestError(
+          `DisputeTicket PDA (${disputeTicketPda.toBase58()}) has already been opened for this candidate.`
+        );
+      }
+      if (!evalInfo) {
+        throw new BadRequestError(
+          "Your evaluation must be anchored on-chain before opening a Dispute Jury ticket."
+        );
+      }
+      const decodedEval = decodeEvaluationRecord(evalInfo.data);
+      if (decodedEval.compositeScore < DISPUTE_MIN_SCORE) {
+        throw new BadRequestError(
+          `Your on-chain score (${decodedEval.compositeScore}/100) must be >= ${DISPUTE_MIN_SCORE}/100 to open a Dispute Jury ticket.`
+        );
+      }
+      if (repInfo) {
+        const decodedRep = decodeReputationState(repInfo.data);
+        if (decodedRep.fraudFlags > 0) {
+          throw new BadRequestError(
+            "Candidates with confirmed fraud flags on-chain cannot open a Dispute Jury ticket."
+          );
+        }
+      }
+
+      const solBalance = await connection.getBalance(candidatePubkey, "confirmed");
+      if (solBalance < 3_000_000) {
+        throw new BadRequestError(
+          `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for DisputeTicket PDA rent and network fees.`
+        );
+      }
+
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+      const tx = new Transaction({
+        feePayer: candidatePubkey,
+        blockhash,
+        lastValidBlockHeight,
+      });
+
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
+        tx.add(
+          buildMigrateEscrowIx({
+            payer: candidatePubkey,
+            jobId: params.jobId,
+            programId,
+          })
+        );
+      }
+
+      tx.add(
+        buildOpenDisputeIx({
+          candidate: candidatePubkey,
+          jobId: params.jobId,
+          evalId: params.evalId,
+          programId,
+        })
+      );
+
+      const serialized = tx.serialize({
+        requireAllSignatures: false,
+        verifySignatures: false,
+      });
+
+      return {
+        serializedTxBase64: bytesToBase64(serialized),
+        escrowPda: escrowPda.toBase58(),
+        disputeTicketPda: disputeTicketPda.toBase58(),
+        evaluationPda: evalPda.toBase58(),
+        recentBlockhash: blockhash,
+        lastValidBlockHeight,
+      };
+    });
+  } catch (err) {
+    throw wrapSolanaRpcError(err, "Unable to prepare open_dispute transaction");
+  }
+}
+
+/**
+ * Prepares `cast_jury_vote` for an independent SBT or Verified Streak >= 1 juror.
+ * When `approveCandidate` reaches 2-of-3 consensus, idempotently creates Candidate
+ * (and optional Scout Referrer) USDC ATAs so atomic CPI payout succeeds cleanly.
+ */
+export async function prepareCastJuryVoteTx(params: {
+  jurorWallet: string;
+  candidateWallet: string;
+  jobId: string;
+  approveCandidate: boolean;
+}): Promise<{
+  serializedTxBase64: string;
+  escrowPda: string;
+  disputeTicketPda: string;
+  eligibilityMethod: "sbt" | "streak";
+  willReachConsensus: boolean;
+  approveCandidate: boolean;
+  recentBlockhash: string;
+  lastValidBlockHeight: number;
+}> {
+  try {
+    return await withSolanaConnection(async (connection) => {
+      const programId = getProgramId();
+      const usdcMint = getUsdcMint();
+      const jurorPubkey = new PublicKey(params.jurorWallet);
+      const candidatePubkey = new PublicKey(params.candidateWallet);
+      const tokenProgramId = await resolveUsdcTokenProgram(connection, usdcMint);
+
+      if (jurorPubkey.equals(candidatePubkey)) {
+        throw new BadRequestError("The disputed candidate cannot vote on their own dispute.");
+      }
+
+      const [escrowPda] = deriveEscrowPda(params.jobId, programId);
+      const [disputeTicketPda] = deriveDisputeTicketPda(escrowPda, candidatePubkey, programId);
+      const [stakePda] = deriveConvictionStakePda(escrowPda, candidatePubkey, programId);
+
+      const [escrowInfo, ticketInfo, stakeInfo, eligibility] = await Promise.all([
+        connection.getAccountInfo(escrowPda, "confirmed"),
+        connection.getAccountInfo(disputeTicketPda, "confirmed"),
+        connection.getAccountInfo(stakePda, "confirmed"),
+        checkWalletJurorEligibility(params.jurorWallet),
+      ]);
+
+      if (!escrowInfo || !ticketInfo) {
+        throw new BadRequestError("On-chain BountyEscrow or DisputeTicket PDA was not found.");
+      }
+      const escrow = decodeBountyEscrow(escrowInfo.data);
+      const ticket = decodeDisputeTicket(ticketInfo.data);
+
+      if (escrow.recruiter === jurorPubkey.toBase58()) {
+        throw new BadRequestError("The bounty creator cannot vote on a Jury Dispute for their own bounty.");
+      }
+      if (ticket.status !== "open") {
+        throw new BadRequestError(`DisputeTicket is already resolved (${ticket.status}).`);
+      }
+      if (ticket.jurors.includes(jurorPubkey.toBase58())) {
+        throw new BadRequestError("Your connected wallet has already cast a vote on this dispute.");
+      }
+      if (ticket.jurors.length >= 3) {
+        throw new BadRequestError("All 3 jury seats have already voted on this dispute.");
+      }
+      if (!eligibility.eligible || eligibility.method === "none") {
+        throw new BadRequestError(
+          "Juror eligibility not met: wallet must hold a verified CandidateProfile with active streak >= 1 (0 fraud flags) or a COOV Token-2022 Soulbound Credential (SBT)."
+        );
+      }
+
+      const willReachConsensus = params.approveCandidate
+        ? ticket.votesForCandidate + 1 >= 2
+        : ticket.votesForRecruiter + 1 >= 2;
+
+      if (params.approveCandidate && willReachConsensus) {
+        if (escrow.isClosed || escrow.claimsCount >= escrow.maxWinners) {
+          throw new BadRequestError(
+            "Escrow slots are already filled or closed; override payout cannot execute."
+          );
+        }
+      }
+
+      const solBalance = await connection.getBalance(jurorPubkey, "confirmed");
+      if (solBalance < 3_000_000) {
+        throw new BadRequestError(
+          `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for jury transaction fees.`
+        );
+      }
+
+      const stake = stakeInfo ? decodeConvictionStake(stakeInfo.data) : null;
+      const referrerPubkey = stake?.referrer ? new PublicKey(stake.referrer) : null;
+      const candidateAta = getAssociatedTokenAddressSync(
+        usdcMint,
+        candidatePubkey,
+        false,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+      const tx = new Transaction({
+        feePayer: jurorPubkey,
+        blockhash,
+        lastValidBlockHeight,
+      });
+
+      if (escrowInfo.data.length < V4_ESCROW_SPACE) {
+        tx.add(
+          buildMigrateEscrowIx({
+            payer: jurorPubkey,
+            jobId: params.jobId,
+            programId,
+          })
+        );
+      }
+
+      if (params.approveCandidate && willReachConsensus) {
+        tx.add(
+          createAssociatedTokenAccountIdempotentInstruction(
+            jurorPubkey,
+            candidateAta,
+            candidatePubkey,
+            usdcMint,
+            tokenProgramId,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          )
+        );
+        if (referrerPubkey) {
+          const referrerAta = getAssociatedTokenAddressSync(
+            usdcMint,
+            referrerPubkey,
+            false,
+            tokenProgramId,
+            ASSOCIATED_TOKEN_PROGRAM_ID
+          );
+          tx.add(
+            createAssociatedTokenAccountIdempotentInstruction(
+              jurorPubkey,
+              referrerAta,
+              referrerPubkey,
+              usdcMint,
+              tokenProgramId,
+              ASSOCIATED_TOKEN_PROGRAM_ID
+            )
+          );
+        }
+      }
+
+      tx.add(
+        buildCastJuryVoteIx({
+          juror: jurorPubkey,
+          candidate: candidatePubkey,
+          usdcMint,
+          jobId: params.jobId,
+          approveCandidate: params.approveCandidate,
+          jurorSbtMint:
+            eligibility.sbtMint && eligibility.method === "sbt"
+              ? new PublicKey(eligibility.sbtMint)
+              : null,
+          jurorSbtAta:
+            eligibility.sbtAta && eligibility.method === "sbt"
+              ? new PublicKey(eligibility.sbtAta)
+              : null,
+          candidateTokenAccount:
+            params.approveCandidate && willReachConsensus ? candidateAta : null,
+          referrer:
+            params.approveCandidate && willReachConsensus ? referrerPubkey : null,
+          tokenProgramId,
+          programId,
+        })
+      );
+
+      const serialized = tx.serialize({
+        requireAllSignatures: false,
+        verifySignatures: false,
+      });
+
+      return {
+        serializedTxBase64: bytesToBase64(serialized),
+        escrowPda: escrowPda.toBase58(),
+        disputeTicketPda: disputeTicketPda.toBase58(),
+        eligibilityMethod: eligibility.method,
+        willReachConsensus,
+        approveCandidate: params.approveCandidate,
+        recentBlockhash: blockhash,
+        lastValidBlockHeight,
+      };
+    });
+  } catch (err) {
+    throw wrapSolanaRpcError(err, "Unable to prepare cast_jury_vote transaction");
+  }
 }
 
 /**

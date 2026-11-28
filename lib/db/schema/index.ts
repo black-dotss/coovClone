@@ -690,6 +690,7 @@ export const bounties = pgTable(
     slashedPoolMicros: text("slashed_pool_micros").notNull().default("0"),
     maxWinners: integer("max_winners").notNull(),
     claimsCount: integer("claims_count").notNull().default(0),
+    openDisputesCount: integer("open_disputes_count").notNull().default(0),
     status: text("status").notNull().default("active"), // active, filled, expired, refunded
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -808,5 +809,56 @@ export const bountyRestrictions = pgTable(
     index("bounty_restrictions_bounty_user_idx").on(table.bountyId, table.userId),
     index("bounty_restrictions_bounty_wallet_idx").on(table.bountyId, table.walletAddress),
     index("bounty_restrictions_bounty_hash_idx").on(table.bountyId, table.resumeHash),
+  ]
+);
+
+export const bountyDisputes = pgTable(
+  "bounty_disputes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    bountyId: uuid("bounty_id")
+      .notNull()
+      .references(() => bounties.id, { onDelete: "cascade" }),
+    submissionId: uuid("submission_id")
+      .notNull()
+      .unique()
+      .references(() => bountySubmissions.id, { onDelete: "cascade" }),
+    evaluationId: uuid("evaluation_id")
+      .notNull()
+      .references(() => evaluations.id, { onDelete: "cascade" }),
+    candidateUserId: text("candidate_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    candidateWallet: text("candidate_wallet").notNull(),
+    disputeTicketPda: text("dispute_ticket_pda").notNull().unique(),
+    openTxSignature: text("open_tx_signature").notNull(),
+    resolveTxSignature: text("resolve_tx_signature"),
+    evaluationScore: integer("evaluation_score").notNull(),
+    rejectionReason: text("rejection_reason"),
+    votesForCandidate: integer("votes_for_candidate").notNull().default(0),
+    votesForRecruiter: integer("votes_for_recruiter").notNull().default(0),
+    jurorWallets: jsonb("juror_wallets").$type<string[]>().notNull().default([]),
+    jurorVotes: jsonb("juror_votes")
+      .$type<
+        Array<{
+          wallet: string;
+          approveCandidate: boolean;
+          txSignature: string;
+          votedAt: string;
+        }>
+      >()
+      .notNull()
+      .default([]),
+    status: text("status").notNull().default("open"), // open, resolved_candidate, resolved_recruiter
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bounty_disputes_ticket_pda_idx").on(table.disputeTicketPda),
+    uniqueIndex("bounty_disputes_bounty_user_idx").on(table.bountyId, table.candidateUserId),
+    index("bounty_disputes_status_idx").on(table.status),
+    index("bounty_disputes_bounty_idx").on(table.bountyId),
   ]
 );
