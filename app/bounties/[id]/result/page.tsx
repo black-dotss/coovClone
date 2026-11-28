@@ -1,0 +1,281 @@
+"use client";
+
+import React, { Suspense, useEffect, useState } from "react";
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
+import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
+import { apiFetch } from "@/lib/client/api";
+
+interface BountyResultResponse {
+  cluster: string;
+  bounty: {
+    id: string;
+    title: string;
+    company: string;
+    companyLogoUrl?: string | null;
+    minScore: number;
+    maxWinners: number;
+    rewardPerWinnerUsdc: number;
+    expiresAt: string;
+  };
+  evaluation: {
+    id: string;
+    status: string;
+    overallScore: number | null;
+    verdict: string | null;
+    evalPdaAddress: string | null;
+    evalTxSignature: string | null;
+    evalTxUrl: string | null;
+  } | null;
+  submission: {
+    id: string;
+    reviewStatus: string;
+    fakeDetectorStatus: string;
+    fakeDetectorScore: number | null;
+    recruiterNotes: string | null;
+    remainingReviewLabel: string | null;
+  } | null;
+  restriction: {
+    reason: string;
+    details: string;
+  } | null;
+  claim: {
+    txSignature: string;
+    txUrl: string;
+  } | null;
+  spotSecured: number | null;
+  metrics: {
+    claimsCount: number;
+    pendingReviewCount: number;
+    approvedCount: number;
+    occupiedSlots: number;
+    availableSlots: number;
+  };
+}
+
+function BountyResultContent() {
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const bountyId = params?.id as string;
+  const evalId = searchParams?.get("evalId") || "";
+
+  const [data, setData] = useState<BountyResultResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!bountyId) return;
+    let ignore = false;
+
+    async function loadResult() {
+      try {
+        const qs = evalId ? `?evalId=${encodeURIComponent(evalId)}` : "";
+        const res = await apiFetch<BountyResultResponse>(
+          `/api/solana/bounties/${bountyId}/result${qs}`
+        );
+        if (!ignore) {
+          setData(res);
+        }
+      } catch (err) {
+        if (!ignore) {
+          setError(err instanceof Error ? err.message : "Failed to load bounty result.");
+        }
+      } finally {
+        if (!ignore) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadResult();
+    return () => {
+      ignore = true;
+    };
+  }, [bountyId, evalId]);
+
+  if (loading) {
+    return <FullPageLoading />;
+  }
+
+  if (!data || !data.evaluation) {
+    return (
+      <div className="w-full max-w-2xl mx-auto px-4 py-12 space-y-6">
+        <ErrorPopup
+          title="Bounty Result Notice"
+          message={error}
+          onDismiss={() => setError(null)}
+        />
+        <div className="rounded-2xl border border-border bg-surface p-8 text-center space-y-4">
+          <h1 className="text-xl font-extrabold text-text">Bounty Result Unavailable</h1>
+          <p className="text-sm text-text-secondary">
+            {error || "We could not find an evaluation record for this bounty."}
+          </p>
+          <Link href="/bounties">
+            <Button variant="primary" size="md">
+              Back to Bounties
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const score = data.evaluation.overallScore ?? 0;
+  const minScore = data.bounty.minScore;
+  const subStatus = data.submission?.reviewStatus;
+  const isSuccess =
+    !data.restriction &&
+    (subStatus === "pending_review" ||
+      subStatus === "approved" ||
+      subStatus === "claimed" ||
+      Boolean(data.claim));
+
+  let statusHeadline = "Not Eligible";
+  let statusDescription = `Your CV scored ${score}/100, which is below the ${minScore}/100 requirement.`;
+
+  if (isSuccess) {
+    if (data.claim || subStatus === "claimed") {
+      statusHeadline = `Bounty Claimed · Spot #${data.spotSecured ?? 1} of ${data.bounty.maxWinners}`;
+      statusDescription = `${data.bounty.rewardPerWinnerUsdc} USDC payout has been settled on-chain to your wallet.`;
+    } else if (subStatus === "approved") {
+      statusHeadline = `Approved · Spot #${data.spotSecured ?? 1} of ${data.bounty.maxWinners}`;
+      statusDescription = `Publisher approved your submission. Your ${data.bounty.rewardPerWinnerUsdc} USDC payout is unlocked to claim on Bounties.`;
+    } else {
+      statusHeadline = `Spot #${data.spotSecured ?? 1} of ${data.bounty.maxWinners} Secured`;
+      statusDescription = `You cleared the ${minScore}/100 bar. Your winner slot is reserved for the 24h publisher review window.`;
+    }
+  } else if (data.restriction) {
+    statusHeadline = "Submission Restricted";
+    statusDescription = data.restriction.details;
+  } else if (score >= minScore && data.metrics.availableSlots <= 0) {
+    statusHeadline = "All Winner Spots Filled";
+    statusDescription = `Your CV scored ${score}/100, but all ${data.bounty.maxWinners} winner slots are already secured.`;
+  } else if (subStatus === "rejected") {
+    statusHeadline = "Submission Rejected";
+    statusDescription =
+      data.submission?.recruiterNotes ||
+      "The publisher rejected this submission after review.";
+  }
+
+  return (
+    <div className="w-full max-w-2xl mx-auto px-4 sm:px-6 py-10 sm:py-14 space-y-6">
+      <ErrorPopup
+        title="Bounty Result Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
+
+      <Link
+        href="/bounties"
+        className="text-xs font-mono text-text-muted hover:text-purple-400 transition-colors inline-block"
+      >
+        ← Back to Bounties
+      </Link>
+
+      <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 space-y-6">
+        {/* Bounty Header */}
+        <div className="flex items-center gap-3.5 pb-5 border-b border-border">
+          <BountyCompanyLogo
+            company={data.bounty.company}
+            logoUrl={data.bounty.companyLogoUrl}
+            size="lg"
+          />
+          <div className="min-w-0">
+            <p className="text-xs font-mono text-text-muted truncate">
+              {data.bounty.company}
+            </p>
+            <h1 className="text-lg sm:text-xl font-extrabold text-text truncate">
+              {data.bounty.title}
+            </h1>
+          </div>
+        </div>
+
+        {/* Minimal Outcome Summary */}
+        <div className="space-y-2">
+          <p className="text-xs font-mono uppercase tracking-wider text-purple-400 font-bold">
+            {isSuccess ? "Qualified" : "Did Not Qualify"}
+          </p>
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-text tracking-tight">
+            {statusHeadline}
+          </h2>
+          <p className="text-sm text-text-secondary leading-relaxed">
+            {statusDescription}
+          </p>
+        </div>
+
+        {/* Minimal Key Metrics */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="p-4 rounded-xl bg-surface-elevated border border-border">
+            <span className="text-[11px] font-mono text-text-muted uppercase block">
+              Your Score
+            </span>
+            <span className="text-2xl font-extrabold text-purple-400 font-mono mt-1 block">
+              {score}
+              <span className="text-xs text-text-muted font-normal">/100</span>
+            </span>
+          </div>
+
+          <div className="p-4 rounded-xl bg-surface-elevated border border-border">
+            <span className="text-[11px] font-mono text-text-muted uppercase block">
+              Spot Secured
+            </span>
+            <span className="text-2xl font-extrabold text-text font-mono mt-1 block">
+              {isSuccess && data.spotSecured
+                ? `#${data.spotSecured}`
+                : "None"}
+              <span className="text-xs text-text-muted font-normal">
+                {isSuccess && data.spotSecured ? ` / ${data.bounty.maxWinners}` : ""}
+              </span>
+            </span>
+          </div>
+
+          <div className="p-4 rounded-xl bg-surface-elevated border border-border">
+            <span className="text-[11px] font-mono text-text-muted uppercase block">
+              Reward Pool
+            </span>
+            <span className="text-2xl font-extrabold text-text font-mono mt-1 block">
+              {data.bounty.rewardPerWinnerUsdc}
+              <span className="text-xs text-text-muted font-normal ml-1">USDC</span>
+            </span>
+          </div>
+        </div>
+
+        {isSuccess && data.submission?.remainingReviewLabel && !data.claim && (
+          <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-border flex items-center justify-between text-xs font-mono">
+            <span className="text-text-muted">Review Window</span>
+            <span className="text-purple-400 font-semibold">
+              {data.submission.remainingReviewLabel}
+            </span>
+          </div>
+        )}
+
+        {/* Minimal Actions */}
+        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-border">
+          <Link href={`/evaluations/${data.evaluation.id}/report`}>
+            <Button variant="primary" size="md">
+              {isSuccess && !data.evaluation.evalTxSignature
+                ? "View Report & Anchor Proof →"
+                : "View Full Report →"}
+            </Button>
+          </Link>
+          <Link href="/bounties">
+            <Button variant="outline" size="md">
+              Go to Bounties
+            </Button>
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function BountyResultPage() {
+  return (
+    <Suspense fallback={<FullPageLoading />}>
+      <BountyResultContent />
+    </Suspense>
+  );
+}

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { ErrorPopup } from "@/components/ui/error-popup";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { SolanaIdentityCard } from "@/components/solana/solana-identity-card";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 
@@ -205,142 +206,179 @@ export const ProfileOnChainPanel: React.FC = () => {
             <LoadingSpinner label="Querying Solana PDA & Token-2022 state..." />
           </div>
         ) : (
-          <div className="space-y-5">
-            {/* Wallet Linking Controls */}
-            <div className="p-4 rounded-lg bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="space-y-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-text-muted">
-                    Linked Wallet
-                  </span>
-                  <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-purple-400">
-                    {data?.linkedWallet ? "Verified" : "Not Linked"}
-                  </span>
-                </div>
-                {data?.linkedWallet ? (
-                  <p className="font-mono text-xs sm:text-sm text-text break-all">
-                    {data.linkedWallet}
-                  </p>
-                ) : (
-                  <p className="text-xs text-text-secondary">
-                    {publicKey
-                      ? `Connected: ${publicKey} — click Sign & Link Wallet.`
-                      : "Connect Phantom or Solflare to verify wallet ownership."}
-                  </p>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                {!publicKey && (
-                  <Button variant="primary" size="sm" onClick={openConnectModal}>
-                    Connect Wallet
-                  </Button>
-                )}
-                {publicKey && data?.linkedWallet !== publicKey && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    isLoading={linking}
-                    onClick={() => void handleLinkWallet()}
-                  >
-                    Sign & Link Wallet
-                  </Button>
-                )}
-                {data?.linkedWallet && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    isLoading={unlinking}
-                    onClick={() => void handleUnlinkWallet()}
-                  >
-                    Unlink
-                  </Button>
-                )}
-              </div>
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+            {/* Portrait A4-shaped Solana Identity Card */}
+            <div className="xl:col-span-5">
+              <SolanaIdentityCard
+                badgeLabel={
+                  data?.credentials?.length
+                    ? `${data.credentials.length} SBT MINTED`
+                    : data?.onChainProfile
+                    ? "CANDIDATE ID"
+                    : "PROFILE ID"
+                }
+                clusterLabel={clusterLabel}
+                roleTitle={data?.onChainProfile?.lastRoleTitle || "Solana Verified Candidate"}
+                score={data?.onChainProfile?.highestScore ?? 0}
+                scoreTier={
+                  data?.onChainProfile
+                    ? `${data.onChainProfile.evalCount} Anchored Audits`
+                    : "Pending On-Chain Audit"
+                }
+                walletAddress={data?.linkedWallet || publicKey}
+                primaryIdLabel="Profile PDA"
+                primaryIdValue={data?.profilePdaAddress}
+                secondaryIdLabel="Soulbound SBTs"
+                secondaryIdValue={
+                  data?.credentials?.[0]?.mint ||
+                  `${data?.credentials.length || 0} Token-2022 SBT(s)`
+                }
+                hashLabel="Top Credential SHA"
+                hashValue={data?.credentials?.[0]?.reportHash || null}
+                verifiedSkills={data?.onChainProfile?.topSkills ?? []}
+                issuedLabel={data?.linkedWallet ? "WALLET VERIFIED" : "LINK WALLET"}
+                downloadFileName="coov-solana-profile-card.png"
+                onDownloadError={(msg) => setError(msg)}
+              />
             </div>
 
-            {/* Candidate Profile PDA State */}
-            <div className="rounded-lg border border-border bg-surface-elevated p-5 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-extrabold text-text">
-                    CandidateProfile PDA
-                  </h3>
-                  {data?.profilePdaAddress && (
-                    <p className="text-[11px] font-mono text-text-muted break-all mt-0.5">
-                      {data.profilePdaAddress}
+            <div className="xl:col-span-7 space-y-5">
+              {/* Wallet Linking Controls */}
+              <div className="p-4 rounded-lg bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-text-muted">
+                      Linked Wallet
+                    </span>
+                    <span className="px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface border border-border text-purple-400">
+                      {data?.linkedWallet ? "Verified" : "Not Linked"}
+                    </span>
+                  </div>
+                  {data?.linkedWallet ? (
+                    <p className="font-mono text-xs sm:text-sm text-text break-all">
+                      {data.linkedWallet}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-text-secondary">
+                      {publicKey
+                        ? `Connected: ${publicKey} — click Sign & Link Wallet.`
+                        : "Connect Phantom or Solflare to verify wallet ownership."}
                     </p>
                   )}
                 </div>
-                {data?.explorerProfileUrl && (
-                  <a
-                    href={data.explorerProfileUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-bold text-purple-400 hover:underline shrink-0"
-                  >
-                    View on Explorer →
-                  </a>
-                )}
+
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  {!publicKey && (
+                    <Button variant="primary" size="sm" onClick={openConnectModal}>
+                      Connect Wallet
+                    </Button>
+                  )}
+                  {publicKey && data?.linkedWallet !== publicKey && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      isLoading={linking}
+                      onClick={() => void handleLinkWallet()}
+                    >
+                      Sign & Link Wallet
+                    </Button>
+                  )}
+                  {data?.linkedWallet && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isLoading={unlinking}
+                      onClick={() => void handleUnlinkWallet()}
+                    >
+                      Unlink
+                    </Button>
+                  )}
+                </div>
               </div>
 
-              {data?.onChainProfile ? (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="p-3.5 rounded-lg bg-surface border border-border">
-                      <span className="text-[11px] text-text-muted uppercase font-mono">
-                        Highest Score
-                      </span>
-                      <p className="text-2xl font-extrabold text-purple-400 mt-1">
-                        {data.onChainProfile.highestScore}/100
-                      </p>
-                    </div>
-                    <div className="p-3.5 rounded-lg bg-surface border border-border">
-                      <span className="text-[11px] text-text-muted uppercase font-mono">
-                        Anchored Audits
-                      </span>
-                      <p className="text-2xl font-extrabold text-text mt-1">
-                        {data.onChainProfile.evalCount}
-                      </p>
-                    </div>
-                    <div className="p-3.5 rounded-lg bg-surface border border-border">
-                      <span className="text-[11px] text-text-muted uppercase font-mono">
-                        Latest Role
-                      </span>
-                      <p className="text-sm font-bold text-text mt-2 truncate">
-                        {data.onChainProfile.lastRoleTitle || "—"}
-                      </p>
-                    </div>
-                  </div>
-
+              {/* Candidate Profile PDA State */}
+              <div className="rounded-lg border border-border bg-surface-elevated p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
-                    <span className="text-[11px] font-mono uppercase text-text-muted block mb-2">
-                      Verified Skills ({data.onChainProfile.topSkills.length})
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {data.onChainProfile.topSkills.map((skill) => (
-                        <span
-                          key={skill}
-                          className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface border border-border text-text-secondary"
-                        >
-                          {skill}
+                    <h3 className="text-sm font-extrabold text-text">
+                      CandidateProfile PDA
+                    </h3>
+                    {data?.profilePdaAddress && (
+                      <p className="text-[11px] font-mono text-text-muted break-all mt-0.5">
+                        {data.profilePdaAddress}
+                      </p>
+                    )}
+                  </div>
+                  {data?.explorerProfileUrl && (
+                    <a
+                      href={data.explorerProfileUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs font-bold text-purple-400 hover:underline shrink-0"
+                    >
+                      View on Explorer →
+                    </a>
+                  )}
+                </div>
+
+                {data?.onChainProfile ? (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="p-3.5 rounded-lg bg-surface border border-border">
+                        <span className="text-[11px] text-text-muted uppercase font-mono">
+                          Highest Score
                         </span>
-                      ))}
+                        <p className="text-2xl font-extrabold text-purple-400 mt-1">
+                          {data.onChainProfile.highestScore}/100
+                        </p>
+                      </div>
+                      <div className="p-3.5 rounded-lg bg-surface border border-border">
+                        <span className="text-[11px] text-text-muted uppercase font-mono">
+                          Anchored Audits
+                        </span>
+                        <p className="text-2xl font-extrabold text-text mt-1">
+                          {data.onChainProfile.evalCount}
+                        </p>
+                      </div>
+                      <div className="p-3.5 rounded-lg bg-surface border border-border">
+                        <span className="text-[11px] text-text-muted uppercase font-mono">
+                          Latest Role
+                        </span>
+                        <p className="text-sm font-bold text-text mt-2 truncate">
+                          {data.onChainProfile.lastRoleTitle || "—"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-[11px] font-mono uppercase text-text-muted block mb-2">
+                        Verified Skills ({data.onChainProfile.topSkills.length})
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {data.onChainProfile.topSkills.map((skill) => (
+                          <span
+                            key={skill}
+                            className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface border border-border text-text-secondary"
+                          >
+                            {skill}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : (
-                <div className="p-4 rounded-lg bg-surface border border-border text-xs text-text-secondary flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <span>
-                    No CandidateProfile PDA exists yet. Open any completed report’s On-Chain & SBT section to anchor it.
-                  </span>
-                  <Link href="/evaluations">
-                    <Button variant="outline" size="sm" className="shrink-0">
-                      Go to History →
-                    </Button>
-                  </Link>
-                </div>
-              )}
+                ) : (
+                  <div className="p-4 rounded-lg bg-surface border border-border text-xs text-text-secondary flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <span>
+                      No CandidateProfile PDA exists yet. Open any completed report’s On-Chain & SBT section to anchor it.
+                    </span>
+                    <Link href="/evaluations">
+                      <Button variant="outline" size="sm" className="shrink-0">
+                        Go to History →
+                      </Button>
+                    </Link>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
