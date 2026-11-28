@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { and, desc, eq, inArray, or } from "drizzle-orm";
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import { db } from "@/lib/db";
 import {
   bounties,
@@ -16,6 +16,7 @@ import { createJobDescription } from "@/lib/job-descriptions";
 import {
   BadRequestError,
   createApiHandler,
+  isAppError,
   successResponse,
 } from "@/lib/shared";
 import {
@@ -27,10 +28,20 @@ import {
   prepareCreateBountyEscrowTx,
 } from "@/lib/solana";
 
+const LOGO_URL_REGEX = /^(https?:\/\/\S+|data:image\/(png|jpeg|jpg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+)$/i;
+
 const PrepareBountySchema = z.object({
   title: z.string().min(2).max(120),
   company: z.string().min(1).max(120),
-  rawText: z.string().min(30).max(25000),
+  companyLogoUrl: z
+    .string()
+    .max(350_000)
+    .refine((val) => !val || LOGO_URL_REGEX.test(val.trim()), {
+      message: "Company logo must be a valid image URL or base64 PNG/JPEG/WEBP data URL.",
+    })
+    .optional()
+    .nullable(),
+  rawText: z.string().min(50, "Job description must be at least 50 characters.").max(25000),
   recruiterWallet: z.string().min(32).max(64),
   minScore: z.number().int().min(50).max(100),
   rewardPerWinnerUsdc: z.number().positive().max(100_000),
@@ -43,6 +54,14 @@ const ConfirmBountySchema = z.object({
   recruiterWallet: z.string().min(32).max(64),
   title: z.string().min(2).max(120),
   company: z.string().min(1).max(120),
+  companyLogoUrl: z
+    .string()
+    .max(350_000)
+    .refine((val) => !val || LOGO_URL_REGEX.test(val.trim()), {
+      message: "Company logo must be a valid image URL or base64 PNG/JPEG/WEBP data URL.",
+    })
+    .optional()
+    .nullable(),
   txSignature: z.string().min(32).max(128),
 });
 
@@ -59,6 +78,7 @@ export const GET = createApiHandler(async (req: Request) => {
       jobDescriptionId: bounties.jobDescriptionId,
       title: bounties.title,
       company: bounties.company,
+      companyLogoUrl: bounties.companyLogoUrl,
       usdcMint: bounties.usdcMint,
       escrowPdaAddress: bounties.escrowPdaAddress,
       vaultAddress: bounties.vaultAddress,
@@ -285,6 +305,14 @@ export const GET = createApiHandler(async (req: Request) => {
   });
 });
 
+function rethrowReadableError(err: unknown, context: string): never {
+  if (isAppError(err) || err instanceof ZodError) {
+    throw err;
+  }
+  const detail = err instanceof Error ? err.message : String(err);
+  throw new BadRequestError(`${context}: ${detail}`);
+}
+
 export const POST = createApiHandler(async (req: Request) => {
   const session = await requireAuth(req.headers);
   const body = await req.json();
@@ -304,22 +332,32 @@ export const POST = createApiHandler(async (req: Request) => {
     throw new BadRequestError("Minimum bounty reward per winner is 0.01 USDC.");
   }
 
-  const jd = await createJobDescription(session.user.id, {
-    title: parsed.title,
-    company: parsed.company,
-    rawText: parsed.rawText,
-  });
+  let jd: Awaited<ReturnType<typeof createJobDescription>>;
+  try {
+    jd = await createJobDescription(session.user.id, {
+      title: parsed.title,
+      company: parsed.company,
+      rawText: parsed.rawText,
+    });
+  } catch (err) {
+    rethrowReadableError(err, "Failed to save bounty job description");
+  }
 
   const expiresAtUnix = Math.floor(Date.now() / 1000) + parsed.expiresInDays * 86_400;
 
-  const prepared = await prepareCreateBountyEscrowTx({
-    recruiterWallet,
-    jobId: jd.id,
-    minScore: parsed.minScore,
-    rewardPerWinnerMicros,
-    maxWinners: parsed.maxWinners,
-    expiresAtUnix,
-  });
+  let prepared: Awaited<ReturnType<typeof prepareCreateBountyEscrowTx>>;
+  try {
+    prepared = await prepareCreateBountyEscrowTx({
+      recruiterWallet,
+      jobId: jd.id,
+      minScore: parsed.minScore,
+      rewardPerWinnerMicros,
+      maxWinners: parsed.maxWinners,
+      expiresAtUnix,
+    });
+  } catch (err) {
+    rethrowReadableError(err, "Failed to prepare Solana escrow transaction");
+  }
 
   return successResponse(
     {
@@ -363,8 +401,13 @@ export const PATCH = createApiHandler(async (req: Request) => {
     throw new BadRequestError("Bounty Job Description not found for current user.");
   }
 
-  await confirmSubmittedSignature(parsed.txSignature);
-  const escrowRes = await fetchOnChainEscrow(jd.id);
+  let escrowRes: Awaited<ReturnType<typeof fetchOnChainEscrow>>;
+  try {
+    await confirmSubmittedSignature(parsed.txSignature);
+    escrowRes = await fetchOnChainEscrow(jd.id);
+  } catch (err) {
+    rethrowReadableError(err, "Failed to verify Solana escrow transaction");
+  }
   if (!escrowRes.escrow) {
     throw new BadRequestError(
       "Transaction confirmed, but BountyEscrow PDA was not found on-chain."
@@ -381,26 +424,33 @@ export const PATCH = createApiHandler(async (req: Request) => {
     return successResponse(existing);
   }
 
-  const [created] = await db
-    .insert(bounties)
-    .values({
-      recruiterUserId: session.user.id,
-      recruiterWallet,
-      jobDescriptionId: jd.id,
-      title: parsed.title,
-      company: parsed.company,
-      usdcMint: escrowRes.escrow.usdcMint,
-      escrowPdaAddress: escrowRes.escrowPda,
-      vaultAddress: escrowRes.vaultPda,
-      createTxSignature: parsed.txSignature,
-      minScore: escrowRes.escrow.minScore,
-      rewardPerWinnerMicros: escrowRes.escrow.rewardPerWinnerMicros,
-      maxWinners: escrowRes.escrow.maxWinners,
-      claimsCount: escrowRes.escrow.claimsCount,
-      status: "active",
-      expiresAt: new Date(escrowRes.escrow.expiresAt * 1000),
-    })
-    .returning();
+  let created: typeof bounties.$inferSelect;
+  try {
+    const [row] = await db
+      .insert(bounties)
+      .values({
+        recruiterUserId: session.user.id,
+        recruiterWallet,
+        jobDescriptionId: jd.id,
+        title: parsed.title,
+        company: parsed.company,
+        companyLogoUrl: parsed.companyLogoUrl?.trim() || null,
+        usdcMint: escrowRes.escrow.usdcMint,
+        escrowPdaAddress: escrowRes.escrowPda,
+        vaultAddress: escrowRes.vaultPda,
+        createTxSignature: parsed.txSignature,
+        minScore: escrowRes.escrow.minScore,
+        rewardPerWinnerMicros: escrowRes.escrow.rewardPerWinnerMicros,
+        maxWinners: escrowRes.escrow.maxWinners,
+        claimsCount: escrowRes.escrow.claimsCount,
+        status: "active",
+        expiresAt: new Date(escrowRes.escrow.expiresAt * 1000),
+      })
+      .returning();
+    created = row;
+  } catch (err) {
+    rethrowReadableError(err, "Failed to save confirmed bounty record");
+  }
 
   return successResponse({
     ...created,

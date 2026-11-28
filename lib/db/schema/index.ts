@@ -677,6 +677,7 @@ export const bounties = pgTable(
       .references(() => jobDescriptions.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     company: text("company").notNull(),
+    companyLogoUrl: text("company_logo_url"),
     usdcMint: text("usdc_mint").notNull(),
     escrowPdaAddress: text("escrow_pda_address").notNull().unique(),
     vaultAddress: text("vault_address").notNull(),

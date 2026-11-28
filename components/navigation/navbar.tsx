@@ -29,15 +29,16 @@ export const Navbar: React.FC = () => {
     { label: "Role Compare", href: "/comparisons" },
     { label: "Plans", href: "/billing" },
     ...(isSuperAdmin ? [{ label: "Admin", href: "/admin" }] : []),
+    ...(session ? [{ label: "On-Chain & SBT", href: "/profile?tab=solana" }] : []),
     ...(session ? [{ label: "History", href: "/evaluations" }] : []),
   ];
 
   return (
     <div className="sticky top-2 z-50 w-full max-w-full px-3 sm:px-6 lg:px-8 pointer-events-none transition-all">
-      {/* Rectangular Rounded Navigation Bar */}
-      <header className="w-full max-w-6xl mx-auto rounded-2xl border border-border/80 bg-surface/90 backdrop-blur-md px-4 sm:px-6 h-14 sm:h-15 flex items-center justify-between shadow-xs pointer-events-auto transition-colors">
+      {/* Rectangular Navigation Bar */}
+      <header className="w-full max-w-7xl mx-auto rounded-xl border border-border/80 bg-surface/90 backdrop-blur-md px-4 sm:px-6 h-14 sm:h-15 flex items-center justify-between shadow-xs pointer-events-auto transition-colors">
         {/* Brand & Left Links */}
-        <div className="flex items-center gap-6 sm:gap-8">
+        <div className="flex items-center gap-5 sm:gap-7">
           <Link href="/" className="flex items-center gap-2 group shrink-0">
             <Image
               src="/logo/logo.png"
@@ -50,14 +51,14 @@ export const Navbar: React.FC = () => {
           </Link>
 
           {/* Desktop Nav Links */}
-          <nav className="hidden md:flex items-center gap-1.5">
+          <nav className="hidden md:flex items-center gap-1">
             {navLinks.map((link) => {
               const isActive = pathname === link.href;
               return (
                 <Link
                   key={link.href}
                   href={link.href}
-                  className={`px-3.5 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
                     isActive
                       ? "bg-surface-elevated text-text font-semibold border border-border"
                       : "text-text-secondary hover:text-text hover:bg-surface-elevated/60"

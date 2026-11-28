@@ -250,7 +250,7 @@ export const EvaluationOnChainPanel: React.FC<{
   const isSbtMinted = Boolean(state.sbtMintAddress || state.onChainEval?.sbtMinted);
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-5 sm:p-6 space-y-5">
+    <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-6">
       {state.bountyContext && (
         <div className="p-3.5 rounded-lg bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div>

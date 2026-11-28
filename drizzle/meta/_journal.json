@@ -43,6 +43,13 @@
       "when": 1795817589219,
       "tag": "0005_skinny_moonstone",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795843283852,
+      "tag": "0006_daffy_skrulls",
+      "breakpoints": true
     }
   ]
 }

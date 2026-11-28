@@ -7,10 +7,48 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Alert } from "@/components/ui/alert";
 import { apiFetch } from "@/lib/client/api";
 import { useSession } from "@/lib/auth/auth-client";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
+import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
+
+async function resizeLogoFileToDataUrl(file: File): Promise<string> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Please select a PNG, JPEG, or WebP image for the company logo.");
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("Logo image file must be under 5 MB.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read logo image file."));
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onerror = () => reject(new Error("Invalid image file format."));
+      img.onload = () => {
+        const maxDim = 160;
+        const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+        const width = Math.max(1, Math.round((img.width || maxDim) * scale));
+        const height = Math.max(1, Math.round((img.height || maxDim) * scale));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Browser canvas unavailable to process logo image."));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/webp", 0.85);
+        resolve(dataUrl);
+      };
+      img.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function NewBountyPage() {
   const router = useRouter();
@@ -20,6 +58,8 @@ export default function NewBountyPage() {
 
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
+  const [companyLogoUrl, setCompanyLogoUrl] = useState<string | null>(null);
+  const [logoError, setLogoError] = useState<string | null>(null);
   const [minScore, setMinScore] = useState("85");
   const [rewardPerWinner, setRewardPerWinner] = useState("20");
   const [maxWinners, setMaxWinners] = useState("5");
@@ -30,6 +70,18 @@ export default function NewBountyPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const totalPoolUsdc = (Number(rewardPerWinner) || 0) * (Number(maxWinners) || 0);
+
+  const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    setLogoError(null);
+    if (!file) return;
+    try {
+      const dataUrl = await resizeLogoFileToDataUrl(file);
+      setCompanyLogoUrl(dataUrl);
+    } catch (err) {
+      setLogoError(err instanceof Error ? err.message : "Failed to load logo image.");
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,11 +96,11 @@ export default function NewBountyPage() {
       return;
     }
     if (!title.trim() || !company.trim()) {
-      setErrorMessage("Please enter both role title and company name.");
+      setErrorMessage("Please enter both company name and role title.");
       return;
     }
-    if (rawText.trim().length < 30) {
-      setErrorMessage("Job description must be at least 30 characters.");
+    if (rawText.trim().length < 50) {
+      setErrorMessage("Job description must be at least 50 characters long.");
       return;
     }
 
@@ -63,6 +115,7 @@ export default function NewBountyPage() {
         body: JSON.stringify({
           title: title.trim(),
           company: company.trim(),
+          companyLogoUrl,
           rawText: rawText.trim(),
           recruiterWallet: publicKey,
           minScore: Number(minScore),
@@ -81,6 +134,7 @@ export default function NewBountyPage() {
           recruiterWallet: publicKey,
           title: title.trim(),
           company: company.trim(),
+          companyLogoUrl,
           txSignature,
         }),
       });
@@ -101,7 +155,7 @@ export default function NewBountyPage() {
   };
 
   return (
-    <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
       {/* Header matching /evaluations/new */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border">
         <div className="space-y-1">
@@ -111,45 +165,47 @@ export default function NewBountyPage() {
           >
             ← Back to Bounties
           </Link>
-          <h1 className="text-2xl font-bold text-text">
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-text">
             Post USDC Bounty Escrow
           </h1>
         </div>
-        <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-text-secondary">
+        <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-purple-400">
           Solana {clusterLabel} · USDC
         </span>
       </div>
 
       {errorMessage && (
-        <Alert
-          variant="danger"
-          title="Escrow Transaction Failed"
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setErrorMessage(null)}
-            >
-              Dismiss
-            </Button>
-          }
-        >
-          {errorMessage}
-        </Alert>
+        <div className="rounded-xl border border-border bg-surface p-4 sm:p-5 flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-purple-400">
+              Escrow Transaction Failed
+            </h3>
+            <p className="text-xs sm:text-sm text-text leading-relaxed">
+              {errorMessage}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setErrorMessage(null)}
+          >
+            Dismiss
+          </Button>
+        </div>
       )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Left Column: Pool Terms & Wallet Summary */}
           <div className="lg:col-span-5 space-y-6">
-            <Card className="bg-surface border-border">
+            <Card className="bg-surface border-border rounded-xl">
               <CardHeader className="pb-3 border-b border-border">
                 <CardTitle className="text-base font-bold text-text">
                   1. Bounty Pool & Threshold
                 </CardTitle>
               </CardHeader>
-              <CardContent className="pt-4 space-y-4">
-                <div className="grid grid-cols-2 gap-3">
+              <CardContent className="pt-5 space-y-4">
+                <div className="grid grid-cols-2 gap-3.5">
                   <Input
                     label="Minimum Score (50–100)"
                     type="number"
@@ -195,7 +251,7 @@ export default function NewBountyPage() {
                       {totalPoolUsdc.toFixed(2)} USDC
                     </span>
                   </div>
-                  <p className="text-[11px] text-text-secondary leading-relaxed">
+                  <p className="text-xs text-text-secondary leading-relaxed">
                     Up to {maxWinners || 1} candidate(s) scoring{" "}
                     <span className="font-semibold text-text">
                       {minScore || 85}/100+
@@ -210,20 +266,20 @@ export default function NewBountyPage() {
               </CardContent>
             </Card>
 
-            <Card className="bg-surface border-border">
+            <Card className="bg-surface border-border rounded-xl">
               <CardHeader className="pb-3 border-b border-border">
                 <CardTitle className="text-base font-bold text-text">
                   2. Funding Wallet
                 </CardTitle>
               </CardHeader>
-              <CardContent className="pt-4 space-y-3">
+              <CardContent className="pt-5 space-y-3">
                 {publicKey ? (
-                  <div className="p-3.5 rounded-lg bg-surface-elevated border border-border space-y-1">
+                  <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-1">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] font-mono text-text-muted uppercase">
                         Connected Wallet ({clusterLabel})
                       </span>
-                      <span className="text-[11px] font-mono text-purple-400">
+                      <span className="text-[11px] font-mono text-purple-400 font-semibold">
                         Ready
                       </span>
                     </div>
@@ -239,8 +295,8 @@ export default function NewBountyPage() {
                     <Button
                       type="button"
                       variant="primary"
-                      size="sm"
-                      className="w-full font-semibold"
+                      size="md"
+                      className="w-full"
                       onClick={openConnectModal}
                     >
                       Connect Solana Wallet
@@ -251,15 +307,15 @@ export default function NewBountyPage() {
             </Card>
           </div>
 
-          {/* Right Column: Target Role & Requirements */}
+          {/* Right Column: Target Role, Company Logo & Requirements */}
           <div className="lg:col-span-7">
-            <Card className="bg-surface border-border h-full flex flex-col justify-between">
+            <Card className="bg-surface border-border rounded-xl h-full flex flex-col justify-between">
               <CardHeader className="pb-3 border-b border-border">
                 <CardTitle className="text-base font-bold text-text">
-                  3. Target Role & Requirements
+                  3. Target Role & Company Details
                 </CardTitle>
               </CardHeader>
-              <CardContent className="pt-4 space-y-4 flex-1 flex flex-col">
+              <CardContent className="pt-5 space-y-5 flex-1 flex flex-col">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <Input
                     label="Company / Organization *"
@@ -277,6 +333,51 @@ export default function NewBountyPage() {
                   />
                 </div>
 
+                {/* Optional Company Logo Upload */}
+                <div className="p-4 rounded-lg bg-surface-elevated border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <BountyCompanyLogo
+                      company={company || "CO"}
+                      logoUrl={companyLogoUrl}
+                      size="lg"
+                    />
+                    <div className="space-y-0.5 min-w-0">
+                      <p className="text-xs font-bold text-text">
+                        Company Logo (Optional)
+                      </p>
+                      <p className="text-[11px] text-text-secondary">
+                        Upload PNG, JPEG, or WebP to display on your bounty listing.
+                      </p>
+                      {logoError && (
+                        <p className="text-[11px] text-purple-400 font-semibold">
+                          {logoError}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <label className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:border-purple-500/50 text-xs font-semibold text-text cursor-pointer transition-colors">
+                      {companyLogoUrl ? "Change Logo" : "Upload Logo"}
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={(e) => void handleLogoChange(e)}
+                        className="sr-only"
+                      />
+                    </label>
+                    {companyLogoUrl && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setCompanyLogoUrl(null)}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
                 <div className="flex-1 flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-text">
                     Full Job Description *
@@ -290,7 +391,7 @@ export default function NewBountyPage() {
                     required
                   />
                   <span className="text-[11px] font-mono text-text-muted text-right">
-                    {rawText.trim().length} characters (min 30)
+                    {rawText.trim().length} characters (min 50)
                   </span>
                 </div>
               </CardContent>
@@ -300,9 +401,14 @@ export default function NewBountyPage() {
 
         {/* Inline Error Mirror */}
         {errorMessage && (
-          <Alert variant="danger" title="Transaction Error">
-            {errorMessage}
-          </Alert>
+          <div className="rounded-xl border border-border bg-surface p-4 flex items-center justify-between gap-4">
+            <div className="space-y-0.5">
+              <span className="text-xs font-bold text-purple-400 uppercase font-mono">
+                Transaction Error
+              </span>
+              <p className="text-xs sm:text-sm text-text">{errorMessage}</p>
+            </div>
+          </div>
         )}
 
         {/* Submit Button */}

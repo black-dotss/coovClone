@@ -507,11 +507,25 @@ async function resolveUsdcTokenProgram(usdcMint: PublicKey): Promise<PublicKey> 
   const connection = getSolanaConnection();
   const mintInfo = await connection.getAccountInfo(usdcMint, "confirmed");
   if (!mintInfo) {
-    throw new Error(`USDC mint account (${usdcMint.toBase58()}) not found on cluster.`);
+    throw new BadRequestError(
+      `USDC mint account (${usdcMint.toBase58()}) was not found on Solana Devnet.`
+    );
   }
   return mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
     ? TOKEN_2022_PROGRAM_ID
     : TOKEN_PROGRAM_ID;
+}
+
+function wrapSolanaRpcError(err: unknown, contextLabel: string): BadRequestError {
+  if (err instanceof BadRequestError) return err;
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/COOV_ORACLE_PRIVATE_KEY/i.test(raw)) {
+    return new BadRequestError("Solana server oracle configuration is missing on the server.");
+  }
+  if (/429|Too Many Requests/i.test(raw)) {
+    return new BadRequestError("Solana Devnet RPC is temporarily rate-limited. Please retry in a few seconds.");
+  }
+  return new BadRequestError(`${contextLabel}: ${raw}`);
 }
 
 /**
@@ -532,83 +546,87 @@ export async function prepareCreateBountyEscrowTx(params: {
   recentBlockhash: string;
   lastValidBlockHeight: number;
 }> {
-  const connection = getSolanaConnection();
-  const programId = getProgramId();
-  const usdcMint = getUsdcMint();
-  const recruiterPubkey = new PublicKey(params.recruiterWallet);
-  const tokenProgramId = await resolveUsdcTokenProgram(usdcMint);
+  try {
+    const connection = getSolanaConnection();
+    const programId = getProgramId();
+    const usdcMint = getUsdcMint();
+    const recruiterPubkey = new PublicKey(params.recruiterWallet);
+    const tokenProgramId = await resolveUsdcTokenProgram(usdcMint);
 
-  const [escrowPda] = deriveEscrowPda(params.jobId, programId);
-  const [vaultPda] = deriveEscrowVaultPda(escrowPda, programId);
+    const [escrowPda] = deriveEscrowPda(params.jobId, programId);
+    const [vaultPda] = deriveEscrowVaultPda(escrowPda, programId);
 
-  const existingEscrow = await connection.getAccountInfo(escrowPda, "confirmed");
-  if (existingEscrow) {
-    throw new Error(`Bounty escrow PDA (${escrowPda.toBase58()}) already exists for this job.`);
-  }
+    const existingEscrow = await connection.getAccountInfo(escrowPda, "confirmed");
+    if (existingEscrow) {
+      throw new BadRequestError(`Bounty escrow PDA (${escrowPda.toBase58()}) already exists for this job.`);
+    }
 
-  const solBalance = await connection.getBalance(recruiterPubkey, "confirmed");
-  if (solBalance < 2_500_000) {
-    throw new BadRequestError(
-      `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for escrow rent and network fees. Fund at least 0.003 SOL.`
-    );
-  }
+    const solBalance = await connection.getBalance(recruiterPubkey, "confirmed");
+    if (solBalance < 2_500_000) {
+      throw new BadRequestError(
+        `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) for escrow rent and network fees. Fund at least 0.003 SOL.`
+      );
+    }
 
-  const recruiterAta = getAssociatedTokenAddressSync(
-    usdcMint,
-    recruiterPubkey,
-    false,
-    tokenProgramId,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
-  const ataInfo = await connection.getAccountInfo(recruiterAta, "confirmed");
-  if (!ataInfo) {
-    throw new BadRequestError(
-      `Your connected wallet (${params.recruiterWallet.slice(0, 6)}...${params.recruiterWallet.slice(-4)}) has 0 Devnet USDC (${usdcMint.toBase58()}).`
-    );
-  }
-  const balance = await connection.getTokenAccountBalance(recruiterAta, "confirmed");
-  const availableMicros = BigInt(balance.value.amount || "0");
-  const requiredMicros = BigInt(params.rewardPerWinnerMicros) * BigInt(params.maxWinners);
-  if (availableMicros < requiredMicros) {
-    const reqUsdc = (Number(requiredMicros) / 1_000_000).toFixed(2);
-    const haveUsdc = (Number(availableMicros) / 1_000_000).toFixed(2);
-    throw new BadRequestError(
-      `Insufficient Devnet USDC balance: funding this pool requires ${reqUsdc} USDC, but your wallet only holds ${haveUsdc} USDC.`
-    );
-  }
-
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
-  const tx = new Transaction({
-    feePayer: recruiterPubkey,
-    blockhash,
-    lastValidBlockHeight,
-  }).add(
-    buildCreateBountyEscrowIx({
-      recruiter: recruiterPubkey,
+    const recruiterAta = getAssociatedTokenAddressSync(
       usdcMint,
-      jobId: params.jobId,
-      minScore: params.minScore,
-      rewardPerWinnerMicros: params.rewardPerWinnerMicros,
-      maxWinners: params.maxWinners,
-      expiresAtUnix: params.expiresAtUnix,
+      recruiterPubkey,
+      false,
       tokenProgramId,
-      programId,
-    })
-  );
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    const ataInfo = await connection.getAccountInfo(recruiterAta, "confirmed");
+    if (!ataInfo) {
+      throw new BadRequestError(
+        `Your connected wallet (${params.recruiterWallet.slice(0, 6)}...${params.recruiterWallet.slice(-4)}) has 0 Devnet USDC (${usdcMint.toBase58()}).`
+      );
+    }
+    const balance = await connection.getTokenAccountBalance(recruiterAta, "confirmed");
+    const availableMicros = BigInt(balance.value.amount || "0");
+    const requiredMicros = BigInt(params.rewardPerWinnerMicros) * BigInt(params.maxWinners);
+    if (availableMicros < requiredMicros) {
+      const reqUsdc = (Number(requiredMicros) / 1_000_000).toFixed(2);
+      const haveUsdc = (Number(availableMicros) / 1_000_000).toFixed(2);
+      throw new BadRequestError(
+        `Insufficient Devnet USDC balance: funding this pool requires ${reqUsdc} USDC, but your wallet only holds ${haveUsdc} USDC.`
+      );
+    }
 
-  const serialized = tx.serialize({
-    requireAllSignatures: false,
-    verifySignatures: false,
-  });
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+    const tx = new Transaction({
+      feePayer: recruiterPubkey,
+      blockhash,
+      lastValidBlockHeight,
+    }).add(
+      buildCreateBountyEscrowIx({
+        recruiter: recruiterPubkey,
+        usdcMint,
+        jobId: params.jobId,
+        minScore: params.minScore,
+        rewardPerWinnerMicros: params.rewardPerWinnerMicros,
+        maxWinners: params.maxWinners,
+        expiresAtUnix: params.expiresAtUnix,
+        tokenProgramId,
+        programId,
+      })
+    );
 
-  return {
-    serializedTxBase64: bytesToBase64(serialized),
-    escrowPda: escrowPda.toBase58(),
-    vaultPda: vaultPda.toBase58(),
-    usdcMint: usdcMint.toBase58(),
-    recentBlockhash: blockhash,
-    lastValidBlockHeight,
-  };
+    const serialized = tx.serialize({
+      requireAllSignatures: false,
+      verifySignatures: false,
+    });
+
+    return {
+      serializedTxBase64: bytesToBase64(serialized),
+      escrowPda: escrowPda.toBase58(),
+      vaultPda: vaultPda.toBase58(),
+      usdcMint: usdcMint.toBase58(),
+      recentBlockhash: blockhash,
+      lastValidBlockHeight,
+    };
+  } catch (err) {
+    throw wrapSolanaRpcError(err, "Unable to prepare bounty escrow transaction on Solana Devnet");
+  }
 }
 
 /**
@@ -821,7 +839,7 @@ export async function confirmSubmittedSignature(signature: string): Promise<{
   const connection = getSolanaConnection();
   const result = await confirmSignatureViaPolling(connection, signature, 50_000);
   if (!result.confirmed) {
-    throw new Error(
+    throw new BadRequestError(
       `Solana transaction ${signature} failed to confirm: ${JSON.stringify(result.err ?? "timeout")}`
     );
   }
@@ -998,94 +1016,98 @@ export async function prepareUsdcPlanPaymentTx(params: {
   recentBlockhash: string;
   lastValidBlockHeight: number;
 }> {
-  const connection = getSolanaConnection();
-  const payerPubkey = new PublicKey(params.payerWallet);
-  const usdcMint = getUsdcMint();
-  const treasuryPubkey = getTreasuryWallet();
-  const tokenProgramId = await resolveUsdcTokenProgram(usdcMint);
+  try {
+    const connection = getSolanaConnection();
+    const payerPubkey = new PublicKey(params.payerWallet);
+    const usdcMint = getUsdcMint();
+    const treasuryPubkey = getTreasuryWallet();
+    const tokenProgramId = await resolveUsdcTokenProgram(usdcMint);
 
-  const solBalance = await connection.getBalance(payerPubkey, "confirmed");
-  if (solBalance < 2_500_000) {
-    throw new BadRequestError(
-      `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) to pay network fees. Please fund your wallet with Devnet SOL.`
+    const solBalance = await connection.getBalance(payerPubkey, "confirmed");
+    if (solBalance < 2_500_000) {
+      throw new BadRequestError(
+        `Insufficient Devnet SOL (${(solBalance / 1_000_000_000).toFixed(4)} SOL) to pay network fees. Please fund your wallet with Devnet SOL.`
+      );
+    }
+
+    const senderAta = getAssociatedTokenAddressSync(
+      usdcMint,
+      payerPubkey,
+      false,
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID
     );
-  }
-
-  const senderAta = getAssociatedTokenAddressSync(
-    usdcMint,
-    payerPubkey,
-    false,
-    tokenProgramId,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
-  const treasuryAta = getAssociatedTokenAddressSync(
-    usdcMint,
-    treasuryPubkey,
-    false,
-    tokenProgramId,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
-
-  const senderAtaInfo = await connection.getAccountInfo(senderAta, "confirmed");
-  if (!senderAtaInfo) {
-    throw new BadRequestError(
-      `Insufficient Devnet USDC balance: wallet ${params.payerWallet.slice(0, 6)}...${params.payerWallet.slice(-4)} holds 0.00 USDC (need ${params.usdcAmount} USDC).`
+    const treasuryAta = getAssociatedTokenAddressSync(
+      usdcMint,
+      treasuryPubkey,
+      false,
+      tokenProgramId,
+      ASSOCIATED_TOKEN_PROGRAM_ID
     );
-  }
 
-  const requiredMicros = BigInt(Math.round(params.usdcAmount * 1_000_000));
-  const balance = await connection.getTokenAccountBalance(senderAta, "confirmed");
-  const availableMicros = BigInt(balance.value.amount || "0");
-  if (availableMicros < requiredMicros) {
-    throw new BadRequestError(
-      `Insufficient Devnet USDC balance: this plan costs ${params.usdcAmount} USDC, but your wallet only holds ${(Number(availableMicros) / 1_000_000).toFixed(2)} USDC.`
-    );
-  }
+    const senderAtaInfo = await connection.getAccountInfo(senderAta, "confirmed");
+    if (!senderAtaInfo) {
+      throw new BadRequestError(
+        `Insufficient Devnet USDC balance: wallet ${params.payerWallet.slice(0, 6)}...${params.payerWallet.slice(-4)} holds 0.00 USDC (need ${params.usdcAmount} USDC).`
+      );
+    }
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
-  const tx = new Transaction({
-    feePayer: payerPubkey,
-    blockhash,
-    lastValidBlockHeight,
-  })
-    .add(
-      createAssociatedTokenAccountIdempotentInstruction(
-        payerPubkey,
-        treasuryAta,
-        treasuryPubkey,
-        usdcMint,
-        tokenProgramId,
-        ASSOCIATED_TOKEN_PROGRAM_ID
+    const requiredMicros = BigInt(Math.round(params.usdcAmount * 1_000_000));
+    const balance = await connection.getTokenAccountBalance(senderAta, "confirmed");
+    const availableMicros = BigInt(balance.value.amount || "0");
+    if (availableMicros < requiredMicros) {
+      throw new BadRequestError(
+        `Insufficient Devnet USDC balance: this plan costs ${params.usdcAmount} USDC, but your wallet only holds ${(Number(availableMicros) / 1_000_000).toFixed(2)} USDC.`
+      );
+    }
+
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+    const tx = new Transaction({
+      feePayer: payerPubkey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+      .add(
+        createAssociatedTokenAccountIdempotentInstruction(
+          payerPubkey,
+          treasuryAta,
+          treasuryPubkey,
+          usdcMint,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
       )
-    )
-    .add(
-      createTransferCheckedInstruction(
-        senderAta,
-        usdcMint,
-        treasuryAta,
-        payerPubkey,
-        requiredMicros,
-        6,
-        [],
-        tokenProgramId
-      )
-    );
+      .add(
+        createTransferCheckedInstruction(
+          senderAta,
+          usdcMint,
+          treasuryAta,
+          payerPubkey,
+          requiredMicros,
+          6,
+          [],
+          tokenProgramId
+        )
+      );
 
-  const serialized = tx.serialize({
-    requireAllSignatures: false,
-    verifySignatures: false,
-  });
+    const serialized = tx.serialize({
+      requireAllSignatures: false,
+      verifySignatures: false,
+    });
 
-  return {
-    serializedTxBase64: bytesToBase64(serialized),
-    amountUsdc: params.usdcAmount,
-    amountMicros: requiredMicros.toString(),
-    treasuryWallet: treasuryPubkey.toBase58(),
-    treasuryAta: treasuryAta.toBase58(),
-    usdcMint: usdcMint.toBase58(),
-    recentBlockhash: blockhash,
-    lastValidBlockHeight,
-  };
+    return {
+      serializedTxBase64: bytesToBase64(serialized),
+      amountUsdc: params.usdcAmount,
+      amountMicros: requiredMicros.toString(),
+      treasuryWallet: treasuryPubkey.toBase58(),
+      treasuryAta: treasuryAta.toBase58(),
+      usdcMint: usdcMint.toBase58(),
+      recentBlockhash: blockhash,
+      lastValidBlockHeight,
+    };
+  } catch (err) {
+    throw wrapSolanaRpcError(err, "Unable to prepare USDC plan checkout transaction");
+  }
 }
 
 /**

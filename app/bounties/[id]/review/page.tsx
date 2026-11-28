@@ -4,12 +4,12 @@ import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
+import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
 
 interface FraudSignal {
   category: string;
@@ -91,6 +91,7 @@ interface WorkspaceResponse {
     id: string;
     title: string;
     company: string;
+    companyLogoUrl?: string | null;
     minScore: number;
     maxWinners: number;
     claimsCount: number;
@@ -314,9 +315,14 @@ export default function BountyPublisherReviewPage() {
         >
           ← Back to Bounties
         </Link>
-        <Alert variant="danger" title="Access Denied or Not Found">
-          {error || "Unable to load this bounty review workspace."}
-        </Alert>
+        <div className="rounded-xl border border-border bg-surface p-5 space-y-1.5">
+          <p className="text-sm font-semibold text-purple-400">
+            Access Denied or Not Found
+          </p>
+          <p className="text-sm text-text-secondary">
+            {error || "Unable to load this bounty review workspace."}
+          </p>
+        </div>
       </div>
     );
   }
@@ -332,7 +338,12 @@ export default function BountyPublisherReviewPage() {
           >
             ← Back to Bounties
           </Link>
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-3">
+            <BountyCompanyLogo
+              company={data.bounty.company}
+              logoUrl={data.bounty.companyLogoUrl}
+              size="lg"
+            />
             <h1 className="text-2xl sm:text-3xl font-extrabold text-text">
               Publisher Review · {data.bounty.title}
             </h1>
@@ -352,22 +363,21 @@ export default function BountyPublisherReviewPage() {
       </div>
 
       {error && (
-        <Alert
-          variant="danger"
-          title="Review Action Notice"
-          action={
-            <Button variant="outline" size="sm" onClick={() => setError(null)}>
-              Dismiss
-            </Button>
-          }
-        >
-          {error}
-        </Alert>
+        <div className="rounded-xl border border-border bg-surface p-5 flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-purple-400">Review Action Notice</p>
+            <p className="text-sm text-text-secondary">{error}</p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setError(null)}>
+            Dismiss
+          </Button>
+        </div>
       )}
       {notice && (
-        <Alert variant="success" title="Review Updated">
-          {notice}
-        </Alert>
+        <div className="rounded-xl border border-border bg-surface p-5 space-y-1">
+          <p className="text-sm font-semibold text-purple-400">Review Updated</p>
+          <p className="text-sm text-text-secondary">{notice}</p>
+        </div>
       )}
 
       {/* Slot & Anti-Fraud Metrics Bar */}

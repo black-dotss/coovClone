@@ -21,6 +21,7 @@ import { getCompanyLogo } from "@/components/ui/company-logo";
 import { preloadAgentAvatars } from "@/components/ui/avatar";
 import { useSession } from "@/lib/auth/auth-client";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
+import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
 
 type BenchmarkPreset = FamousRolePreset;
 
@@ -62,6 +63,7 @@ interface ActiveBountyTarget {
   jobDescriptionId: string;
   title: string;
   company: string;
+  companyLogoUrl?: string | null;
   minScore: number;
   rewardPerWinnerUsdc: number;
   rawText: string;
@@ -345,34 +347,54 @@ export default function NewEvaluationPage() {
       )}
 
       {bountyRestriction && activeBounty && (
-        <Alert
-          variant="danger"
-          title={`Restricted from Bounty (${bountyRestriction.reason.replace(/_/g, " ")})`}
-        >
-          {bountyRestriction.details} You cannot submit or claim on{" "}
-          <strong>{activeBounty.title}</strong>.
-        </Alert>
+        <div className="rounded-xl border border-border bg-surface p-5 space-y-1.5">
+          <div className="flex items-center gap-3">
+            <BountyCompanyLogo
+              company={activeBounty.company}
+              logoUrl={activeBounty.companyLogoUrl}
+              size="sm"
+            />
+            <h3 className="text-sm font-bold text-purple-400">
+              Restricted from Bounty ({bountyRestriction.reason.replace(/_/g, " ")})
+            </h3>
+          </div>
+          <p className="text-xs sm:text-sm text-text leading-relaxed">
+            {bountyRestriction.details} You cannot submit or claim on{" "}
+            <strong>{activeBounty.title}</strong>.
+          </p>
+        </div>
       )}
 
       {activeBounty && !bountyRestriction && (
-        <Alert
-          variant="info"
-          title={`Solana USDC Bounty Mode · ${activeBounty.rewardPerWinnerUsdc} USDC Reward`}
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setActiveBounty(null)}
-            >
-              Detach Bounty
-            </Button>
-          }
-        >
-          Targeting <strong>{activeBounty.title}</strong> at{" "}
-          <strong>{activeBounty.company}</strong>. Resumes undergo SHA-256 duplicate &
-          Fake Resume Detector gating. Scoring {activeBounty.minScore}/100+ reserves your
-          winner slot in a 24h recruiter review window before payout release.
-        </Alert>
+        <div className="rounded-xl border border-border bg-surface p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5 min-w-0">
+            <BountyCompanyLogo
+              company={activeBounty.company}
+              logoUrl={activeBounty.companyLogoUrl}
+              size="md"
+            />
+            <div className="space-y-1 min-w-0">
+              <div className="text-sm font-bold text-purple-400">
+                Solana USDC Bounty Mode · {activeBounty.rewardPerWinnerUsdc} USDC Reward
+              </div>
+              <p className="text-xs sm:text-sm text-text-secondary leading-relaxed">
+                Targeting <strong className="text-text">{activeBounty.title}</strong> at{" "}
+                <strong className="text-text">{activeBounty.company}</strong>. Resumes undergo
+                SHA-256 duplicate &amp; Fake Resume Detector gating. Scoring{" "}
+                {activeBounty.minScore}/100+ reserves your winner slot in a 24h recruiter
+                review window before payout release.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => setActiveBounty(null)}
+          >
+            Detach Bounty
+          </Button>
+        </div>
       )}
 
       {/* Main Review Form */}
