@@ -270,7 +270,17 @@ export default function NewBountyPage() {
                   </div>
                 </div>
 
-                <div className="p-4 rounded-xl bg-purple-50/45 dark:bg-purple-500/[0.05] border border-purple-300/60 dark:border-purple-500/20 space-y-3">
+              </CardContent>
+            </Card>
+
+            <Card className="bg-surface border-border rounded-xl">
+              <CardHeader className="pb-3 border-b border-border">
+                <CardTitle className="text-base font-bold text-text">
+                  2. Total Escrow Lock
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-5">
+                <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-3">
                   <div className="flex items-baseline justify-between gap-3">
                     <span className="text-xs font-semibold text-text-secondary">
                       Total Escrow Lock
@@ -280,9 +290,11 @@ export default function NewBountyPage() {
                     </span>
                   </div>
 
-                  <div className="space-y-1.5 pt-2.5 border-t border-purple-200/60 dark:border-purple-500/15 text-xs">
+                  <div className="space-y-1.5 pt-2.5 border-t border-border/60 text-xs">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-text-muted">Applicant Stake ({normalizedStakePct}%)</span>
+                      <span className="text-text-muted">
+                        Applicant Stake ({normalizedStakePct}%)
+                      </span>
                       <span className="font-mono font-semibold text-text whitespace-nowrap">
                         {stakePerCandidateUsdc.toFixed(2)} USDC
                       </span>
@@ -300,46 +312,6 @@ export default function NewBountyPage() {
                     <strong className="text-text">{rewardPerWinner || 0} USDC</strong>, full stake refund, and pro-rata slashed fraud yield. Stakes are waived for 2+ streak VIPs.
                   </p>
                 </div>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-surface border-border rounded-xl">
-              <CardHeader className="pb-3 border-b border-border">
-                <CardTitle className="text-base font-bold text-text">
-                  2. Funding Wallet
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-5 space-y-3">
-                {publicKey ? (
-                  <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-mono text-text-muted uppercase">
-                        Connected Wallet ({clusterLabel})
-                      </span>
-                      <span className="text-[11px] font-mono text-purple-400 font-semibold">
-                        Ready
-                      </span>
-                    </div>
-                    <p className="font-mono text-xs text-text break-all">
-                      {publicKey}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <p className="text-xs text-text-secondary">
-                      Connect your Solana {clusterLabel} wallet containing USDC and SOL for fees.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="primary"
-                      size="md"
-                      className="w-full"
-                      onClick={openConnectModal}
-                    >
-                      Connect Solana Wallet
-                    </Button>
-                  </div>
-                )}
               </CardContent>
             </Card>
           </div>
