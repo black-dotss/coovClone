@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/ui/progress-bar";
-import { FullPageLoading, LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
@@ -281,7 +282,7 @@ export default function BountiesPage() {
     }
   };
 
-  if (navigatingToNew) {
+  if (navigatingToNew || (loading && !data)) {
     return <FullPageLoading />;
   }
 
@@ -386,17 +387,11 @@ export default function BountiesPage() {
         ) : null
       )}
 
-      {error && (
-        <div className="rounded-xl border border-border bg-surface p-5 flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-bold text-purple-400">Bounty Notice</h3>
-            <p className="text-xs sm:text-sm text-text leading-relaxed">{error}</p>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => setError(null)}>
-            Dismiss
-          </Button>
-        </div>
-      )}
+      <ErrorPopup
+        title="Bounty Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
       {notice && (
         <div className="rounded-xl border border-border bg-surface p-5 flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -410,11 +405,7 @@ export default function BountiesPage() {
       )}
 
       {/* Bounties List */}
-      {loading ? (
-        <div className="py-16 flex justify-center">
-          <LoadingSpinner size="lg" label="Loading Devnet USDC bounty escrows..." />
-        </div>
-      ) : !data?.bounties || data.bounties.length === 0 ? (
+      {!data?.bounties || data.bounties.length === 0 ? (
         <div className="rounded-xl border border-border bg-surface p-12 text-center space-y-4">
           <h2 className="text-xl font-bold text-text">No Active Bounties Yet</h2>
           <p className="text-xs sm:text-sm text-text-secondary max-w-md mx-auto">

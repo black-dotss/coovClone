@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { getCompanyLogo } from "@/components/ui/company-logo";
 import {
@@ -505,24 +505,11 @@ export default function ComparisonsPage() {
         </Button>
       </div>
 
-      {error && (
-        <Alert
-          variant="danger"
-          title="Notice"
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setError(null)}
-              className="text-xs"
-            >
-              Dismiss
-            </Button>
-          }
-        >
-          {error}
-        </Alert>
-      )}
+      <ErrorPopup
+        title="Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
 
       {/* Main Content */}
       <div className="space-y-8">

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -183,11 +184,11 @@ export const ProfileOnChainPanel: React.FC = () => {
           </Button>
         </div>
 
-        {error && (
-          <Alert variant="danger" title="Solana Error">
-            {error}
-          </Alert>
-        )}
+        <ErrorPopup
+          title="Solana Error"
+          message={error}
+          onDismiss={() => setError(null)}
+        />
         {success && (
           <Alert variant="success" title="Wallet Verified">
             {success}

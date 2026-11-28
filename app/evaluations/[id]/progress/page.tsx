@@ -4,7 +4,8 @@ import React, { useEffect, useState, useRef } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Avatar, AgentRoleKey, preloadAgentAvatars } from "@/components/ui/avatar";
-import { InfinityLoop } from "@/components/loading-ui/infinity";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/client/api";
 
 interface DebateTurn {
@@ -98,6 +99,7 @@ export default function LiveDebateProgressPage() {
   const [bountyContext, setBountyContext] = useState<EvaluationProgressEvent["bountyContext"]>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const statusRef = useRef<EvaluationProgressEvent["status"]>("queued");
   const eventSourceRef = useRef<EventSource | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -139,6 +141,7 @@ export default function LiveDebateProgressPage() {
       if (isInitialMount) {
         wasAlreadyCompletedOnMount.current = data.status === "completed";
       }
+      statusRef.current = data.status;
       setStatus(data.status);
       if (data.currentPhase) _setCurrentPhase(data.currentPhase);
       if (data.bountyContext !== undefined) setBountyContext(data.bountyContext);
@@ -209,8 +212,8 @@ export default function LiveDebateProgressPage() {
 
       es.onerror = () => {
         es.close();
-        if (status !== "completed" && status !== "failed") {
-          reconnectTimeout = setTimeout(connectSSE, 3000);
+        if (statusRef.current !== "completed" && statusRef.current !== "failed") {
+          reconnectTimeout = setTimeout(connectSSE, 2000);
         }
       };
     }
@@ -228,12 +231,12 @@ export default function LiveDebateProgressPage() {
 
     triggerRun();
     const runRetryTimeout = setTimeout(() => {
-      if (status === "queued") {
+      if (statusRef.current === "queued") {
         triggerRun();
       }
-    }, 3500);
+    }, 3000);
 
-    // Resilient fallback polling every 2.5 seconds
+    // Resilient fallback polling every 2 seconds for instant live updates
     pollInterval = setInterval(async () => {
       try {
         const res = await apiFetch<EvaluationProgressEvent>(
@@ -245,7 +248,7 @@ export default function LiveDebateProgressPage() {
       } catch {
         // Polling failure is non-fatal
       }
-    }, 2500);
+    }, 2000);
 
     return () => {
       if (runRetryTimeout) clearTimeout(runRetryTimeout);
@@ -256,7 +259,7 @@ export default function LiveDebateProgressPage() {
         eventSourceRef.current.close();
       }
     };
-  }, [evaluationId, router, status, isViewingArchive]);
+  }, [evaluationId, router, isViewingArchive]);
 
   const formatRoleTitle = (role: string) => {
     return role
@@ -265,11 +268,14 @@ export default function LiveDebateProgressPage() {
       .join(" ");
   };
 
-  const activeThinkingAgents = COMMITTEE_PERSONAS.filter((p) => {
-    const s = agentStatuses[p.role];
-    if (s === "completed") return false;
-    return status === "processing" || s === "analyzing";
-  });
+  const completedRoleSet = new Set<string>(completedAgents.map((a) => a.role));
+  const isActiveRun = status === "queued" || status === "processing";
+
+  const activeThinkingAgents = isActiveRun
+    ? COMMITTEE_PERSONAS.filter(
+        (p) => agentStatuses[p.role] !== "completed" && !completedRoleSet.has(p.role)
+      )
+    : [];
 
   const screeningRemarks = completedAgents.filter((a) => a.voiceCommentary);
 
@@ -282,8 +288,8 @@ export default function LiveDebateProgressPage() {
 
   const renderAgentCard = (p: (typeof COMMITTEE_PERSONAS)[number]) => {
     const agentStatus = agentStatuses[p.role];
-    const isDone = agentStatus === "completed";
-    const isThinking = !isDone && (status === "processing" || agentStatus === "analyzing");
+    const isDone = agentStatus === "completed" || completedRoleSet.has(p.role);
+    const isTyping = !isDone && isActiveRun;
 
     return (
       <div
@@ -301,11 +307,11 @@ export default function LiveDebateProgressPage() {
           <div className="mt-1.5 flex items-center gap-1.5 text-xs font-mono">
             <span className="text-text-muted uppercase text-[9px]">Status:</span>
             {isDone ? (
-              <span className="text-emerald-600 dark:text-emerald-400 font-bold">Done</span>
-            ) : isThinking ? (
-              <span className="text-purple-600 dark:text-purple-400 font-bold animate-pulse">Thinking...</span>
+              <span className="text-purple-400 font-bold">Done</span>
+            ) : isTyping ? (
+              <span className="text-purple-400 font-bold animate-pulse">Typing...</span>
             ) : (
-              <span className="text-text-muted">Waiting</span>
+              <span className="text-text-muted">Standby</span>
             )}
           </div>
         </div>
@@ -361,27 +367,20 @@ export default function LiveDebateProgressPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="p-3.5 bg-red-950/40 border border-red-900/60 text-red-300 text-xs flex items-center justify-between rounded-xl">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold">Notice:</span>
-            <span>{error}</span>
-          </div>
-          <button
-            onClick={() => router.push(`/evaluations/${evaluationId}/progress`)}
-            className="underline hover:text-white shrink-0 ml-3 font-semibold cursor-pointer"
+      <ErrorPopup
+        title="Committee Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+        action={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => router.refresh()}
           >
             Retry
-          </button>
-        </div>
-      )}
-
-      {/* Infinity Loop Loading Indicator */}
-      {status !== "completed" && status !== "failed" && status !== "cancelled" && (
-        <div className="flex items-center justify-center py-2">
-          <InfinityLoop className="w-16 h-8 text-purple-600 dark:text-purple-400" />
-        </div>
-      )}
+          </Button>
+        }
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Left Column: First 3 Agents */}
@@ -395,7 +394,7 @@ export default function LiveDebateProgressPage() {
         <div className="lg:col-span-6 space-y-2.5 order-1 lg:order-2">
           <div className="flex items-center justify-between pb-1.5 border-b border-border">
             <span className="text-sm font-bold text-text font-mono flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
               Chat
             </span>
             <span className="text-[11px] text-text-muted font-mono">
@@ -403,19 +402,13 @@ export default function LiveDebateProgressPage() {
             </span>
           </div>
 
-          {/* Telegram-style Fixed Height Chat Container */}
+          {/* Live Committee Chat Container */}
           <div className="relative border border-border bg-surface rounded-2xl overflow-hidden shadow-xs">
             <div
               ref={chatScrollRef}
               onScroll={handleChatScroll}
               className="h-[580px] overflow-y-auto p-4 sm:p-5 space-y-4 flex flex-col scroll-smooth"
             >
-              {screeningRemarks.length === 0 && debateMessages.length === 0 && (
-                <div className="m-auto text-center text-text-muted text-xs space-y-2 py-16">
-                  <div className="inline-block w-2.5 h-2.5 bg-purple-500 rounded-full animate-ping" />
-                  <p>The committee is examining your CV and cross-referencing requirements...</p>
-                </div>
-              )}
 
               {/* Initial Screening Remarks (Left vs Right like Telegram) */}
               {screeningRemarks.map((agent) => {
@@ -490,10 +483,13 @@ export default function LiveDebateProgressPage() {
                 );
               })}
 
-              {/* Live Typing Bubbles for Active Agents */}
-              {status === "processing" && activeThinkingAgents.length > 0 && (
-                <div className="space-y-3 pt-2">
-                  {activeThinkingAgents.slice(0, 2).map((agent) => {
+              {/* Live Typing Bubbles (...) for Every Active Agent */}
+              {isActiveRun && (activeThinkingAgents.length > 0 || debateMessages.length < 4) && (
+                <div className="space-y-3 pt-1">
+                  {(activeThinkingAgents.length > 0
+                    ? activeThinkingAgents
+                    : COMMITTEE_PERSONAS.slice(0, 2)
+                  ).map((agent) => {
                     const isRight = isRightAgent(agent.role);
                     return (
                       <div
@@ -510,13 +506,17 @@ export default function LiveDebateProgressPage() {
                               : "bg-surface-elevated border border-border rounded-tl-xs text-left"
                           }`}
                         >
-                          <div className={`text-[11px] font-semibold ${isRight ? "text-purple-900 dark:text-purple-300" : "text-text-muted"}`}>
-                            {agent.title} is analyzing...
+                          <div
+                            className={`text-[11px] font-semibold ${
+                              isRight ? "text-purple-900 dark:text-purple-300" : "text-text-muted"
+                            }`}
+                          >
+                            {agent.title}
                           </div>
-                          <div className="flex items-center gap-1.5 py-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce [animation-delay:-0.3s]" />
-                            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce [animation-delay:-0.15s]" />
-                            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce" />
+                          <div className="flex items-center gap-1.5 py-0.5 text-purple-400 font-mono font-bold text-sm leading-none">
+                            <span className="animate-pulse [animation-delay:-0.3s]">.</span>
+                            <span className="animate-pulse [animation-delay:-0.15s]">.</span>
+                            <span className="animate-pulse">.</span>
                           </div>
                         </div>
                       </div>

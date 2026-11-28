@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -357,7 +358,11 @@ export const EvaluationOnChainPanel: React.FC<{
         </Alert>
       )}
 
-      {error && <Alert variant="danger">{error}</Alert>}
+      <ErrorPopup
+        title="On-Chain Proof Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
       {notice && <Alert variant="success">{notice}</Alert>}
       {state.rpcError && (
         <Alert variant="warning" title="RPC Warning">

@@ -1,8 +1,14 @@
 import { SendTransactionError, Transaction } from "@solana/web3.js";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
-import { BadRequestError, createApiHandler, successResponse } from "@/lib/shared";
-import { getSolanaConnection } from "@/lib/solana";
+import {
+  BadRequestError,
+  createApiHandler,
+  formatErrorWithCause,
+  isAppError,
+  successResponse,
+} from "@/lib/shared";
+import { withSolanaConnection } from "@/lib/solana";
 
 const BroadcastSchema = z.object({
   signedTxBase64: z.string().min(64).max(4096),
@@ -18,6 +24,9 @@ function formatSolanaBroadcastError(rawMessage: string, logs: string[]): string 
   }
   if (/insufficient funds|insufficient lamports|custom program error:\s*0x1\b|"Custom":1\b/i.test(combined)) {
     return "Insufficient Devnet USDC or SOL balance in your wallet to complete this transaction.";
+  }
+  if (/fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND/i.test(combined)) {
+    return "Solana Devnet RPC connection timed out while broadcasting your transaction. Please retry in a few seconds.";
   }
 
   // Extract explicit Anchor Error Message if present in logs
@@ -51,25 +60,31 @@ export const POST = createApiHandler(async (req: Request) => {
     throw new BadRequestError("Malformed Solana transaction bytes.");
   }
 
-  const connection = getSolanaConnection();
   try {
-    const signature = await connection.sendRawTransaction(rawBytes, {
-      skipPreflight: false,
-      preflightCommitment: "confirmed",
-      maxRetries: 3,
+    const signature = await withSolanaConnection(async (connection) => {
+      try {
+        return await connection.sendRawTransaction(rawBytes, {
+          skipPreflight: false,
+          preflightCommitment: "confirmed",
+          maxRetries: 3,
+        });
+      } catch (err) {
+        if (err instanceof SendTransactionError) {
+          let logs: string[] = [];
+          try {
+            logs = (await err.getLogs(connection)) ?? err.logs ?? [];
+          } catch {
+            logs = err.logs ?? [];
+          }
+          throw new BadRequestError(formatSolanaBroadcastError(err.message, logs));
+        }
+        throw err;
+      }
     });
 
     return successResponse({ signature });
   } catch (err) {
-    let logs: string[] = [];
-    if (err instanceof SendTransactionError) {
-      try {
-        logs = (await err.getLogs(connection)) ?? err.logs ?? [];
-      } catch {
-        logs = err.logs ?? [];
-      }
-    }
-    const rawMsg = err instanceof Error ? err.message : "Failed to broadcast Solana transaction";
-    throw new BadRequestError(formatSolanaBroadcastError(rawMsg, logs));
+    if (isAppError(err)) throw err;
+    throw new BadRequestError(formatSolanaBroadcastError(formatErrorWithCause(err), []));
   }
 });

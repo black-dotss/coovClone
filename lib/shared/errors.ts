@@ -118,3 +118,34 @@ export class InternalServerError extends AppError {
 export function isAppError(err: unknown): err is AppError {
   return err instanceof AppError;
 }
+
+/**
+ * Unwraps nested `.cause` errors (e.g. Node `TypeError: fetch failed` wrapping `ENOTFOUND` / `ECONNRESET`)
+ * so server and UI logs show the actionable root error rather than a generic wrapper string.
+ */
+export function formatErrorWithCause(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return String(err ?? "Unknown error");
+  }
+  const visited = new Set<unknown>([err]);
+  const parts: string[] = [err.message || err.name];
+  let current: unknown = (err as Error & { cause?: unknown }).cause;
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    if (current instanceof Error) {
+      const code = (current as Error & { code?: string }).code;
+      const piece = `${code ? `[${code}] ` : ""}${current.message || current.name}`;
+      if (piece && !parts.some((p) => p.includes(piece))) {
+        parts.push(piece);
+      }
+      current = (current as Error & { cause?: unknown }).cause;
+    } else {
+      const str = String(current);
+      if (str && !parts.some((p) => p.includes(str))) {
+        parts.push(str);
+      }
+      break;
+    }
+  }
+  return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(" -> ")})` : parts[0];
+}

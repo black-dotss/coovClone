@@ -16,6 +16,7 @@ import { createJobDescription } from "@/lib/job-descriptions";
 import {
   BadRequestError,
   createApiHandler,
+  formatErrorWithCause,
   isAppError,
   successResponse,
 } from "@/lib/shared";
@@ -309,8 +310,7 @@ function rethrowReadableError(err: unknown, context: string): never {
   if (isAppError(err) || err instanceof ZodError) {
     throw err;
   }
-  const detail = err instanceof Error ? err.message : String(err);
-  throw new BadRequestError(`${context}: ${detail}`);
+  throw new BadRequestError(`${context}: ${formatErrorWithCause(err)}`);
 }
 
 export const POST = createApiHandler(async (req: Request) => {

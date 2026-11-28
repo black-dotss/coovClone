@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { Modal } from "@/components/ui/modal";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { LoadingSpinner, FullPageLoading } from "@/components/ui/loading-spinner";
@@ -507,11 +508,11 @@ function ProfilePageContent() {
   return (
     <div className="w-full max-w-[1500px] mx-auto px-4 sm:px-6 lg:px-10 py-8 sm:py-10 space-y-6">
       {/* Feedback alerts */}
-      {error && (
-        <Alert variant="danger" title="Account Notice">
-          {error}
-        </Alert>
-      )}
+      <ErrorPopup
+        title="Account Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
 
       {successMessage && (
         <Alert variant="success" title="Success">

@@ -9,7 +9,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScoreRing } from "@/components/ui/score-ring";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Alert } from "@/components/ui/alert";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { ShareVerificationBadge } from "@/components/solana/share-verification-badge";
 import type { SharedReportResult } from "@/lib/reports/share";
 
@@ -64,11 +64,7 @@ export default function PublicSharedReportPage({
   };
 
   if (loading) {
-    return (
-      <div className="min-h-[70vh] flex flex-col items-center justify-center p-4">
-        <LoadingSpinner size="lg" label="Loading shared evaluation report..." />
-      </div>
-    );
+    return <FullPageLoading />;
   }
 
   if (error || !data) {

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { Modal } from "@/components/ui/modal";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -511,28 +512,24 @@ export default function BillingPage() {
           </Alert>
         )}
 
-        {error && (
-          <Alert
-            variant="danger"
-            title="Billing Notice"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setLoading(true);
-                  setError(null);
-                  setRefreshKey((k) => k + 1);
-                }}
-                className="text-xs"
-              >
-                Retry
-              </Button>
-            }
-          >
-            {error}
-          </Alert>
-        )}
+        <ErrorPopup
+          title="Billing Notice"
+          message={error}
+          onDismiss={() => setError(null)}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setLoading(true);
+                setError(null);
+                setRefreshKey((k) => k + 1);
+              }}
+            >
+              Retry
+            </Button>
+          }
+        />
 
         <div className="space-y-8">
             {/* Plans List */}
@@ -1156,11 +1153,10 @@ export default function BillingPage() {
               </div>
             </div>
 
-            {error && error.trim().length > 0 ? (
-              <Alert variant="danger">
-                {error}
-              </Alert>
-            ) : verifyResult && verifyResult.message && verifyResult.message.trim().length > 0 ? (
+            {!error &&
+              verifyResult &&
+              verifyResult.message &&
+              verifyResult.message.trim().length > 0 && (
               <Alert
                 variant={
                   verifyResult.status === "verified"
@@ -1172,7 +1168,7 @@ export default function BillingPage() {
               >
                 {verifyResult.message}
               </Alert>
-            ) : null}
+            )}
 
             {/* Clickable Account Cards (Click to Copy & Select) */}
             <div className="space-y-2">

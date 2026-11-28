@@ -10,6 +10,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScoreRing } from "@/components/ui/score-ring";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { Modal } from "@/components/ui/modal";
 import { LoadingSpinner, FullPageLoading } from "@/components/ui/loading-spinner";
 import { Avatar, AgentRoleKey } from "@/components/ui/avatar";
@@ -1864,7 +1865,16 @@ export default function EvaluationReportPage({
               <LoadingSpinner label="Generating link..." />
             </div>
           ) : shareError ? (
-            <Alert variant="danger">{shareError}</Alert>
+            <>
+              <ErrorPopup
+                title="Share Link Error"
+                message={shareError}
+                onDismiss={() => setShareError(null)}
+              />
+              <div className="rounded-xl border border-border bg-surface-elevated p-4 text-xs text-text-secondary">
+                Unable to generate a share link right now.
+              </div>
+            </>
           ) : shareUrl ? (
             <div className="space-y-3">
               <div className="flex items-center gap-2">

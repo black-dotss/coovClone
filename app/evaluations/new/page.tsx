@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Alert } from "@/components/ui/alert";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { getPendingCv, clearPendingCv } from "@/lib/client/pending-cv";
@@ -340,11 +340,11 @@ export default function NewEvaluationPage() {
         <Badge variant="neutral" size="sm">PDF or DOCX</Badge>
       </div>
 
-      {errorMessage && (
-        <Alert variant="danger" title="Notice">
-          {errorMessage}
-        </Alert>
-      )}
+      <ErrorPopup
+        title="Review Notice"
+        message={errorMessage}
+        onDismiss={() => setErrorMessage(null)}
+      />
 
       {bountyRestriction && activeBounty && (
         <div className="rounded-xl border border-border bg-surface p-5 space-y-1.5">

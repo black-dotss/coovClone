@@ -27,6 +27,7 @@ import {
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ErrorPopup } from "@/components/ui/error-popup";
 import { apiFetch } from "@/lib/client/api";
 
 const STORAGE_KEY = "coov_preferred_solana_wallet";
@@ -119,6 +120,9 @@ function formatClientWalletError(err: unknown): string {
   }
   if (/Blockhash not found/i.test(raw)) {
     return "Solana transaction blockhash expired. Please click Submit again to sign with a fresh blockhash.";
+  }
+  if (/^failed to fetch$|^fetch failed$/i.test(raw.trim())) {
+    return "Network error while contacting Solana RPC. Please retry in a few seconds.";
   }
   return raw.replace(/\s*Catch the `SendTransactionError`[\s\S]*$/i, "").trim();
 }
@@ -397,6 +401,11 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
   return (
     <SolanaWalletContext.Provider value={value}>
       {children}
+      <ErrorPopup
+        title="Wallet Error"
+        message={walletError}
+        onDismiss={() => setWalletError(null)}
+      />
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -404,11 +413,6 @@ export function SolanaWalletProvider({ children }: { children: React.ReactNode }
         description={`Connect Phantom, Solflare, or any Wallet Standard wallet on Solana ${value.clusterLabel}.`}
       >
         <div className="space-y-4">
-          {walletError && (
-            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">
-              {walletError}
-            </div>
-          )}
 
           {account ? (
             <div className="p-4 rounded-xl border border-border bg-surface-elevated space-y-3">

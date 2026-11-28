@@ -6,7 +6,8 @@ import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
@@ -299,11 +300,7 @@ export default function BountyPublisherReviewPage() {
   };
 
   if (loading && !data) {
-    return (
-      <div className="w-full max-w-6xl mx-auto px-4 py-16 flex justify-center">
-        <LoadingSpinner size="lg" label="Loading Publisher Review Workspace..." />
-      </div>
-    );
+    return <FullPageLoading />;
   }
 
   if (!data) {
@@ -362,17 +359,11 @@ export default function BountyPublisherReviewPage() {
         </Button>
       </div>
 
-      {error && (
-        <div className="rounded-xl border border-border bg-surface p-5 flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <p className="text-sm font-semibold text-purple-400">Review Action Notice</p>
-            <p className="text-sm text-text-secondary">{error}</p>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => setError(null)}>
-            Dismiss
-          </Button>
-        </div>
-      )}
+      <ErrorPopup
+        title="Review Action Notice"
+        message={error}
+        onDismiss={() => setError(null)}
+      />
       {notice && (
         <div className="rounded-xl border border-border bg-surface p-5 space-y-1">
           <p className="text-sm font-semibold text-purple-400">Review Updated</p>

@@ -7,6 +7,8 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSession } from "@/lib/auth/auth-client";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -52,7 +54,7 @@ async function resizeLogoFileToDataUrl(file: File): Promise<string> {
 
 export default function NewBountyPage() {
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, isPending } = useSession();
   const { publicKey, openConnectModal, signAndSubmitTx, clusterLabel } =
     useSolanaWallet();
 
@@ -67,6 +69,7 @@ export default function NewBountyPage() {
   const [rawText, setRawText] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const totalPoolUsdc = (Number(rewardPerWinner) || 0) * (Number(maxWinners) || 0);
@@ -139,6 +142,7 @@ export default function NewBountyPage() {
         }),
       });
 
+      setRedirecting(true);
       router.push("/bounties?created=1");
     } catch (err) {
       const msg =
@@ -146,16 +150,26 @@ export default function NewBountyPage() {
           ? err.message
           : "Failed to fund bounty escrow. Please retry.";
       setErrorMessage(msg);
-      if (typeof window !== "undefined") {
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      }
     } finally {
       setSubmitting(false);
     }
   };
 
+  if (isPending || redirecting) {
+    return <FullPageLoading />;
+  }
+
   return (
     <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <ErrorPopup
+        title={logoError && !errorMessage ? "Logo Upload Notice" : "Transaction Error"}
+        message={errorMessage || logoError}
+        onDismiss={() => {
+          setErrorMessage(null);
+          setLogoError(null);
+        }}
+      />
+
       {/* Header matching /evaluations/new */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border">
         <div className="space-y-1">
@@ -173,26 +187,6 @@ export default function NewBountyPage() {
           Solana {clusterLabel} · USDC
         </span>
       </div>
-
-      {errorMessage && (
-        <div className="rounded-xl border border-border bg-surface p-4 sm:p-5 flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-bold text-purple-400">
-              Escrow Transaction Failed
-            </h3>
-            <p className="text-xs sm:text-sm text-text leading-relaxed">
-              {errorMessage}
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setErrorMessage(null)}
-          >
-            Dismiss
-          </Button>
-        </div>
-      )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -398,18 +392,6 @@ export default function NewBountyPage() {
             </Card>
           </div>
         </div>
-
-        {/* Inline Error Mirror */}
-        {errorMessage && (
-          <div className="rounded-xl border border-border bg-surface p-4 flex items-center justify-between gap-4">
-            <div className="space-y-0.5">
-              <span className="text-xs font-bold text-purple-400 uppercase font-mono">
-                Transaction Error
-              </span>
-              <p className="text-xs sm:text-sm text-text">{errorMessage}</p>
-            </div>
-          </div>
-        )}
 
         {/* Submit Button */}
         <div className="flex items-center justify-end gap-3 pt-2">

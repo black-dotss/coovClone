@@ -5,6 +5,7 @@ import { Navbar } from "@/components/navigation/navbar";
 import { Footer } from "@/components/navigation/footer";
 import { SessionGate } from "@/components/providers/session-gate";
 import { SolanaWalletProvider } from "@/components/providers/solana-wallet-provider";
+import { ErrorPopupProvider } from "@/components/ui/error-popup";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -65,13 +66,15 @@ export default function RootLayout({
             `,
           }}
         />
-        <SolanaWalletProvider>
-          <Navbar />
-          <main className="flex-1 flex flex-col">
-            <SessionGate>{children}</SessionGate>
-          </main>
-          <Footer />
-        </SolanaWalletProvider>
+        <ErrorPopupProvider>
+          <SolanaWalletProvider>
+            <Navbar />
+            <main className="flex-1 flex flex-col">
+              <SessionGate>{children}</SessionGate>
+            </main>
+            <Footer />
+          </SolanaWalletProvider>
+        </ErrorPopupProvider>
       </body>
     </html>
   );

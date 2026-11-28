@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Alert } from "@/components/ui/alert";
 import { Modal } from "@/components/ui/modal";
-import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { AppShell } from "@/components/layout/app-shell";
 import type { CvVersionItem, CvVersionComparisonResult } from "@/lib/documents/versions";
 
@@ -132,6 +132,10 @@ export default function DocumentVersionsPage({
     }
   };
 
+  if (loading) {
+    return <FullPageLoading />;
+  }
+
   return (
     <AppShell
       title="CV Version History"
@@ -157,34 +161,27 @@ export default function DocumentVersionsPage({
           <span className="text-text font-semibold">Version History</span>
         </div>
 
-        {error && (
-          <Alert
-            variant="danger"
-            title="Version Notice"
-            action={
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setLoading(true);
-                  setError(null);
-                  setRefreshKey((k) => k + 1);
-                }}
-                className="text-xs"
-              >
-                Retry
-              </Button>
-            }
-          >
-            {error}
-          </Alert>
-        )}
+        <ErrorPopup
+          title="Version Notice"
+          message={error}
+          onDismiss={() => setError(null)}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setLoading(true);
+                setError(null);
+                setRefreshKey((k) => k + 1);
+              }}
+              className="text-xs"
+            >
+              Retry
+            </Button>
+          }
+        />
 
-        {loading ? (
-          <div className="py-20 flex justify-center">
-            <LoadingSpinner label="Loading version history..." />
-          </div>
-        ) : versions.length === 0 ? (
+        {versions.length === 0 ? (
           <Card className="text-center py-16 bg-surface border-border">
             <CardContent className="space-y-3">
               <div className="w-12 h-12 rounded-xl bg-surface-elevated border border-border flex items-center justify-center mx-auto text-text-muted">
