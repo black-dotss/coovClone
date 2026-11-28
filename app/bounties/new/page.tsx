@@ -270,39 +270,34 @@ export default function NewBountyPage() {
                   </div>
                 </div>
 
-                <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-2.5">
-                  <div className="flex items-center justify-between text-xs font-mono">
-                    <span className="text-text-muted">Total Escrow Lock</span>
-                    <span className="text-lg font-extrabold text-purple-400">
+                <div className="p-4 rounded-xl bg-purple-50/45 dark:bg-purple-500/[0.05] border border-purple-300/60 dark:border-purple-500/20 space-y-3">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="text-xs font-semibold text-text-secondary">
+                      Total Escrow Lock
+                    </span>
+                    <span className="text-xl font-extrabold text-purple-400 font-mono whitespace-nowrap">
                       {totalPoolUsdc.toFixed(2)} USDC
                     </span>
                   </div>
-                  <div className="flex items-center justify-between text-xs font-mono pt-1 border-t border-border/60">
-                    <span className="text-text-muted">Candidate Conviction Stake ({normalizedStakePct}%)</span>
-                    <span className="font-bold text-text">
-                      {stakePerCandidateUsdc.toFixed(2)} USDC / applicant
-                    </span>
+
+                  <div className="space-y-1.5 pt-2.5 border-t border-purple-200/60 dark:border-purple-500/15 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-text-muted">Applicant Stake ({normalizedStakePct}%)</span>
+                      <span className="font-mono font-semibold text-text whitespace-nowrap">
+                        {stakePerCandidateUsdc.toFixed(2)} USDC
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-text-muted">Scout Cut (if shared)</span>
+                      <span className="font-mono font-semibold text-text whitespace-nowrap">
+                        10% ({((Number(rewardPerWinner) || 0) * 0.1).toFixed(2)} USDC)
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between text-xs font-mono">
-                    <span className="text-text-muted">Scout Referral Split (If Shared)</span>
-                    <span className="font-bold text-text">
-                      90% Candidate · 10% Scout ({((Number(rewardPerWinner) || 0) * 0.1).toFixed(2)} USDC)
-                    </span>
-                  </div>
-                  <p className="text-xs text-text-secondary leading-relaxed">
-                    Applicants lock{" "}
-                    <span className="font-semibold text-text">
-                      {stakePerCandidateUsdc.toFixed(2)} USDC
-                    </span>{" "}
-                    before entering review (waived automatically for 2+ clean active streak holders). Legitimate winners scoring{" "}
-                    <span className="font-semibold text-text">
-                      {minScore || 85}/100+
-                    </span>{" "}
-                    receive{" "}
-                    <span className="font-semibold text-text">
-                      {rewardPerWinner || 0} USDC
-                    </span>{" "}
-                    (or 90/10 split if referred by a Scout) + 100% stake refund + pro-rata slashed fraud stakes.
+
+                  <p className="text-[11px] text-text-muted leading-relaxed pt-1">
+                    Winners scoring <strong className="text-text">{minScore || 85}+</strong> get{" "}
+                    <strong className="text-text">{rewardPerWinner || 0} USDC</strong>, full stake refund, and pro-rata slashed fraud yield. Stakes are waived for 2+ streak VIPs.
                   </p>
                 </div>
               </CardContent>
