@@ -388,16 +388,6 @@ export const EvaluationOnChainPanel: React.FC<{
               score={state.overallScore}
               scoreTier={state.scoreTier}
               subtitle={state.modelVersion}
-              walletAddress={state.linkedWallet || publicKey}
-              primaryIdLabel="Eval PDA"
-              primaryIdValue={state.evalPdaAddress}
-              secondaryIdLabel="SBT Mint"
-              secondaryIdValue={
-                state.sbtMintAddress ||
-                (state.sbtEligible ? "Eligible (>= 85/100)" : "Requires 85/100+")
-              }
-              hashLabel="Report SHA-256"
-              hashValue={state.canonicalReportHash}
               verifiedSkills={state.verifiedSkills}
               issuedLabel={isAnchored ? `ANCHORED · ${clusterLabel.toUpperCase()}` : "OFF-CHAIN PREVIEW"}
               downloadFileName={`coov-solana-id-${state.evaluationId.slice(0, 8)}.png`}

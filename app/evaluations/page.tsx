@@ -244,12 +244,6 @@ export default function HistoryPage() {
           >
             + Compare Roles
           </Link>
-          <Link
-            href="/profile?tab=solana"
-            className="px-3.5 py-1.5 bg-surface-elevated hover:border-purple-500/50 border border-border text-purple-400 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
-          >
-            On-Chain & SBT
-          </Link>
         </div>
       </div>
 
@@ -326,75 +320,48 @@ export default function HistoryPage() {
       <div className="w-full flex flex-col lg:flex-row gap-6 items-start">
         {/* Left Sidebar (Desktop Only) */}
         <aside className="hidden lg:block lg:w-64 lg:min-w-[16rem] lg:max-w-[16rem] shrink-0 lg:sticky lg:top-20 space-y-4 bg-surface border border-border rounded-xl p-3 shadow-xs">
-          {/* Top Personal Bounties Quick List + Nav Button */}
-          <div className="space-y-2 pb-3 border-b border-border">
-            <button
-              onClick={() => setActiveTab("bounties")}
-              className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm rounded-lg transition-all text-left cursor-pointer group ${
-                activeTab === "bounties"
-                  ? "bg-surface-elevated text-text font-bold border border-border shadow-xs"
-                  : "text-text-muted hover:text-text hover:bg-surface-elevated/60 font-semibold"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <svg
-                  className={`w-4 h-4 shrink-0 ${
-                    activeTab === "bounties" ? "text-purple-400" : "text-text-muted"
-                  }`}
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <span>My Bounties</span>
-              </div>
-              <span
-                className={`text-xs font-mono px-2 py-0.5 rounded font-bold ${
-                  activeTab === "bounties"
-                    ? "bg-purple-100 text-purple-900 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800"
-                    : "bg-surface-elevated text-text-muted border border-border"
-                }`}
-              >
-                {myBounties.length}
-              </span>
-            </button>
-
-            {myBounties.length > 0 && (
-              <div className="space-y-1 px-1">
-                {myBounties.slice(0, 4).map((b) => (
-                  <Link
-                    key={b.id}
-                    href={
-                      b.role === "published"
-                        ? `/bounties/${b.id}/review`
-                        : `/bounties/${b.id}/result${b.evaluationId ? `?evalId=${encodeURIComponent(b.evaluationId)}` : ""}`
-                    }
-                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-elevated text-xs transition-colors"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-semibold text-text truncate">{b.title}</p>
-                      <p className="text-[10px] font-mono text-text-muted truncate">
-                        {b.company} · {b.role === "published" ? "Publisher" : `${b.rewardPerWinnerUsdc} USDC`}
-                      </p>
-                    </div>
-                    <span className="text-[10px] font-mono text-purple-400 shrink-0">→</span>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
-
           <div className="space-y-1">
             <div className="text-[11px] font-bold uppercase tracking-wider text-text-muted px-3.5 pt-1 pb-1">
               Activity Type
             </div>
             <nav className="space-y-1">
+              {/* My Bounties Tab */}
+              <button
+                onClick={() => setActiveTab("bounties")}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm rounded-lg transition-all text-left cursor-pointer group ${
+                  activeTab === "bounties"
+                    ? "bg-surface-elevated text-text font-bold border border-border shadow-xs"
+                    : "text-text-muted hover:text-text hover:bg-surface-elevated/60 font-semibold"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <svg
+                    className={`w-4 h-4 shrink-0 ${
+                      activeTab === "bounties" ? "text-purple-600 dark:text-purple-400" : "text-text-muted"
+                    }`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <span>My Bounties</span>
+                </div>
+                <span
+                  className={`text-xs font-mono px-2 py-0.5 rounded font-bold ${
+                    activeTab === "bounties"
+                      ? "bg-purple-100 text-purple-900 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-200 dark:border-purple-800"
+                      : "bg-surface-elevated text-text-muted border border-border"
+                  }`}
+                >
+                  {myBounties.length}
+                </span>
+              </button>
               {/* My Reviews Tab */}
               <button
                 onClick={() => setActiveTab("reviews")}
