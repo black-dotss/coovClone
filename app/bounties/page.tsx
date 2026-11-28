@@ -748,10 +748,6 @@ export default function BountiesPage() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {data.bounties.map((bounty) => {
             const occupied = bounty.occupiedSlots ?? bounty.claimsCount;
-            const fillPct =
-              bounty.maxWinners > 0
-                ? Math.min(100, Math.round((occupied / bounty.maxWinners) * 100))
-                : 0;
             const myClaim = data.myClaims.find((c) => c.bountyId === bounty.id);
             const mySub = data.mySubmissions?.find((s) => s.bountyId === bounty.id);
             const myRestriction = data.myRestrictions?.find((r) => r.bountyId === bounty.id);
@@ -837,22 +833,19 @@ export default function BountiesPage() {
             return (
               <div
                 key={bounty.id}
-                className="rounded-xl border border-purple-300/60 dark:border-purple-500/20 hover:border-purple-500/45 transition-colors bg-purple-50/45 dark:bg-purple-500/[0.045] p-5 sm:p-6 space-y-4 flex flex-col justify-between"
+                className="rounded-2xl border border-border/80 hover:border-purple-500/45 transition-colors bg-purple-50/25 dark:bg-purple-500/[0.025] p-5 sm:p-6 space-y-4 flex flex-col justify-between"
               >
-                <div className="space-y-4">
-                  {/* Header */}
+                <div className="space-y-3.5">
+                  {/* Minimal Header with Hero Reward */}
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3 min-w-0">
+                    <div className="flex items-center gap-3 min-w-0">
                       <BountyCompanyLogo
                         company={bounty.company}
                         logoUrl={bounty.companyLogoUrl}
-                        size="lg"
+                        size="md"
                       />
                       <div className="min-w-0">
-                        <span className="text-[11px] font-mono text-purple-400 font-semibold uppercase tracking-wider block truncate">
-                          {bounty.company}
-                        </span>
-                        <h3 className="text-lg font-extrabold text-text mt-0.5 truncate">
+                        <h3 className="text-base sm:text-lg font-bold text-text truncate">
                           <Link
                             href={`/bounties/${bounty.id}`}
                             className="hover:text-purple-400 transition-colors"
@@ -860,68 +853,53 @@ export default function BountiesPage() {
                             {bounty.title}
                           </Link>
                         </h3>
+                        <p className="text-xs text-text-muted truncate">
+                          {bounty.company}
+                        </p>
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-purple-100/60 dark:bg-purple-500/[0.08] border border-purple-200/70 dark:border-purple-500/20 text-text-secondary shrink-0">
-                      {bounty.status.toUpperCase()}
-                    </span>
-                  </div>
 
-                  {/* Single Clean 3-Stat Bar */}
-                  <div className="grid grid-cols-3 divide-x divide-purple-200/70 dark:divide-purple-500/15 rounded-lg bg-purple-100/45 dark:bg-purple-500/[0.06] border border-purple-200/70 dark:border-purple-500/20">
-                    <div className="px-3 py-2.5">
-                      <span className="text-[10px] font-mono text-text-muted uppercase block">
-                        Reward
-                      </span>
-                      <p className="text-sm sm:text-base font-extrabold text-purple-400 mt-0.5 whitespace-nowrap">
+                    <div className="text-right shrink-0">
+                      <span className="text-base sm:text-lg font-extrabold text-purple-400 font-mono whitespace-nowrap block">
                         {bounty.rewardPerWinnerUsdc} USDC
-                      </p>
-                    </div>
-                    <div className="px-3 py-2.5">
-                      <span className="text-[10px] font-mono text-text-muted uppercase block">
-                        Min Score
                       </span>
-                      <p className="text-sm sm:text-base font-extrabold text-text mt-0.5 whitespace-nowrap">
-                        {bounty.minScore}/100
-                        {requiredStreak > 0 && (
-                          <span className="ml-1 text-[10px] font-mono font-normal text-text-muted">
-                            · {requiredStreak}+
-                          </span>
-                        )}
-                      </p>
-                    </div>
-                    <div className="px-3 py-2.5">
-                      <span className="text-[10px] font-mono text-text-muted uppercase block">
-                        {isZeroStakeVip ? "VIP Stake" : "Stake"}
-                      </span>
-                      <p
-                        className={`text-sm sm:text-base font-extrabold mt-0.5 whitespace-nowrap ${
-                          isZeroStakeVip ? "text-purple-400" : "text-text"
-                        }`}
-                      >
-                        {isZeroStakeVip ? "0 USDC" : `${standardStakeUsdc.toFixed(2)} USDC`}
-                      </p>
+                      {bounty.status !== "active" && (
+                        <span className="text-[10px] font-mono uppercase text-text-muted">
+                          {bounty.status}
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* Slots + Expiry */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2 text-xs font-mono text-text-muted">
-                      <span>
-                        Slots: {bounty.claimsCount} paid
-                        {bounty.approvedCount > 0 ? ` · ${bounty.approvedCount} approved` : ""}
-                        {bounty.pendingReviewCount > 0 ? ` · ${bounty.pendingReviewCount} review` : ""} / {bounty.maxWinners}
-                      </span>
-                      <span className="shrink-0">
-                        {(bounty.slashedPoolUsdc ?? 0) > 0 && (
-                          <span className="text-purple-400 mr-2">
-                            +{(bounty.slashedPoolUsdc ?? 0).toFixed(2)} bonus
-                          </span>
-                        )}
-                        Exp {new Date(bounty.expiresAt).toLocaleDateString()}
-                      </span>
-                    </div>
-                    <ProgressBar value={fillPct} color="purple" size="sm" />
+                  {/* Flat Single-Line Key Metrics */}
+                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-mono text-text-muted">
+                    <span>Min {bounty.minScore}/100</span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      {isZeroStakeVip ? (
+                        <span className="text-purple-400">0 USDC VIP</span>
+                      ) : (
+                        `${standardStakeUsdc.toFixed(2)} USDC stake`
+                      )}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      {occupied}/{bounty.maxWinners} slots
+                    </span>
+                    {requiredStreak > 0 && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span>{requiredStreak}+ streak</span>
+                      </>
+                    )}
+                    {(bounty.slashedPoolUsdc ?? 0) > 0 && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-purple-400">
+                          +{(bounty.slashedPoolUsdc ?? 0).toFixed(2)} bonus
+                        </span>
+                      </>
+                    )}
                   </div>
 
                   <p className="text-xs sm:text-sm text-text-secondary line-clamp-2 leading-relaxed">
@@ -929,83 +907,46 @@ export default function BountiesPage() {
                   </p>
 
                   {!isCreator && myRestriction && !canOpenDispute && !myDispute && (
-                    <div className="px-3 py-2 rounded-lg border border-border bg-surface-elevated text-xs space-y-0.5">
-                      <span className="font-bold text-purple-400 uppercase font-mono block">
-                        Restricted ({myRestriction.reason.replace(/_/g, " ")})
-                      </span>
-                      <p className="text-text-secondary line-clamp-2">{myRestriction.details}</p>
-                    </div>
+                    <p className="text-xs text-purple-400 line-clamp-1">
+                      Restricted ({myRestriction.reason.replace(/_/g, " ")}):{" "}
+                      <span className="text-text-secondary">{myRestriction.details}</span>
+                    </p>
                   )}
 
                   {!isCreator && canOpenDispute && (
-                    <div className="px-3 py-2 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-0.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-purple-400 uppercase font-mono">
-                          Rejected ({bestDisputeEval?.overallScore ?? 90}/100) · Dispute Eligible
-                        </span>
-                        <span className="font-mono text-text-muted">2/3 Jury</span>
-                      </div>
-                      <p className="text-text-secondary line-clamp-1">
-                        {mySub?.recruiterNotes || myRestriction?.details || "Publisher rejected this submission."}
-                      </p>
-                    </div>
+                    <p className="text-xs text-purple-400 line-clamp-1">
+                      Rejected with {bestDisputeEval?.overallScore ?? 90}/100 · Eligible for 2-of-3 Jury Dispute
+                    </p>
                   )}
 
                   {!isCreator && myDispute && (
-                    <div className="px-3 py-2 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs flex items-center justify-between gap-2">
-                      <span className="font-bold text-purple-400 uppercase font-mono truncate">
-                        {myDispute.status === "resolved_candidate"
-                          ? "Jury Override Won (2/3)"
-                          : myDispute.status === "resolved_recruiter"
-                          ? "Jury Upheld Rejection (2/3)"
-                          : `Dispute Open (${myDispute.votesForCandidate}/2 Pay · ${myDispute.votesForRecruiter}/2 Uphold)`}
-                      </span>
-                      <span className="font-mono text-text-muted shrink-0">
-                        {myDispute.evaluationScore}/100
-                      </span>
-                    </div>
+                    <p className="text-xs text-purple-400 font-mono">
+                      {myDispute.status === "resolved_candidate"
+                        ? "Jury Override Won (2/3)"
+                        : myDispute.status === "resolved_recruiter"
+                        ? "Jury Upheld Rejection (2/3)"
+                        : `Dispute Jury: ${myDispute.votesForCandidate}/2 Pay · ${myDispute.votesForRecruiter}/2 Uphold`}
+                    </p>
                   )}
 
                   {!myClaim && !myRestriction && mySub?.reviewStatus === "approved" && (
-                    <div className="px-3 py-2 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs flex items-center justify-between gap-2">
-                      <span className="font-bold text-purple-400 uppercase font-mono">
-                        Approved · Payout Ready
-                      </span>
-                      <span className="font-mono font-bold text-text">
-                        {bounty.rewardPerWinnerUsdc} USDC
-                      </span>
-                    </div>
+                    <p className="text-xs text-purple-400 font-semibold">
+                      Approved · {bounty.rewardPerWinnerUsdc} USDC payout ready
+                    </p>
                   )}
 
                   {!isCreator &&
                     mySub &&
                     mySub.reviewStatus === "pending_review" &&
                     !mySub.isReviewExpired && (
-                      <div className="px-3 py-2 rounded-lg border border-border bg-surface-elevated text-xs flex items-center justify-between gap-2">
-                        <span className="font-bold text-purple-400 uppercase font-mono">
-                          Slot Reserved · Pending Review
-                        </span>
-                        <span className="font-mono text-text">
-                          {mySub.remainingReviewLabel} left
-                        </span>
-                      </div>
-                    )}
-
-                  {!isCreator &&
-                    !myClaim &&
-                    !myRestriction &&
-                    (!mySub || mySub.reviewStatus === "below_threshold") &&
-                    bestIneligibleEval && (
-                      <div className="px-3 py-2 rounded-lg border border-border bg-surface-elevated text-xs flex items-center justify-between gap-2">
-                        <span className="font-bold text-purple-400 uppercase font-mono">
-                          Score {bestIneligibleEval.overallScore}/100 (Min {bounty.minScore})
-                        </span>
-                      </div>
+                      <p className="text-xs text-purple-400 font-mono">
+                        In review · {mySub.remainingReviewLabel} left
+                      </p>
                     )}
                 </div>
 
-                {/* Single Compact Action Footer */}
-                <div className="pt-3 border-t border-border/70 flex flex-wrap items-center justify-between gap-2.5">
+                {/* Clean Action Row */}
+                <div className="pt-1 flex flex-wrap items-center justify-between gap-2.5">
                   <div className="flex flex-wrap items-center gap-2">
                     {isCreator ? (
                       <>
