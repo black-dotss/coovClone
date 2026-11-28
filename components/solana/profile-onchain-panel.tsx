@@ -224,16 +224,6 @@ export const ProfileOnChainPanel: React.FC = () => {
                     ? `${data.onChainProfile.evalCount} Anchored Audits`
                     : "Pending On-Chain Audit"
                 }
-                walletAddress={data?.linkedWallet || publicKey}
-                primaryIdLabel="Profile PDA"
-                primaryIdValue={data?.profilePdaAddress}
-                secondaryIdLabel="Soulbound SBTs"
-                secondaryIdValue={
-                  data?.credentials?.[0]?.mint ||
-                  `${data?.credentials.length || 0} Token-2022 SBT(s)`
-                }
-                hashLabel="Top Credential SHA"
-                hashValue={data?.credentials?.[0]?.reportHash || null}
                 verifiedSkills={data?.onChainProfile?.topSkills ?? []}
                 issuedLabel={data?.linkedWallet ? "WALLET VERIFIED" : "LINK WALLET"}
                 downloadFileName="coov-solana-profile-card.png"
@@ -297,16 +287,14 @@ export const ProfileOnChainPanel: React.FC = () => {
 
               {/* Candidate Profile PDA State */}
               <div className="rounded-lg border border-border bg-surface-elevated p-5 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border pb-3">
                   <div>
                     <h3 className="text-sm font-extrabold text-text">
                       CandidateProfile PDA
                     </h3>
-                    {data?.profilePdaAddress && (
-                      <p className="text-[11px] font-mono text-text-muted break-all mt-0.5">
-                        {data.profilePdaAddress}
-                      </p>
-                    )}
+                    <p className="text-[11px] font-mono text-text-muted mt-0.5">
+                      Full on-chain addresses &amp; Token-2022 Soulbound credentials
+                    </p>
                   </div>
                   {data?.explorerProfileUrl && (
                     <a
@@ -318,6 +306,38 @@ export const ProfileOnChainPanel: React.FC = () => {
                       View on Explorer →
                     </a>
                   )}
+                </div>
+
+                {/* Full Addresses & SBT Count */}
+                <div className="space-y-2.5 text-xs font-mono p-3.5 rounded-lg bg-surface border border-border">
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] uppercase text-text-muted block">
+                      Wallet
+                    </span>
+                    <p className="text-text break-all">
+                      {data?.linkedWallet || publicKey || "Not linked"}
+                    </p>
+                  </div>
+                  {data?.profilePdaAddress && (
+                    <div className="space-y-0.5 pt-2 border-t border-border/60">
+                      <span className="text-[10px] uppercase text-text-muted block">
+                        Profile PDA
+                      </span>
+                      <p className="text-purple-400 break-all">
+                        {data.profilePdaAddress}
+                      </p>
+                    </div>
+                  )}
+                  <div className="space-y-0.5 pt-2 border-t border-border/60">
+                    <span className="text-[10px] uppercase text-text-muted block">
+                      Soulbound SBTs
+                    </span>
+                    <p className="text-text break-all">
+                      {data?.credentials && data.credentials.length > 0
+                        ? `${data.credentials.length} Token-2022 SBT(s) · Latest Mint: ${data.credentials[0].mint}`
+                        : "0 Token-2022 SBT(s)"}
+                    </p>
+                  </div>
                 </div>
 
                 {data?.onChainProfile ? (
