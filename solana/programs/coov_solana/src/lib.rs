@@ -105,6 +105,21 @@ fn apply_verified_streak_update(rep: &mut ReputationState, now: i64) {
     rep.last_verified_at = now;
 }
 
+fn load_program_account<T: AccountDeserialize>(info: &AccountInfo) -> Result<T> {
+    let data = info.try_borrow_data()?;
+    let mut slice: &[u8] = &data;
+    T::try_deserialize(&mut slice)
+}
+
+fn save_program_account<T: AccountSerialize>(info: &AccountInfo, val: &T) -> Result<()> {
+    use std::io::Write;
+    let mut data = info.try_borrow_mut_data()?;
+    let mut writer: &mut [u8] = &mut data;
+    val.try_serialize(&mut writer)?;
+    writer.flush()?;
+    Ok(())
+}
+
 #[program]
 pub mod coov_protocol {
     use super::*;
@@ -1256,7 +1271,8 @@ pub mod coov_protocol {
         if !ctx.accounts.reputation.data_is_empty()
             && *ctx.accounts.reputation.owner == crate::ID
         {
-            let rep = Account::<ReputationState>::try_from(ctx.accounts.reputation.as_ref())?;
+            let rep_info = ctx.accounts.reputation.to_account_info();
+            let rep: ReputationState = load_program_account(&rep_info)?;
             require_keys_eq!(rep.wallet, candidate_key, CoovError::UnauthorizedCandidate);
             require!(rep.fraud_flags == 0, CoovError::DisputeBlockedByFraudFlags);
         }
@@ -1265,8 +1281,8 @@ pub mod coov_protocol {
         if !ctx.accounts.conviction_stake.data_is_empty()
             && *ctx.accounts.conviction_stake.owner == crate::ID
         {
-            let mut stake_acc =
-                Account::<ConvictionStake>::try_from(ctx.accounts.conviction_stake.as_ref())?;
+            let stake_info = ctx.accounts.conviction_stake.to_account_info();
+            let mut stake_acc: ConvictionStake = load_program_account(&stake_info)?;
             require_keys_eq!(stake_acc.escrow, escrow.key(), CoovError::InvalidEscrowAccount);
             require_keys_eq!(stake_acc.candidate, candidate_key, CoovError::UnauthorizedCandidate);
             require!(
@@ -1288,7 +1304,7 @@ pub mod coov_protocol {
                     .ok_or(CoovError::MathOverflow)?;
                 stake_acc.status = ConvictionStatus::Pending;
                 stake_acc.resolved_at = 0;
-                stake_acc.exit(&crate::ID)?;
+                save_program_account(&stake_info, &stake_acc)?;
             }
         }
 
@@ -1332,7 +1348,6 @@ pub mod coov_protocol {
         ctx: Context<CastJuryVote>,
         approve_candidate: bool,
     ) -> Result<()> {
-        use std::io::Write;
         require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
         let now = Clock::get()?.unix_timestamp;
         let juror_key = ctx.accounts.juror.key();
@@ -1370,10 +1385,10 @@ pub mod coov_protocol {
             && *ctx.accounts.juror_profile.owner == crate::ID
             && *ctx.accounts.juror_reputation.owner == crate::ID
         {
-            let profile =
-                Account::<CandidateProfile>::try_from(ctx.accounts.juror_profile.as_ref())?;
-            let rep =
-                Account::<ReputationState>::try_from(ctx.accounts.juror_reputation.as_ref())?;
+            let profile_info = ctx.accounts.juror_profile.to_account_info();
+            let rep_info = ctx.accounts.juror_reputation.to_account_info();
+            let profile: CandidateProfile = load_program_account(&profile_info)?;
+            let rep: ReputationState = load_program_account(&rep_info)?;
             if profile.wallet == juror_key
                 && rep.wallet == juror_key
                 && rep.fraud_flags == 0
@@ -1500,13 +1515,13 @@ pub mod coov_protocol {
 
             let mut stake_refund: u64 = 0;
             let mut referrer: Option<Pubkey> = None;
-            let mut stake_pda_key = ctx.accounts.conviction_stake.key();
+            let stake_pda_key = ctx.accounts.conviction_stake.key();
 
             if !ctx.accounts.conviction_stake.data_is_empty()
                 && *ctx.accounts.conviction_stake.owner == crate::ID
             {
-                let mut stake_acc =
-                    Account::<ConvictionStake>::try_from(ctx.accounts.conviction_stake.as_ref())?;
+                let stake_info = ctx.accounts.conviction_stake.to_account_info();
+                let mut stake_acc: ConvictionStake = load_program_account(&stake_info)?;
                 require_keys_eq!(stake_acc.escrow, escrow_key, CoovError::InvalidEscrowAccount);
                 require_keys_eq!(stake_acc.candidate, candidate_key, CoovError::UnauthorizedCandidate);
                 require!(
@@ -1515,10 +1530,9 @@ pub mod coov_protocol {
                 );
                 referrer = stake_acc.referrer;
                 stake_refund = stake_acc.amount_staked;
-                stake_pda_key = stake_acc.key();
                 stake_acc.status = ConvictionStatus::Approved;
                 stake_acc.resolved_at = now;
-                stake_acc.exit(&crate::ID)?;
+                save_program_account(&stake_info, &stake_acc)?;
             }
 
             let (candidate_reward, scout_cut) =
@@ -1599,9 +1613,8 @@ pub mod coov_protocol {
             if !ctx.accounts.candidate_reputation.data_is_empty()
                 && *ctx.accounts.candidate_reputation.owner == crate::ID
             {
-                let mut rep_acc = Account::<ReputationState>::try_from(
-                    ctx.accounts.candidate_reputation.as_ref(),
-                )?;
+                let rep_info = ctx.accounts.candidate_reputation.to_account_info();
+                let mut rep_acc: ReputationState = load_program_account(&rep_info)?;
                 require_keys_eq!(rep_acc.wallet, candidate_key, CoovError::UnauthorizedCandidate);
                 rep_acc.total_earned_usdc = rep_acc
                     .total_earned_usdc
@@ -1615,15 +1628,16 @@ pub mod coov_protocol {
                     fraud_flags: rep_acc.fraud_flags,
                     last_verified_at: rep_acc.last_verified_at,
                 });
-                rep_acc.exit(&crate::ID)?;
+                save_program_account(&rep_info, &rep_acc)?;
             }
 
             let claim_bump = ctx.bumps.claim_receipt;
             let claim_seeds: &[&[u8]] =
                 &[b"claim", escrow_key.as_ref(), candidate_key.as_ref(), &[claim_bump]];
+            let claim_info = ctx.accounts.claim_receipt.to_account_info();
             create_program_pda_account(
                 ctx.accounts.juror.to_account_info(),
-                ctx.accounts.claim_receipt.to_account_info(),
+                claim_info.clone(),
                 ctx.accounts.system_program.to_account_info(),
                 BountyClaim::SPACE,
                 claim_seeds,
@@ -1636,12 +1650,7 @@ pub mod coov_protocol {
                 claimed_at: now,
                 bump: claim_bump,
             };
-            {
-                let mut data_ref = ctx.accounts.claim_receipt.try_borrow_mut_data()?;
-                let mut writer: &mut [u8] = &mut data_ref;
-                receipt_data.try_serialize(&mut writer)?;
-                writer.flush()?;
-            }
+            save_program_account(&claim_info, &receipt_data)?;
 
             ticket_mut.status = DisputeStatus::ResolvedCandidate;
 
@@ -1685,15 +1694,15 @@ pub mod coov_protocol {
             if !ctx.accounts.conviction_stake.data_is_empty()
                 && *ctx.accounts.conviction_stake.owner == crate::ID
             {
-                let mut stake_acc =
-                    Account::<ConvictionStake>::try_from(ctx.accounts.conviction_stake.as_ref())?;
+                let stake_info = ctx.accounts.conviction_stake.to_account_info();
+                let mut stake_acc: ConvictionStake = load_program_account(&stake_info)?;
                 require_keys_eq!(stake_acc.escrow, escrow_key, CoovError::InvalidEscrowAccount);
                 require_keys_eq!(stake_acc.candidate, candidate_key, CoovError::UnauthorizedCandidate);
                 if stake_acc.status == ConvictionStatus::Pending {
                     amount_slashed = stake_acc.amount_staked;
                     stake_acc.status = ConvictionStatus::Slashed;
                     stake_acc.resolved_at = now;
-                    stake_acc.exit(&crate::ID)?;
+                    save_program_account(&stake_info, &stake_acc)?;
 
                     escrow_mut.slashed_pool_amount = escrow_mut
                         .slashed_pool_amount
@@ -1703,7 +1712,7 @@ pub mod coov_protocol {
                     emit!(FraudStakeSlashed {
                         escrow: escrow_key,
                         candidate: candidate_key,
-                        stake_pda: stake_acc.key(),
+                        stake_pda: stake_info.key(),
                         amount_slashed,
                         slashed_pool_amount: escrow_mut.slashed_pool_amount,
                         reason_code: 3,
@@ -1715,9 +1724,8 @@ pub mod coov_protocol {
             if !ctx.accounts.candidate_reputation.data_is_empty()
                 && *ctx.accounts.candidate_reputation.owner == crate::ID
             {
-                let mut rep_acc = Account::<ReputationState>::try_from(
-                    ctx.accounts.candidate_reputation.as_ref(),
-                )?;
+                let rep_info = ctx.accounts.candidate_reputation.to_account_info();
+                let mut rep_acc: ReputationState = load_program_account(&rep_info)?;
                 require_keys_eq!(rep_acc.wallet, candidate_key, CoovError::UnauthorizedCandidate);
                 rep_acc.verified_streak = 0;
                 rep_acc.fraud_flags = rep_acc.fraud_flags.saturating_add(1);
@@ -1726,7 +1734,7 @@ pub mod coov_protocol {
                     fraud_flags: rep_acc.fraud_flags,
                     timestamp: now,
                 });
-                rep_acc.exit(&crate::ID)?;
+                save_program_account(&rep_info, &rep_acc)?;
             }
 
             emit!(DisputeResolved {
