@@ -829,10 +829,6 @@ export default function BountiesPage() {
             const standardStakeUsdc =
               bounty.stakePerCandidateUsdc ??
               (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100;
-            const candidate90Usdc =
-              bounty.candidate90Usdc ?? bounty.rewardPerWinnerUsdc * 0.9;
-            const scout10Usdc =
-              bounty.scout10Usdc ?? bounty.rewardPerWinnerUsdc * 0.1;
             const activeReferrer = getStoredScoutReferral(
               [bounty.id, bounty.jobDescriptionId],
               publicKey
@@ -841,21 +837,22 @@ export default function BountiesPage() {
             return (
               <div
                 key={bounty.id}
-                className="rounded-xl border border-border hover:border-purple-500/40 transition-colors bg-surface p-6 sm:p-8 space-y-6 flex flex-col justify-between"
+                className="rounded-xl border border-border hover:border-purple-500/40 transition-colors bg-surface p-5 sm:p-6 space-y-4 flex flex-col justify-between"
               >
-                <div className="space-y-5">
+                <div className="space-y-4">
+                  {/* Header */}
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3.5 min-w-0">
+                    <div className="flex items-start gap-3 min-w-0">
                       <BountyCompanyLogo
                         company={bounty.company}
                         logoUrl={bounty.companyLogoUrl}
                         size="lg"
                       />
                       <div className="min-w-0">
-                        <span className="text-xs font-mono text-purple-400 font-semibold uppercase tracking-wider block truncate">
+                        <span className="text-[11px] font-mono text-purple-400 font-semibold uppercase tracking-wider block truncate">
                           {bounty.company}
                         </span>
-                        <h3 className="text-lg sm:text-xl font-extrabold text-text mt-0.5 truncate">
+                        <h3 className="text-lg font-extrabold text-text mt-0.5 truncate">
                           <Link
                             href={`/bounties/${bounty.id}`}
                             className="hover:text-purple-400 transition-colors"
@@ -865,223 +862,132 @@ export default function BountiesPage() {
                         </h3>
                       </div>
                     </div>
-                    <span className="px-2.5 py-1 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-text-secondary shrink-0">
+                    <span className="px-2 py-0.5 text-[11px] font-mono rounded-md bg-surface-elevated border border-border text-text-secondary shrink-0">
                       {bounty.status.toUpperCase()}
                     </span>
                   </div>
 
-                  {/* Pool, 90/10 Scout Split, Stake, & Live Slashed Spam Yield */}
-                  <div className="space-y-2.5">
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
-                        <span className="text-[10px] font-mono text-text-muted uppercase block">
-                          Reward
-                        </span>
-                        <p className="text-base sm:text-lg font-extrabold text-purple-400 mt-0.5 whitespace-nowrap">
-                          {bounty.rewardPerWinnerUsdc} USDC
-                        </p>
-                        <span className="text-[10px] font-mono text-text-muted block whitespace-nowrap">
-                          90/10: {candidate90Usdc.toFixed(2)} / {scout10Usdc.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
-                        <span className="text-[10px] font-mono text-text-muted uppercase block">
-                          Min Score
-                        </span>
-                        <p className="text-base sm:text-lg font-extrabold text-text mt-0.5 whitespace-nowrap">
-                          {bounty.minScore}/100
-                        </p>
-                        <span className="text-[10px] font-mono text-text-muted block">
-                          {requiredStreak > 0
-                            ? `Min Streak: ${requiredStreak}+`
-                            : "Open streak (0+)"}
-                        </span>
-                      </div>
-                      <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
-                        <span className="text-[10px] font-mono text-text-muted uppercase block">
-                          {isZeroStakeVip ? "Conviction Perk" : `Stake (${bounty.stakePercent ?? 10}%)`}
-                        </span>
-                        <p
-                          className={`text-base sm:text-lg font-extrabold mt-0.5 whitespace-nowrap ${
-                            isZeroStakeVip ? "text-purple-400" : "text-text"
-                          }`}
-                        >
-                          {isZeroStakeVip ? "0 USDC Stake" : `${standardStakeUsdc.toFixed(2)} USDC`}
-                        </p>
-                        {isZeroStakeVip && (
-                          <span className="text-[10px] font-mono text-purple-400 block">
-                            Verified Streak Perk
+                  {/* Single Clean 3-Stat Bar */}
+                  <div className="grid grid-cols-3 divide-x divide-border rounded-lg bg-surface-elevated border border-border">
+                    <div className="px-3 py-2.5">
+                      <span className="text-[10px] font-mono text-text-muted uppercase block">
+                        Reward
+                      </span>
+                      <p className="text-sm sm:text-base font-extrabold text-purple-400 mt-0.5 whitespace-nowrap">
+                        {bounty.rewardPerWinnerUsdc} USDC
+                      </p>
+                    </div>
+                    <div className="px-3 py-2.5">
+                      <span className="text-[10px] font-mono text-text-muted uppercase block">
+                        Min Score
+                      </span>
+                      <p className="text-sm sm:text-base font-extrabold text-text mt-0.5 whitespace-nowrap">
+                        {bounty.minScore}/100
+                        {requiredStreak > 0 && (
+                          <span className="ml-1 text-[10px] font-mono font-normal text-text-muted">
+                            · {requiredStreak}+
                           </span>
                         )}
-                      </div>
+                      </p>
                     </div>
-
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-text-muted">
-                      <span>
-                        Slashed Spam Yield:{" "}
-                        <strong
-                          className={
-                            (bounty.slashedPoolUsdc ?? 0) > 0
-                              ? "text-purple-400"
-                              : "text-text-secondary"
-                          }
-                        >
-                          +{(bounty.slashedPoolUsdc ?? 0).toFixed(2)} USDC
-                        </strong>
+                    <div className="px-3 py-2.5">
+                      <span className="text-[10px] font-mono text-text-muted uppercase block">
+                        {isZeroStakeVip ? "VIP Stake" : "Stake"}
                       </span>
-                      {(bounty.proRataBonusUsdc ?? 0) > 0 && (
-                        <span className="text-purple-400">
-                          +{bounty.proRataBonusUsdc?.toFixed(2)} USDC / slot bonus
-                        </span>
-                      )}
+                      <p
+                        className={`text-sm sm:text-base font-extrabold mt-0.5 whitespace-nowrap ${
+                          isZeroStakeVip ? "text-purple-400" : "text-text"
+                        }`}
+                      >
+                        {isZeroStakeVip ? "0 USDC" : `${standardStakeUsdc.toFixed(2)} USDC`}
+                      </p>
                     </div>
                   </div>
 
-                  {/* Slots Progress */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs font-mono text-text-muted">
+                  {/* Slots + Expiry */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 text-xs font-mono text-text-muted">
                       <span>
                         Slots: {bounty.claimsCount} paid
-                        {bounty.approvedCount > 0
-                          ? ` · ${bounty.approvedCount} approved`
-                          : ""}
-                        {bounty.pendingReviewCount > 0
-                          ? ` · ${bounty.pendingReviewCount} in review`
-                          : ""}{" "}
-                        / {bounty.maxWinners} total
+                        {bounty.approvedCount > 0 ? ` · ${bounty.approvedCount} approved` : ""}
+                        {bounty.pendingReviewCount > 0 ? ` · ${bounty.pendingReviewCount} review` : ""} / {bounty.maxWinners}
                       </span>
-                      <span>
-                        Expires: {new Date(bounty.expiresAt).toLocaleDateString()}
+                      <span className="shrink-0">
+                        {(bounty.slashedPoolUsdc ?? 0) > 0 && (
+                          <span className="text-purple-400 mr-2">
+                            +{(bounty.slashedPoolUsdc ?? 0).toFixed(2)} bonus
+                          </span>
+                        )}
+                        Exp {new Date(bounty.expiresAt).toLocaleDateString()}
                       </span>
                     </div>
                     <ProgressBar value={fillPct} color="purple" size="sm" />
                   </div>
 
-                  <p className="text-xs sm:text-sm text-text-secondary line-clamp-3 leading-relaxed">
+                  <p className="text-xs sm:text-sm text-text-secondary line-clamp-2 leading-relaxed">
                     {bounty.rawText}
                   </p>
-                </div>
-
-                <div className="space-y-3.5 pt-4 border-t border-border/70">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-text-muted">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <a
-                        href={bounty.escrowUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-purple-400 hover:underline truncate max-w-[230px]"
-                      >
-                        Escrow PDA: {bounty.escrowPdaAddress.slice(0, 8)}...
-                        {bounty.escrowPdaAddress.slice(-6)} →
-                      </a>
-                      {bounty.txUrl && (
-                        <a
-                          href={bounty.txUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-purple-400 hover:underline"
-                        >
-                          Funding Tx →
-                        </a>
-                      )}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => void handleCopyScoutLink(bounty)}
-                      className="px-2.5 py-1 rounded-md bg-surface-elevated border border-border text-purple-400 hover:border-purple-500/60 transition-colors cursor-pointer font-semibold"
-                    >
-                      {copiedScoutBountyId === bounty.id
-                        ? "Copied Scout Link!"
-                        : "Share & Earn 10% Scout Cut"}
-                    </button>
-                  </div>
 
                   {!isCreator && myRestriction && !canOpenDispute && !myDispute && (
-                    <div className="p-3.5 rounded-lg border border-border bg-surface-elevated text-xs space-y-1">
-                      <span className="font-bold text-purple-400 uppercase font-mono">
+                    <div className="px-3 py-2 rounded-lg border border-border bg-surface-elevated text-xs space-y-0.5">
+                      <span className="font-bold text-purple-400 uppercase font-mono block">
                         Restricted ({myRestriction.reason.replace(/_/g, " ")})
                       </span>
-                      <p className="text-text-secondary">{myRestriction.details}</p>
+                      <p className="text-text-secondary line-clamp-2">{myRestriction.details}</p>
                     </div>
                   )}
 
                   {!isCreator && canOpenDispute && (
-                    <div className="p-3.5 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-1.5">
+                    <div className="px-3 py-2 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-0.5">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-purple-400 uppercase font-mono">
-                          Rejected With {bestDisputeEval?.overallScore ?? 90}/100 · Dispute Eligible
+                          Rejected ({bestDisputeEval?.overallScore ?? 90}/100) · Dispute Eligible
                         </span>
-                        <span className="font-mono text-text-muted">2-of-3 Jury</span>
+                        <span className="font-mono text-text-muted">2/3 Jury</span>
                       </div>
-                      <p className="text-text-secondary">
-                        {mySub?.recruiterNotes ||
-                          myRestriction?.details ||
-                          "Publisher rejected this submission."}
+                      <p className="text-text-secondary line-clamp-1">
+                        {mySub?.recruiterNotes || myRestriction?.details || "Publisher rejected this submission."}
                       </p>
                     </div>
                   )}
 
                   {!isCreator && myDispute && (
-                    <div className="p-3.5 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-purple-400 uppercase font-mono">
-                          {myDispute.status === "resolved_candidate"
-                            ? "Jury Override Won (2/3)"
-                            : myDispute.status === "resolved_recruiter"
-                            ? "Jury Upheld Rejection (2/3)"
-                            : `Dispute Jury Open (${myDispute.votesForCandidate}/2 Pay · ${myDispute.votesForRecruiter}/2 Uphold)`}
-                        </span>
-                        <span className="font-mono text-text-muted">
-                          Score {myDispute.evaluationScore}/100
-                        </span>
-                      </div>
-                      <p className="text-text-secondary">
+                    <div className="px-3 py-2 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs flex items-center justify-between gap-2">
+                      <span className="font-bold text-purple-400 uppercase font-mono truncate">
                         {myDispute.status === "resolved_candidate"
-                          ? "2-of-3 peer jurors overrode the rejection and released your USDC reward + refunded stake on-chain."
+                          ? "Jury Override Won (2/3)"
                           : myDispute.status === "resolved_recruiter"
-                          ? "2-of-3 peer jurors upheld the rejection and slashed any disputed stake into the bounty spam pool."
-                          : "Escrow early withdrawal is frozen while peer SBT/streak jurors vote in the Active Jury Disputes panel below."}
-                      </p>
+                          ? "Jury Upheld Rejection (2/3)"
+                          : `Dispute Open (${myDispute.votesForCandidate}/2 Pay · ${myDispute.votesForRecruiter}/2 Uphold)`}
+                      </span>
+                      <span className="font-mono text-text-muted shrink-0">
+                        {myDispute.evaluationScore}/100
+                      </span>
                     </div>
                   )}
 
-                  {!myClaim &&
-                    !myRestriction &&
-                    mySub?.reviewStatus === "approved" && (
-                      <div className="p-3.5 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-purple-400 uppercase font-mono">
-                            Approved · Payout Ready to Claim
-                          </span>
-                          <span className="font-mono font-bold text-text">
-                            {bounty.rewardPerWinnerUsdc} USDC
-                          </span>
-                        </div>
-                        <p className="text-text-secondary">
-                          {claimableEval
-                            ? "Publisher approved your submission. Click Claim Approved USDC below to transfer escrow funds to your wallet."
-                            : "Publisher approved your submission. Click below to anchor your evaluation proof and claim USDC directly into your wallet."}
-                        </p>
-                      </div>
-                    )}
+                  {!myClaim && !myRestriction && mySub?.reviewStatus === "approved" && (
+                    <div className="px-3 py-2 rounded-lg border border-purple-500/40 bg-surface-elevated text-xs flex items-center justify-between gap-2">
+                      <span className="font-bold text-purple-400 uppercase font-mono">
+                        Approved · Payout Ready
+                      </span>
+                      <span className="font-mono font-bold text-text">
+                        {bounty.rewardPerWinnerUsdc} USDC
+                      </span>
+                    </div>
+                  )}
 
                   {!isCreator &&
                     mySub &&
                     mySub.reviewStatus === "pending_review" &&
                     !mySub.isReviewExpired && (
-                      <div className="p-3.5 rounded-lg border border-border bg-surface-elevated text-xs space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-purple-400 uppercase font-mono">
-                            Slot Reserved · Pending Review
-                          </span>
-                          <span className="font-mono text-text">
-                            {mySub.remainingReviewLabel} left
-                          </span>
-                        </div>
-                        <p className="text-text-secondary">
-                          Recruiter can approve early for immediate release, or auto-claim unlocks automatically when the 24h window ends.
-                        </p>
+                      <div className="px-3 py-2 rounded-lg border border-border bg-surface-elevated text-xs flex items-center justify-between gap-2">
+                        <span className="font-bold text-purple-400 uppercase font-mono">
+                          Slot Reserved · Pending Review
+                        </span>
+                        <span className="font-mono text-text">
+                          {mySub.remainingReviewLabel} left
+                        </span>
                       </div>
                     )}
 
@@ -1090,21 +996,21 @@ export default function BountiesPage() {
                     !myRestriction &&
                     (!mySub || mySub.reviewStatus === "below_threshold") &&
                     bestIneligibleEval && (
-                      <div className="p-3.5 rounded-lg border border-border bg-surface-elevated text-xs space-y-1">
+                      <div className="px-3 py-2 rounded-lg border border-border bg-surface-elevated text-xs flex items-center justify-between gap-2">
                         <span className="font-bold text-purple-400 uppercase font-mono">
-                          Not Eligible · Score {bestIneligibleEval.overallScore}/100
+                          Score {bestIneligibleEval.overallScore}/100 (Min {bounty.minScore})
                         </span>
-                        <p className="text-text-secondary">
-                          Required score is {bounty.minScore}/100. View your report to improve or defend your deductions.
-                        </p>
                       </div>
                     )}
+                </div>
 
-                  <div className="flex flex-wrap items-center gap-2.5">
+                {/* Single Compact Action Footer */}
+                <div className="pt-3 border-t border-border/70 flex flex-wrap items-center justify-between gap-2.5">
+                  <div className="flex flex-wrap items-center gap-2">
                     {isCreator ? (
                       <>
                         <Link href={`/bounties/${bounty.id}/review`}>
-                          <Button variant="primary" size="md">
+                          <Button variant="primary" size="sm">
                             Publisher Review Panel
                             {bounty.pendingReviewCount > 0
                               ? ` (${bounty.pendingReviewCount} pending)`
@@ -1119,7 +1025,7 @@ export default function BountiesPage() {
                           (claimableEval || qualifyingUnanchored) && (
                             <Button
                               variant="secondary"
-                              size="md"
+                              size="sm"
                               isLoading={busyBountyId === bounty.id}
                               onClick={() =>
                                 void handleClaim(
@@ -1130,24 +1036,24 @@ export default function BountiesPage() {
                               }
                             >
                               {!claimableEval
-                                ? `Anchor Proof & Claim ${bounty.rewardPerWinnerUsdc} USDC`
-                                : `Claim Approved ${bounty.rewardPerWinnerUsdc} USDC`}{" "}
+                                ? `Anchor & Claim ${bounty.rewardPerWinnerUsdc} USDC`
+                                : `Claim ${bounty.rewardPerWinnerUsdc} USDC`}{" "}
                               →
                             </Button>
                           )}
                         {isExpired && bounty.status !== "refunded" && (
                           (bounty.openDisputesCount ?? 0) > 0 ? (
-                            <Button variant="outline" size="md" disabled>
-                              Escrow Frozen ({bounty.openDisputesCount} Open Dispute)
+                            <Button variant="outline" size="sm" disabled>
+                              Escrow Frozen ({bounty.openDisputesCount})
                             </Button>
                           ) : (
                             <Button
                               variant="outline"
-                              size="md"
+                              size="sm"
                               isLoading={busyBountyId === bounty.id}
                               onClick={() => void handleRefund(bounty)}
                             >
-                              Withdraw Expired Escrow USDC
+                              Withdraw Escrow
                             </Button>
                           )
                         )}
@@ -1159,7 +1065,7 @@ export default function BountiesPage() {
                     ) : canOpenDispute && bestDisputeEval ? (
                       <Button
                         variant="primary"
-                        size="md"
+                        size="sm"
                         isLoading={busyBountyId === bounty.id}
                         onClick={() => void handleOpenDispute(bounty, bestDisputeEval)}
                       >
@@ -1170,15 +1076,15 @@ export default function BountiesPage() {
                         href="#active-jury-disputes"
                         className="px-3 py-1.5 text-xs font-mono rounded-md bg-surface-elevated border border-purple-500/40 text-purple-400 font-bold hover:border-purple-400 transition-colors"
                       >
-                        View Jury Ticket ({myDispute.votesForCandidate}/2 Override) →
+                        View Jury Ticket →
                       </a>
                     ) : myRestriction ? null : mySub &&
                       mySub.reviewStatus === "below_threshold" &&
                       mySub.stakeStatus === "pending" ? (
-                      <div className="flex flex-wrap items-center gap-2.5">
+                      <>
                         <Button
                           variant="primary"
-                          size="md"
+                          size="sm"
                           isLoading={busyBountyId === bounty.id}
                           onClick={() => void handleRefundStake(bounty, mySub.id)}
                         >
@@ -1186,12 +1092,12 @@ export default function BountiesPage() {
                         </Button>
                         {bestIneligibleEval && (
                           <Link href={`/evaluations/${bestIneligibleEval.id}/report`}>
-                            <Button variant="outline" size="md">
-                              View Report ({bestIneligibleEval.overallScore}/100) →
+                            <Button variant="outline" size="sm">
+                              Report →
                             </Button>
                           </Link>
                         )}
-                      </div>
+                      </>
                     ) : mySub &&
                       mySub.reviewStatus !== "below_threshold" &&
                       mySub.reviewStatus !== "evaluating" ? (
@@ -1199,7 +1105,7 @@ export default function BountiesPage() {
                         (claimableEval || qualifyingUnanchored) ? (
                           <Button
                             variant="primary"
-                            size="md"
+                            size="sm"
                             isLoading={busyBountyId === bounty.id}
                             onClick={() =>
                               void handleClaim(
@@ -1218,9 +1124,9 @@ export default function BountiesPage() {
                                 bounty.rewardPerWinnerUsdc + extraStake
                               ).toFixed(2);
                               return !claimableEval
-                                ? `Anchor Proof & Claim ${payoutLabel} USDC`
+                                ? `Anchor & Claim ${payoutLabel} USDC`
                                 : mySub.reviewStatus === "approved"
-                                ? `Claim Approved ${payoutLabel} USDC`
+                                ? `Claim ${payoutLabel} USDC`
                                 : `Auto-Claim ${payoutLabel} USDC`;
                             })()}{" "}
                             →
@@ -1228,87 +1134,89 @@ export default function BountiesPage() {
                         ) : null
                       ) : mySub.reviewStatus === "pending_review" && qualifyingUnanchored ? (
                         <Link href={`/evaluations/${qualifyingUnanchored.id}/report`}>
-                          <Button variant="outline" size="md">
-                            Anchor Evaluation Proof ({qualifyingUnanchored.overallScore}/100) →
+                          <Button variant="outline" size="sm">
+                            Anchor Proof ({qualifyingUnanchored.overallScore}/100) →
                           </Button>
                         </Link>
                       ) : null
                     ) : claimableEval || qualifyingUnanchored ? (
-                      <div className="space-y-1.5">
-                        <Button
-                          variant="secondary"
-                          size="md"
-                          isLoading={busyBountyId === bounty.id}
-                          disabled={!meetsMinStreak}
-                          onClick={() =>
-                            void handleSubmitSlot(
-                              bounty,
-                              (claimableEval ?? qualifyingUnanchored)!.id
-                            )
-                          }
-                        >
-                          {isZeroStakeVip
-                            ? `Enter Review with 0 USDC Stake (VIP Perk) (${(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →`
-                            : `Stake ${standardStakeUsdc.toFixed(2)} USDC & Enter Review (${(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →`}
-                        </Button>
-                        <p className="text-[11px] font-mono text-text-muted">
-                          {!meetsMinStreak
-                            ? `Requires ${requiredStreak}+ active streak (30d fresh, 0 fraud flags) to enter.`
-                            : isZeroStakeVip
-                            ? "0 USDC Stake (Verified Streak Perk) · keep slashed spam yield on approval"
-                            : `${standardStakeUsdc.toFixed(2)} USDC stake → get stake back + slashed spam yield on approval`}
-                        </p>
-                      </div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        isLoading={busyBountyId === bounty.id}
+                        disabled={!meetsMinStreak}
+                        onClick={() =>
+                          void handleSubmitSlot(
+                            bounty,
+                            (claimableEval ?? qualifyingUnanchored)!.id
+                          )
+                        }
+                      >
+                        {isZeroStakeVip
+                          ? `Enter Review (VIP 0 USDC) →`
+                          : `Stake ${standardStakeUsdc.toFixed(2)} USDC & Enter →`}
+                      </Button>
                     ) : bestIneligibleEval ? (
                       <Link href={`/evaluations/${bestIneligibleEval.id}/report`}>
-                        <Button variant="outline" size="md">
+                        <Button variant="outline" size="sm">
                           View Report ({bestIneligibleEval.overallScore}/100) →
                         </Button>
                       </Link>
                     ) : bounty.availableSlots <= 0 ? (
                       <span className="px-2.5 py-1 text-xs font-mono rounded-md bg-surface-elevated border border-border text-text-muted">
-                        All Winner Slots Reserved / Paid
+                        Slots Filled
                       </span>
                     ) : bounty.status === "active" && !isExpired ? (
-                      <div className="space-y-1.5">
-                        <Link
-                          href={
-                            meetsMinStreak
-                              ? `/evaluations/new?bountyId=${bounty.id}${
-                                  activeReferrer
-                                    ? `&ref=${encodeURIComponent(activeReferrer)}`
-                                    : ""
-                                }`
-                              : "#"
+                      <Link
+                        href={
+                          meetsMinStreak
+                            ? `/evaluations/new?bountyId=${bounty.id}${
+                                activeReferrer
+                                  ? `&ref=${encodeURIComponent(activeReferrer)}`
+                                  : ""
+                              }`
+                            : "#"
+                        }
+                        aria-disabled={!meetsMinStreak}
+                        onClick={(e) => {
+                          if (!meetsMinStreak) {
+                            e.preventDefault();
+                            showError(
+                              new Error(
+                                `This bounty requires a ${requiredStreak}+ active verified streak (within 30 days, 0 fraud flags). Your current active streak is ${activeStreak}.`
+                              ),
+                              "Minimum Streak Not Met"
+                            );
                           }
-                          aria-disabled={!meetsMinStreak}
-                          onClick={(e) => {
-                            if (!meetsMinStreak) {
-                              e.preventDefault();
-                              showError(
-                                new Error(
-                                  `This bounty requires a ${requiredStreak}+ active verified streak (within 30 days, 0 fraud flags). Your current active streak is ${activeStreak}.`
-                                ),
-                                "Minimum Streak Not Met"
-                              );
-                            }
-                          }}
-                        >
-                          <Button variant="primary" size="md" disabled={!meetsMinStreak}>
-                            {isZeroStakeVip
-                              ? "Apply · 0 USDC Stake (Verified Streak Perk) →"
-                              : `Apply & Stake ${standardStakeUsdc.toFixed(2)} USDC →`}
-                          </Button>
-                        </Link>
-                        <p className="text-[11px] font-mono text-text-muted">
-                          {!meetsMinStreak
-                            ? `Requires ${requiredStreak}+ active streak (30d fresh, 0 fraud flags) to apply.`
-                            : isZeroStakeVip
-                            ? "0 USDC Stake (Verified Streak Perk) · waived by your active 2+ streak"
-                            : `${standardStakeUsdc.toFixed(2)} USDC stake → get stake back + slashed spam yield on approval`}
-                        </p>
-                      </div>
+                        }}
+                      >
+                        <Button variant="primary" size="sm" disabled={!meetsMinStreak}>
+                          {isZeroStakeVip
+                            ? "Apply (VIP 0 USDC) →"
+                            : !meetsMinStreak
+                            ? `Requires ${requiredStreak}+ Streak`
+                            : `Apply · ${standardStakeUsdc.toFixed(2)} USDC Stake →`}
+                        </Button>
+                      </Link>
                     ) : null}
+                  </div>
+
+                  <div className="flex items-center gap-3 text-[11px] font-mono shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyScoutLink(bounty)}
+                      className="text-purple-400 hover:underline cursor-pointer"
+                    >
+                      {copiedScoutBountyId === bounty.id
+                        ? "Copied!"
+                        : "Share 10%"}
+                    </button>
+                    <Link
+                      href={`/bounties/${bounty.id}`}
+                      className="text-text-muted hover:text-purple-400 transition-colors"
+                    >
+                      Details →
+                    </Link>
                   </div>
                 </div>
               </div>
