@@ -45,7 +45,19 @@ export async function getEvaluationProgress(
     .where(eq(debateMessages.evaluationId, evaluationId))
     .orderBy(debateMessages.sequence);
 
-  const completedAgents: CompletedAgentSummary[] = runs.map((r) => {
+  // Deduplicate completed agent runs per role (keep latest row if checkpoint resumed)
+  const latestRunByRole = new Map<string, (typeof runs)[number]>();
+  for (const r of runs) {
+    const existing = latestRunByRole.get(r.agentRole);
+    const rTime = r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
+    const exTime = existing?.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+    if (!existing || rTime >= exTime) {
+      latestRunByRole.set(r.agentRole, r);
+    }
+  }
+  const uniqueRuns = Array.from(latestRunByRole.values());
+
+  const completedAgents: CompletedAgentSummary[] = uniqueRuns.map((r) => {
     const sr = (r.structuredResult as Record<string, unknown> | null) ?? {};
     return {
       role: r.agentRole as AgentRole,
@@ -61,7 +73,7 @@ export async function getEvaluationProgress(
 
   const agentStatuses: Record<string, string> = {};
   for (const role of AGENT_ROLES) {
-    if (runs.some((r) => r.agentRole === role)) {
+    if (uniqueRuns.some((r) => r.agentRole === role)) {
       agentStatuses[role] = "completed";
     } else if (evaluation.status === "processing") {
       agentStatuses[role] = "analyzing";
@@ -72,7 +84,15 @@ export async function getEvaluationProgress(
     }
   }
 
-  const mappedDebateMessages = turns.map((t) => ({
+  // Deduplicate debate turns by sequence number
+  const seenTurnSeqs = new Set<number>();
+  const uniqueTurns = turns.filter((t) => {
+    if (seenTurnSeqs.has(t.sequence)) return false;
+    seenTurnSeqs.add(t.sequence);
+    return true;
+  });
+
+  const mappedDebateMessages = uniqueTurns.map((t) => ({
     id: t.id,
     sequence: t.sequence,
     agentRole: t.agentRole as AgentRole,
