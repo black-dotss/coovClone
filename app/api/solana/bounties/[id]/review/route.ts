@@ -1,15 +1,43 @@
+import { PublicKey } from "@solana/web3.js";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { requireAuth } from "@/lib/auth";
 import {
   getBountyPublisherReviewWorkspace,
   reviewBountySubmissionDecision,
 } from "@/lib/bounties/service";
-import { createApiHandler, successResponse } from "@/lib/shared";
+import { db } from "@/lib/db";
+import { bounties, bountySubmissions } from "@/lib/db/schema";
+import {
+  BadRequestError,
+  createApiHandler,
+  ForbiddenError,
+  NotFoundError,
+  successResponse,
+} from "@/lib/shared";
+import {
+  confirmSubmittedSignature,
+  fetchOnChainClaimReceipt,
+  fetchOnChainConvictionStake,
+  fetchOnChainEscrow,
+  getExplorerTxUrl,
+  prepareApproveAndPayoutTx,
+  prepareSlashFraudStakeTx,
+} from "@/lib/solana";
 
 const ReviewActionSchema = z.object({
   submissionId: z.string().uuid(),
   action: z.enum(["approve", "reject"]),
   recruiterNotes: z.string().max(2000).optional(),
+  recruiterWallet: z.string().min(32).max(64).optional(),
+});
+
+const ConfirmReviewTxSchema = z.object({
+  submissionId: z.string().uuid(),
+  action: z.enum(["approve", "reject"]),
+  recruiterNotes: z.string().max(2000).optional(),
+  recruiterWallet: z.string().min(32).max(64),
+  txSignature: z.string().min(32).max(128),
 });
 
 export const GET = createApiHandler(
@@ -29,6 +57,96 @@ export const POST = createApiHandler(
     const body = await req.json();
     const parsed = ReviewActionSchema.parse(body);
 
+    const [bounty] = await db
+      .select()
+      .from(bounties)
+      .where(eq(bounties.id, id))
+      .limit(1);
+
+    if (!bounty) {
+      throw new NotFoundError("Bounty not found");
+    }
+    if (bounty.recruiterUserId !== session.user.id) {
+      throw new ForbiddenError("Only the bounty publisher can review submissions.");
+    }
+
+    const [sub] = await db
+      .select()
+      .from(bountySubmissions)
+      .where(
+        and(
+          eq(bountySubmissions.id, parsed.submissionId),
+          eq(bountySubmissions.bountyId, id)
+        )
+      )
+      .limit(1);
+
+    if (!sub) {
+      throw new NotFoundError("Bounty submission not found");
+    }
+
+    // Check if this candidate holds an active Pending ConvictionStake PDA on-chain
+    let hasPendingOnChainStake = sub.stakeStatus === "pending";
+    if (!hasPendingOnChainStake && sub.candidateWallet) {
+      try {
+        const onChainStake = await fetchOnChainConvictionStake(
+          bounty.jobDescriptionId,
+          sub.candidateWallet
+        );
+        if (onChainStake.stake?.status === "pending") {
+          hasPendingOnChainStake = true;
+        }
+      } catch {
+        // Fallback to DB state if RPC temporarily unavailable
+      }
+    }
+
+    if (hasPendingOnChainStake && sub.candidateWallet) {
+      if (!parsed.recruiterWallet) {
+        throw new BadRequestError(
+          parsed.action === "approve"
+            ? "Connect your publisher Solana wallet to execute on-chain approve_and_payout."
+            : "Connect your publisher Solana wallet to execute on-chain slash_fraud_stake."
+        );
+      }
+      let recruiterWallet: string;
+      try {
+        recruiterWallet = new PublicKey(parsed.recruiterWallet).toBase58();
+      } catch {
+        throw new BadRequestError("Invalid recruiter Solana wallet address.");
+      }
+
+      if (parsed.action === "approve") {
+        const prepared = await prepareApproveAndPayoutTx({
+          payerWallet: recruiterWallet,
+          candidateWallet: sub.candidateWallet,
+          jobId: bounty.jobDescriptionId,
+          evalId: sub.evaluationId,
+          oracleCosign: false,
+        });
+        return successResponse({
+          requiresSignature: true,
+          action: "approve" as const,
+          submissionId: sub.id,
+          ...prepared,
+        });
+      }
+
+      const prepared = await prepareSlashFraudStakeTx({
+        authorityWallet: recruiterWallet,
+        candidateWallet: sub.candidateWallet,
+        jobId: bounty.jobDescriptionId,
+        reasonCode: 3,
+      });
+      return successResponse({
+        requiresSignature: true,
+        action: "reject" as const,
+        submissionId: sub.id,
+        ...prepared,
+      });
+    }
+
+    // Fallback for legacy pre-stake submissions
     const updated = await reviewBountySubmissionDecision({
       bountyId: id,
       submissionId: parsed.submissionId,
@@ -38,8 +156,124 @@ export const POST = createApiHandler(
     });
 
     return successResponse({
+      requiresSignature: false,
       submission: updated,
       payoutUnlocked: updated.reviewStatus === "approved",
+    });
+  }
+);
+
+export const PATCH = createApiHandler(
+  async (req: Request, context: { params: Promise<{ id: string }> }) => {
+    const session = await requireAuth(req.headers);
+    const { id } = await context.params;
+    const body = await req.json();
+    const parsed = ConfirmReviewTxSchema.parse(body);
+
+    const [bounty] = await db
+      .select()
+      .from(bounties)
+      .where(eq(bounties.id, id))
+      .limit(1);
+    if (!bounty) {
+      throw new NotFoundError("Bounty not found");
+    }
+    if (bounty.recruiterUserId !== session.user.id) {
+      throw new ForbiddenError("Only the bounty publisher can confirm review transactions.");
+    }
+
+    const [sub] = await db
+      .select()
+      .from(bountySubmissions)
+      .where(
+        and(
+          eq(bountySubmissions.id, parsed.submissionId),
+          eq(bountySubmissions.bountyId, id)
+        )
+      )
+      .limit(1);
+    if (!sub || !sub.candidateWallet) {
+      throw new NotFoundError("Staked submission record not found.");
+    }
+
+    await confirmSubmittedSignature(parsed.txSignature);
+    const [escrowRes, stakeRes, claimRes] = await Promise.all([
+      fetchOnChainEscrow(bounty.jobDescriptionId),
+      fetchOnChainConvictionStake(bounty.jobDescriptionId, sub.candidateWallet),
+      parsed.action === "approve"
+        ? fetchOnChainClaimReceipt(bounty.jobDescriptionId, sub.candidateWallet)
+        : Promise.resolve({ claimReceiptPda: "", claim: null }),
+    ]);
+
+    if (parsed.action === "approve") {
+      if (!claimRes.claim || stakeRes.stake?.status !== "approved") {
+        throw new BadRequestError(
+          "Transaction confirmed, but approve_and_payout state was not updated on-chain."
+        );
+      }
+
+      const paidMicros = BigInt(claimRes.claim.amountPaidMicros);
+      const rewardMicros = BigInt(bounty.rewardPerWinnerMicros);
+      const stakeMicros = BigInt(stakeRes.stake.amountStakedMicros);
+      const bonusMicros =
+        paidMicros > rewardMicros + stakeMicros
+          ? paidMicros - rewardMicros - stakeMicros
+          : BigInt(0);
+
+      const updated = await reviewBountySubmissionDecision({
+        bountyId: id,
+        submissionId: sub.id,
+        recruiterUserId: session.user.id,
+        action: "approve",
+        recruiterNotes: parsed.recruiterNotes,
+        payoutTxSignature: parsed.txSignature,
+        claimReceiptPda: claimRes.claimReceiptPda,
+        amountPaidMicros: paidMicros.toString(),
+        bonusPaidMicros: bonusMicros.toString(),
+        claimsCount: escrowRes.escrow?.claimsCount ?? bounty.claimsCount + 1,
+        slashedPoolMicros:
+          escrowRes.escrow?.slashedPoolAmountMicros ?? bounty.slashedPoolMicros,
+        isClosed: Boolean(escrowRes.escrow?.isClosed),
+      });
+
+      return successResponse({
+        confirmed: true,
+        action: "approve" as const,
+        submission: updated,
+        totalPaidUsdc: Number(paidMicros) / 1_000_000,
+        bonusPaidUsdc: Number(bonusMicros) / 1_000_000,
+        txSignature: parsed.txSignature,
+        txUrl: getExplorerTxUrl(parsed.txSignature),
+      });
+    }
+
+    if (stakeRes.stake?.status !== "slashed") {
+      throw new BadRequestError(
+        "Transaction confirmed, but ConvictionStake PDA is not marked Slashed on-chain."
+      );
+    }
+
+    const updated = await reviewBountySubmissionDecision({
+      bountyId: id,
+      submissionId: sub.id,
+      recruiterUserId: session.user.id,
+      action: "reject",
+      recruiterNotes: parsed.recruiterNotes,
+      slashTxSignature: parsed.txSignature,
+      slashedPoolMicros:
+        escrowRes.escrow?.slashedPoolAmountMicros ?? bounty.slashedPoolMicros,
+    });
+
+    return successResponse({
+      confirmed: true,
+      action: "reject" as const,
+      submission: updated,
+      slashedAmountUsdc: Number(stakeRes.stake.amountStakedMicros) / 1_000_000,
+      newSlashedPoolUsdc:
+        Number(escrowRes.escrow?.slashedPoolAmountMicros ?? bounty.slashedPoolMicros) /
+        1_000_000,
+      txSignature: parsed.txSignature,
+      txUrl: getExplorerTxUrl(parsed.txSignature),
     });
   }
 );

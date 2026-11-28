@@ -64,6 +64,7 @@ export default function NewBountyPage() {
   const [logoError, setLogoError] = useState<string | null>(null);
   const [minScore, setMinScore] = useState("85");
   const [rewardPerWinner, setRewardPerWinner] = useState("20");
+  const [stakePct, setStakePct] = useState("10");
   const [maxWinners, setMaxWinners] = useState("5");
   const [expiresInDays, setExpiresInDays] = useState("30");
   const [rawText, setRawText] = useState("");
@@ -73,6 +74,9 @@ export default function NewBountyPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const totalPoolUsdc = (Number(rewardPerWinner) || 0) * (Number(maxWinners) || 0);
+  const normalizedStakePct = Math.min(100, Math.max(1, Number(stakePct) || 10));
+  const stakePerCandidateUsdc =
+    ((Number(rewardPerWinner) || 0) * normalizedStakePct) / 100;
 
   const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -123,6 +127,7 @@ export default function NewBountyPage() {
           recruiterWallet: publicKey,
           minScore: Number(minScore),
           rewardPerWinnerUsdc: Number(rewardPerWinner),
+          stakePct: normalizedStakePct,
           maxWinners: Number(maxWinners),
           expiresInDays: Number(expiresInDays),
         }),
@@ -219,6 +224,16 @@ export default function NewBountyPage() {
                     required
                   />
                   <Input
+                    label="Required Stake (%)"
+                    type="number"
+                    step="0.5"
+                    min={1}
+                    max={100}
+                    value={stakePct}
+                    onChange={(e) => setStakePct(e.target.value)}
+                    required
+                  />
+                  <Input
                     label="Max Winners"
                     type="number"
                     min={1}
@@ -227,34 +242,46 @@ export default function NewBountyPage() {
                     onChange={(e) => setMaxWinners(e.target.value)}
                     required
                   />
-                  <Input
-                    label="Expires In (Days)"
-                    type="number"
-                    min={1}
-                    max={180}
-                    value={expiresInDays}
-                    onChange={(e) => setExpiresInDays(e.target.value)}
-                    required
-                  />
+                  <div className="col-span-2">
+                    <Input
+                      label="Expires In (Days)"
+                      type="number"
+                      min={1}
+                      max={180}
+                      value={expiresInDays}
+                      onChange={(e) => setExpiresInDays(e.target.value)}
+                      required
+                    />
+                  </div>
                 </div>
 
-                <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-2">
+                <div className="p-4 rounded-lg bg-surface-elevated border border-border space-y-2.5">
                   <div className="flex items-center justify-between text-xs font-mono">
                     <span className="text-text-muted">Total Escrow Lock</span>
                     <span className="text-lg font-extrabold text-purple-400">
                       {totalPoolUsdc.toFixed(2)} USDC
                     </span>
                   </div>
+                  <div className="flex items-center justify-between text-xs font-mono pt-1 border-t border-border/60">
+                    <span className="text-text-muted">Candidate Conviction Stake ({normalizedStakePct}%)</span>
+                    <span className="font-bold text-text">
+                      {stakePerCandidateUsdc.toFixed(2)} USDC / applicant
+                    </span>
+                  </div>
                   <p className="text-xs text-text-secondary leading-relaxed">
-                    Up to {maxWinners || 1} candidate(s) scoring{" "}
+                    Applicants lock{" "}
+                    <span className="font-semibold text-text">
+                      {stakePerCandidateUsdc.toFixed(2)} USDC
+                    </span>{" "}
+                    before entering review. Legitimate winners scoring{" "}
                     <span className="font-semibold text-text">
                       {minScore || 85}/100+
                     </span>{" "}
-                    enter a 24h publisher review hold before claiming{" "}
+                    receive{" "}
                     <span className="font-semibold text-text">
                       {rewardPerWinner || 0} USDC
-                    </span>
-                    . Unclaimed funds withdraw cleanly after expiry.
+                    </span>{" "}
+                    + 100% stake refund + pro-rata slashed fraud stakes.
                   </p>
                 </div>
               </CardContent>

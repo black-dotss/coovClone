@@ -21,6 +21,10 @@ interface BountyResultResponse {
     minScore: number;
     maxWinners: number;
     rewardPerWinnerUsdc: number;
+    stakePercent?: number;
+    stakePerCandidateUsdc?: number;
+    slashedPoolUsdc?: number;
+    proRataBonusUsdc?: number;
     expiresAt: string;
   };
   evaluation: {
@@ -38,6 +42,10 @@ interface BountyResultResponse {
     fakeDetectorStatus: string;
     fakeDetectorScore: number | null;
     recruiterNotes: string | null;
+    stakePdaAddress?: string | null;
+    stakeStatus?: string;
+    stakeAmountUsdc?: number;
+    bonusPaidUsdc?: number;
     remainingReviewLabel: string | null;
   } | null;
   restriction: {
@@ -257,14 +265,87 @@ function BountyResultContent() {
           </div>
         )}
 
-        {claimNotice && (
-          <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-purple-500/40 text-xs font-mono text-purple-400">
-            {claimNotice}
-          </div>
-        )}
+          {data.submission?.stakeStatus && data.submission.stakeStatus !== "none" && (
+            <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-border flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+              <span className="text-text-muted">
+                Conviction Stake ({data.submission.stakeAmountUsdc ?? data.bounty.stakePerCandidateUsdc ?? 0} USDC)
+              </span>
+              <span className="text-purple-400 font-semibold uppercase">
+                {data.submission.stakeStatus}
+                {(data.submission.bonusPaidUsdc ?? 0) > 0
+                  ? ` (+${data.submission.bonusPaidUsdc} USDC spam yield)`
+                  : (data.bounty.proRataBonusUsdc ?? 0) > 0 && isSuccess
+                  ? ` (+${data.bounty.proRataBonusUsdc?.toFixed(2)} USDC est. yield)`
+                  : ""}
+              </span>
+            </div>
+          )}
 
-        {/* Minimal Actions */}
-        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-border">
+          {claimNotice && (
+            <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-purple-500/40 text-xs font-mono text-purple-400">
+              {claimNotice}
+            </div>
+          )}
+
+          {/* Minimal Actions */}
+          <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-border">
+            {subStatus === "below_threshold" &&
+              data.submission?.stakeStatus === "pending" &&
+              !data.restriction && (
+                <Button
+                  variant="primary"
+                  size="md"
+                  isLoading={claiming}
+                  onClick={async () => {
+                    if (!publicKey) {
+                      openConnectModal();
+                      return;
+                    }
+                    setClaiming(true);
+                    setError(null);
+                    try {
+                      const prep = await apiFetch<{
+                        serializedTxBase64: string;
+                        submissionId: string;
+                      }>(`/api/solana/bounties/${data.bounty.id}/refund-stake`, {
+                        method: "POST",
+                        body: JSON.stringify({
+                          walletAddress: publicKey,
+                          submissionId: data.submission!.id,
+                        }),
+                      });
+                      const sig = await signAndSubmitTx(prep.serializedTxBase64);
+                      const conf = await apiFetch<{ amountRefundedUsdc: number }>(
+                        `/api/solana/bounties/${data.bounty.id}/refund-stake`,
+                        {
+                          method: "PATCH",
+                          body: JSON.stringify({
+                            walletAddress: publicKey,
+                            submissionId: prep.submissionId,
+                            txSignature: sig,
+                          }),
+                        }
+                      );
+                      setClaimNotice(
+                        `Refunded ${conf.amountRefundedUsdc} USDC Conviction Stake back to your wallet.`
+                      );
+                      const qs = evalId ? `?evalId=${encodeURIComponent(evalId)}` : "";
+                      const refreshed = await apiFetch<BountyResultResponse>(
+                        `/api/solana/bounties/${bountyId}/result${qs}`
+                      );
+                      setData(refreshed);
+                    } catch (err) {
+                      setError(
+                        err instanceof Error ? err.message : "Failed to reclaim stake."
+                      );
+                    } finally {
+                      setClaiming(false);
+                    }
+                  }}
+                >
+                  Reclaim {data.submission.stakeAmountUsdc ?? 0} USDC Stake →
+                </Button>
+              )}
           {isSuccess &&
             !data.claim &&
             (subStatus === "approved" ||

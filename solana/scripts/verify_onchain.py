@@ -138,6 +138,14 @@ def derive_claim_pda(
     return Pubkey.find_program_address([b"claim", bytes(escrow_pda), bytes(candidate)], program_id)
 
 
+def derive_conviction_stake_pda(
+    escrow_pda: Pubkey, candidate: Pubkey, program_id: Pubkey
+) -> tuple[Pubkey, int]:
+    return Pubkey.find_program_address(
+        [b"conviction_stake", bytes(escrow_pda), bytes(candidate)], program_id
+    )
+
+
 @dataclass
 class DecodedProgramConfig:
     pda: str
@@ -196,7 +204,22 @@ class DecodedBountyEscrow:
     is_closed: bool
     bump: int
     vault_bump: int
+    stake_bps: int = 1000
+    slashed_pool_amount_micros: int = 0
+    is_legacy_layout: bool = False
     vault_balance_usdc: Optional[float] = None
+
+
+@dataclass
+class DecodedConvictionStake:
+    pda: str
+    escrow: str
+    candidate: str
+    amount_staked_micros: int
+    status: str
+    submitted_at: int
+    resolved_at: int
+    bump: int
 
 
 def decode_program_config(pda: Pubkey, raw: bytes) -> DecodedProgramConfig:
@@ -268,21 +291,66 @@ def decode_evaluation_record(pda: Pubkey, raw: bytes) -> DecodedEvaluationRecord
 def decode_bounty_escrow(pda: Pubkey, vault_pda: Pubkey, raw: bytes) -> DecodedBountyEscrow:
     r = BorshReader(raw)
     r.assert_discriminator("BountyEscrow")
+    recruiter = r.read_pubkey()
+    job_id = bytes16_to_uuid(r.read_bytes(16))
+    usdc_mint = r.read_pubkey()
+    vault = r.read_pubkey()
+    reward_per_winner_micros = r.read_u64()
+    max_winners = r.read_u16()
+    claims_count = r.read_u16()
+    min_score = r.read_u8()
+    expires_at = r.read_i64()
+    is_closed = r.read_bool()
+    bump = r.read_u8()
+    vault_bump = r.read_u8()
+
+    stake_bps = 1000
+    slashed_pool_amount_micros = 0
+    is_legacy_layout = True
+    if len(raw) >= 154:
+        parsed_bps = r.read_u16()
+        stake_bps = parsed_bps if parsed_bps > 0 else 1000
+        slashed_pool_amount_micros = r.read_u64()
+        is_legacy_layout = False
+
     return DecodedBountyEscrow(
         pda=str(pda),
         vault_pda=str(vault_pda),
-        recruiter=r.read_pubkey(),
-        job_id=bytes16_to_uuid(r.read_bytes(16)),
-        usdc_mint=r.read_pubkey(),
-        vault=r.read_pubkey(),
-        reward_per_winner_micros=r.read_u64(),
-        max_winners=r.read_u16(),
-        claims_count=r.read_u16(),
-        min_score=r.read_u8(),
-        expires_at=r.read_i64(),
-        is_closed=r.read_bool(),
+        recruiter=recruiter,
+        job_id=job_id,
+        usdc_mint=usdc_mint,
+        vault=vault,
+        reward_per_winner_micros=reward_per_winner_micros,
+        max_winners=max_winners,
+        claims_count=claims_count,
+        min_score=min_score,
+        expires_at=expires_at,
+        is_closed=is_closed,
+        bump=bump,
+        vault_bump=vault_bump,
+        stake_bps=stake_bps,
+        slashed_pool_amount_micros=slashed_pool_amount_micros,
+        is_legacy_layout=is_legacy_layout,
+    )
+
+
+def decode_conviction_stake(pda: Pubkey, raw: bytes) -> DecodedConvictionStake:
+    r = BorshReader(raw)
+    r.assert_discriminator("ConvictionStake")
+    escrow = r.read_pubkey()
+    candidate = r.read_pubkey()
+    amount_staked_micros = r.read_u64()
+    status_idx = r.read_u8()
+    status_map = {0: "Pending", 1: "Approved", 2: "Slashed", 3: "Refunded"}
+    return DecodedConvictionStake(
+        pda=str(pda),
+        escrow=escrow,
+        candidate=candidate,
+        amount_staked_micros=amount_staked_micros,
+        status=status_map.get(status_idx, f"Unknown({status_idx})"),
+        submitted_at=r.read_i64(),
+        resolved_at=r.read_i64(),
         bump=r.read_u8(),
-        vault_bump=r.read_u8(),
     )
 
 
@@ -409,6 +477,18 @@ async def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                 }
 
             if candidate_pk:
+                stake_pda, _ = derive_conviction_stake_pda(escrow_pda, candidate_pk, program_id)
+                stake_resp = await client.get_account_info(stake_pda)
+                if stake_resp.value and stake_resp.value.owner == program_id:
+                    report["checks"]["conviction_stake"] = asdict(
+                        decode_conviction_stake(stake_pda, bytes(stake_resp.value.data))
+                    )
+                else:
+                    report["checks"]["conviction_stake"] = {
+                        "pda": str(stake_pda),
+                        "initialized": False,
+                    }
+
                 claim_pda, _ = derive_claim_pda(escrow_pda, candidate_pk, program_id)
                 claim_resp = await client.get_account_info(claim_pda)
                 report["checks"]["bounty_claim"] = {
@@ -494,11 +574,23 @@ def print_audit_report(report: dict[str, Any]) -> None:
         es = checks["bounty_escrow"]
         if "reward_per_winner_micros" in es:
             reward = es["reward_per_winner_micros"] / 1_000_000
+            slashed = es.get("slashed_pool_amount_micros", 0) / 1_000_000
+            stake_pct = es.get("stake_bps", 1000) / 100
             print(
-                f"[BountyEscrow]    pda={es['pda']} reward={reward:.2f} USDC slots={es['claims_count']}/{es['max_winners']} min_score={es['min_score']} vault_usdc={es.get('vault_balance_usdc')}"
+                f"[BountyEscrow]    pda={es['pda']} reward={reward:.2f} USDC stake={stake_pct:.1f}% slashed_pool={slashed:.2f} USDC slots={es['claims_count']}/{es['max_winners']} min_score={es['min_score']} vault_usdc={es.get('vault_balance_usdc')}"
             )
         else:
             print(f"[BountyEscrow]    pda={es['pda']} initialized=False")
+
+    if "conviction_stake" in checks:
+        cs = checks["conviction_stake"]
+        if "amount_staked_micros" in cs:
+            staked = cs["amount_staked_micros"] / 1_000_000
+            print(
+                f"[ConvictionStake] pda={cs['pda']} status={cs['status']} staked={staked:.2f} USDC candidate={cs['candidate']}"
+            )
+        else:
+            print(f"[ConvictionStake] pda={cs['pda']} initialized=False")
 
     if "bounty_claim" in checks:
         cl = checks["bounty_claim"]

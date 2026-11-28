@@ -10,7 +10,7 @@ import {
   evaluations,
   jobDescriptions,
 } from "@/lib/db/schema";
-import { formatRemainingDuration, RESERVED_SUBMISSION_STATUSES } from "@/lib/bounties/service";
+import { computeStakeAndBonusMetrics, formatRemainingDuration, RESERVED_SUBMISSION_STATUSES } from "@/lib/bounties/service";
 import { getSession, requireAuth } from "@/lib/auth";
 import { createJobDescription } from "@/lib/job-descriptions";
 import {
@@ -46,6 +46,7 @@ const PrepareBountySchema = z.object({
   recruiterWallet: z.string().min(32).max(64),
   minScore: z.number().int().min(50).max(100),
   rewardPerWinnerUsdc: z.number().positive().max(100_000),
+  stakePct: z.number().min(1).max(100).default(10),
   maxWinners: z.number().int().min(1).max(100),
   expiresInDays: z.number().int().min(1).max(180).default(30),
 });
@@ -87,6 +88,8 @@ export const GET = createApiHandler(async (req: Request) => {
       refundTxSignature: bounties.refundTxSignature,
       minScore: bounties.minScore,
       rewardPerWinnerMicros: bounties.rewardPerWinnerMicros,
+      stakeBps: bounties.stakeBps,
+      slashedPoolMicros: bounties.slashedPoolMicros,
       maxWinners: bounties.maxWinners,
       claimsCount: bounties.claimsCount,
       status: bounties.status,
@@ -115,16 +118,20 @@ export const GET = createApiHandler(async (req: Request) => {
           )
       : [];
 
-  // Sync live claims/closed status for open bounties
+  // Sync live claims/closed/slashed state for open bounties
   const syncedRows = await Promise.all(
     rows.map(async (row) => {
       let claimsCount = row.claimsCount;
       let status = row.status;
+      let stakeBps = row.stakeBps;
+      let slashedPoolMicros = row.slashedPoolMicros;
       if (status === "active") {
         try {
           const onChain = await fetchOnChainEscrow(row.jobDescriptionId);
           if (onChain.escrow) {
             claimsCount = onChain.escrow.claimsCount;
+            stakeBps = onChain.escrow.stakeBps || row.stakeBps;
+            slashedPoolMicros = onChain.escrow.slashedPoolAmountMicros || row.slashedPoolMicros;
             if (onChain.escrow.isClosed) {
               status = claimsCount >= row.maxWinners ? "filled" : "refunded";
             } else if (claimsCount >= row.maxWinners) {
@@ -147,11 +154,25 @@ export const GET = createApiHandler(async (req: Request) => {
       ).length;
       const occupiedSlots = claimsCount + reservedForBounty.length;
       const availableSlots = Math.max(0, row.maxWinners - occupiedSlots);
+      const stakeMetrics = computeStakeAndBonusMetrics({
+        rewardPerWinnerMicros: row.rewardPerWinnerMicros,
+        maxWinners: row.maxWinners,
+        claimsCount,
+        stakeBps,
+        slashedPoolMicros,
+      });
 
       return {
         ...row,
         claimsCount,
         status,
+        stakeBps: stakeMetrics.stakeBps,
+        stakePercent: stakeMetrics.stakePercent,
+        stakePerCandidateMicros: stakeMetrics.stakePerCandidateMicros,
+        stakePerCandidateUsdc: stakeMetrics.stakePerCandidateUsdc,
+        slashedPoolMicros: stakeMetrics.slashedPoolMicros,
+        slashedPoolUsdc: stakeMetrics.slashedPoolUsdc,
+        proRataBonusUsdc: stakeMetrics.proRataBonusUsdc,
         pendingReviewCount,
         approvedCount,
         occupiedSlots,
@@ -192,6 +213,11 @@ export const GET = createApiHandler(async (req: Request) => {
     slotReservedAt: string | null;
     reviewDeadlineAt: string | null;
     recruiterNotes: string | null;
+    stakePdaAddress: string | null;
+    stakeTxSignature: string | null;
+    stakeAmountMicros: string | null;
+    stakeAmountUsdc: number;
+    stakeStatus: string;
     isReviewExpired: boolean;
     remainingReviewLabel: string | null;
   }> = [];
@@ -247,6 +273,10 @@ export const GET = createApiHandler(async (req: Request) => {
               slotReservedAt: bountySubmissions.slotReservedAt,
               reviewDeadlineAt: bountySubmissions.reviewDeadlineAt,
               recruiterNotes: bountySubmissions.recruiterNotes,
+              stakePdaAddress: bountySubmissions.stakePdaAddress,
+              stakeTxSignature: bountySubmissions.stakeTxSignature,
+              stakeAmountMicros: bountySubmissions.stakeAmountMicros,
+              stakeStatus: bountySubmissions.stakeStatus,
             })
             .from(bountySubmissions)
             .where(eq(bountySubmissions.candidateUserId, session.user.id))
@@ -277,6 +307,7 @@ export const GET = createApiHandler(async (req: Request) => {
       );
       return {
         ...s,
+        stakeAmountUsdc: s.stakeAmountMicros ? Number(s.stakeAmountMicros) / 1_000_000 : 0,
         slotReservedAt: s.slotReservedAt ? s.slotReservedAt.toISOString() : null,
         reviewDeadlineAt: s.reviewDeadlineAt ? s.reviewDeadlineAt.toISOString() : null,
         isReviewExpired,
@@ -345,6 +376,8 @@ export const POST = createApiHandler(async (req: Request) => {
 
   const expiresAtUnix = Math.floor(Date.now() / 1000) + parsed.expiresInDays * 86_400;
 
+  const stakeBps = Math.max(100, Math.min(10_000, Math.round(parsed.stakePct * 100)));
+
   let prepared: Awaited<ReturnType<typeof prepareCreateBountyEscrowTx>>;
   try {
     prepared = await prepareCreateBountyEscrowTx({
@@ -354,6 +387,7 @@ export const POST = createApiHandler(async (req: Request) => {
       rewardPerWinnerMicros,
       maxWinners: parsed.maxWinners,
       expiresAtUnix,
+      stakeBps,
     });
   } catch (err) {
     rethrowReadableError(err, "Failed to prepare Solana escrow transaction");
@@ -441,6 +475,8 @@ export const PATCH = createApiHandler(async (req: Request) => {
         createTxSignature: parsed.txSignature,
         minScore: escrowRes.escrow.minScore,
         rewardPerWinnerMicros: escrowRes.escrow.rewardPerWinnerMicros,
+        stakeBps: escrowRes.escrow.stakeBps,
+        slashedPoolMicros: escrowRes.escrow.slashedPoolAmountMicros,
         maxWinners: escrowRes.escrow.maxWinners,
         claimsCount: escrowRes.escrow.claimsCount,
         status: "active",

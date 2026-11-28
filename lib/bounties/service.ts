@@ -4,6 +4,7 @@ import {
   agentRuns,
   auditEvents,
   bounties,
+  bountyClaims,
   bountyRestrictions,
   bountySubmissions,
   cvVersions,
@@ -29,6 +30,12 @@ import {
   NotFoundError,
 } from "@/lib/shared/errors";
 import { logger } from "@/lib/shared/logger";
+import { computeConvictionStakeMicros, DEFAULT_STAKE_BPS } from "@/lib/solana/codec";
+import {
+  confirmSubmittedSignature,
+  executeOracleSlashFraudStake,
+  fetchOnChainConvictionStake,
+} from "@/lib/solana/oracle";
 
 export const BOUNTY_REVIEW_WINDOW_HOURS = 24;
 export const BOUNTY_REVIEW_WINDOW_MS = BOUNTY_REVIEW_WINDOW_HOURS * 60 * 60 * 1000;
@@ -40,6 +47,43 @@ export type RestrictionReason =
   | "fake_resume_detected"
   | "recruiter_rejected";
 
+export function computeStakeAndBonusMetrics(bounty: {
+  rewardPerWinnerMicros?: string | null;
+  maxWinners: number;
+  claimsCount: number;
+  stakeBps?: number | null;
+  slashedPoolMicros?: string | null;
+}) {
+  const stakeBps =
+    typeof bounty.stakeBps === "number" && bounty.stakeBps > 0
+      ? bounty.stakeBps
+      : DEFAULT_STAKE_BPS;
+  const stakePercent = Number((stakeBps / 100).toFixed(2));
+  const stakePerCandidateMicros = computeConvictionStakeMicros(
+    bounty.rewardPerWinnerMicros ?? "0",
+    stakeBps
+  ).toString();
+  const stakePerCandidateUsdc = Number(stakePerCandidateMicros) / 1_000_000;
+
+  const slashedPoolMicrosBig = BigInt(bounty.slashedPoolMicros ?? "0");
+  const slashedPoolMicros = slashedPoolMicrosBig.toString();
+  const slashedPoolUsdc = Number(slashedPoolMicrosBig) / 1_000_000;
+  const remainingSlots = Math.max(1, bounty.maxWinners - bounty.claimsCount);
+  const proRataBonusMicros = (slashedPoolMicrosBig / BigInt(remainingSlots)).toString();
+  const proRataBonusUsdc = Number(proRataBonusMicros) / 1_000_000;
+
+  return {
+    stakeBps,
+    stakePercent,
+    stakePerCandidateMicros,
+    stakePerCandidateUsdc,
+    slashedPoolMicros,
+    slashedPoolUsdc,
+    proRataBonusMicros,
+    proRataBonusUsdc,
+  };
+}
+
 export interface BountySlotMetrics {
   maxWinners: number;
   claimsCount: number;
@@ -48,6 +92,11 @@ export interface BountySlotMetrics {
   approvedCount: number;
   occupiedSlots: number;
   availableSlots: number;
+  stakeBps: number;
+  stakePercent: number;
+  stakePerCandidateUsdc: number;
+  slashedPoolUsdc: number;
+  proRataBonusUsdc: number;
 }
 
 async function recordBountyAudit(params: {
@@ -265,9 +314,36 @@ export async function detectDuplicateResumeOnBounty(params: {
   return { isDuplicate: false, similarity: 0 };
 }
 
+async function trySlashPendingStakeOnFraud(params: {
+  bounty: typeof bounties.$inferSelect;
+  candidateWallet: string | null;
+  reasonCode: 1 | 2;
+}) {
+  if (!params.candidateWallet) return null;
+  const slashRes = await executeOracleSlashFraudStake({
+    candidateWallet: params.candidateWallet,
+    jobId: params.bounty.jobDescriptionId,
+    reasonCode: params.reasonCode,
+  });
+  if (slashRes.slashed && slashRes.newSlashedPoolMicros) {
+    try {
+      await db
+        .update(bounties)
+        .set({
+          slashedPoolMicros: slashRes.newSlashedPoolMicros,
+          updatedAt: new Date(),
+        })
+        .where(eq(bounties.id, params.bounty.id));
+    } catch {
+      // Safe fallback under test mocks
+    }
+  }
+  return slashRes;
+}
+
 /**
- * Runs Duplicate/Near-Identical Hash Gate and Fake Resume Detector Agent BEFORE
- * creating/queuing a bounty evaluation or allowing entry.
+ * Runs Duplicate/Near-Identical Hash Gate, Conviction Stake verification, and
+ * Fake Resume Detector Agent BEFORE creating/queuing a bounty evaluation or allowing entry.
  */
 export async function validatePreBountySubmission(params: {
   jobDescriptionId: string;
@@ -275,6 +351,8 @@ export async function validatePreBountySubmission(params: {
   cvVersionId: string;
   cvText: string;
   walletAddress?: string | null;
+  stakeTxSignature?: string | null;
+  requireOnChainStake?: boolean;
   provider?: LLMProvider;
   forceLlm?: boolean;
 }): Promise<{
@@ -283,6 +361,10 @@ export async function validatePreBountySubmission(params: {
   fingerprint: number[];
   detectorReport: FakeResumeDetectorReport;
   candidateWallet: string | null;
+  stakePdaAddress: string | null;
+  stakeTxSignature: string | null;
+  stakeAmountMicros: string | null;
+  stakeStatus: string;
 } | null> {
   const bounty = await findBountyByJobDescriptionId(params.jobDescriptionId);
   if (!bounty) return null;
@@ -305,6 +387,46 @@ export async function validatePreBountySubmission(params: {
     }
   }
 
+  const stakeMetrics = computeStakeAndBonusMetrics(bounty);
+  let stakePdaAddress: string | null = null;
+  let stakeAmountMicros: string | null = null;
+  let stakeStatus = "none";
+
+  if (params.requireOnChainStake || params.stakeTxSignature) {
+    if (!candidateWallet) {
+      throw new BadRequestError(
+        `Connect your Solana wallet and lock the ${stakeMetrics.stakePerCandidateUsdc} USDC (${stakeMetrics.stakePercent}%) Conviction Stake before entering this bounty.`
+      );
+    }
+
+    if (params.stakeTxSignature) {
+      await confirmSubmittedSignature(params.stakeTxSignature);
+    }
+
+    const stakeRes = await fetchOnChainConvictionStake(
+      bounty.jobDescriptionId,
+      candidateWallet
+    );
+    if (!stakeRes.stake) {
+      throw new BadRequestError(
+        `Conviction Stake PDA (${stakeRes.stakePda.slice(0, 8)}...) was not found on-chain. Please lock ${stakeMetrics.stakePerCandidateUsdc} USDC first.`
+      );
+    }
+    if (stakeRes.stake.status === "slashed") {
+      throw new ForbiddenError(
+        "Your Conviction Stake on this bounty was slashed due to an anti-fraud violation."
+      );
+    }
+    if (stakeRes.stake.status !== "pending") {
+      throw new BadRequestError(
+        `Your Conviction Stake status is ${stakeRes.stake.status} and cannot enter a new review.`
+      );
+    }
+    stakePdaAddress = stakeRes.stakePda;
+    stakeAmountMicros = stakeRes.stake.amountStakedMicros;
+    stakeStatus = stakeRes.stake.status;
+  }
+
   const { resumeHash, fingerprint } = await computeNormalizedResumeHash(params.cvText);
 
   const restriction = await getActiveRestriction({
@@ -315,6 +437,13 @@ export async function validatePreBountySubmission(params: {
   });
 
   if (restriction) {
+    if (stakeStatus === "pending" && candidateWallet) {
+      await trySlashPendingStakeOnFraud({
+        bounty,
+        candidateWallet,
+        reasonCode: restriction.reason === "duplicate_resume" ? 1 : 2,
+      });
+    }
     // Propagate identifiers if banned user returned via a secondary account/wallet/hash
     await recordBountyRestriction({
       bountyId: bounty.id,
@@ -342,10 +471,21 @@ export async function validatePreBountySubmission(params: {
 
   if (dup.isDuplicate) {
     const pct = Math.round(dup.similarity * 100);
-    const details =
+    let details =
       dup.similarity >= 1
         ? `Identical normalized resume SHA-256 (${resumeHash.slice(0, 12)}...) already submitted on this bounty.`
         : `Near-identical resume content (${pct}% shingle overlap) matched an earlier submission on this bounty.`;
+
+    if (stakeStatus === "pending" && candidateWallet) {
+      const slashRes = await trySlashPendingStakeOnFraud({
+        bounty,
+        candidateWallet,
+        reasonCode: 1,
+      });
+      if (slashRes?.slashed) {
+        details += ` Forfeited ${stakeMetrics.stakePerCandidateUsdc} USDC Conviction Stake into the Slashed Spam Yield pool.`;
+      }
+    }
 
     await recordBountyRestriction({
       bountyId: bounty.id,
@@ -359,7 +499,7 @@ export async function validatePreBountySubmission(params: {
     });
 
     throw new ForbiddenError(
-      `Duplicate or near-identical resume detected (${pct}% match). You are permanently restricted from this bounty.`
+      `Duplicate or near-identical resume detected (${pct}% match).${stakeStatus === "pending" ? " Your Conviction Stake has been slashed into the spam yield pool." : ""} You are permanently restricted from this bounty.`
     );
   }
 
@@ -378,7 +518,18 @@ export async function validatePreBountySubmission(params: {
   });
 
   if (detectorReport.isFlagged) {
-    const details = `Fake Resume Detector (${detectorReport.verdict}, risk ${detectorReport.riskScore}/100): ${detectorReport.summary}`;
+    let details = `Fake Resume Detector (${detectorReport.verdict}, risk ${detectorReport.riskScore}/100): ${detectorReport.summary}`;
+    if (stakeStatus === "pending" && candidateWallet) {
+      const slashRes = await trySlashPendingStakeOnFraud({
+        bounty,
+        candidateWallet,
+        reasonCode: 2,
+      });
+      if (slashRes?.slashed) {
+        details += ` Forfeited ${stakeMetrics.stakePerCandidateUsdc} USDC Conviction Stake into the Slashed Spam Yield pool.`;
+      }
+    }
+
     await recordBountyRestriction({
       bountyId: bounty.id,
       jobDescriptionId: bounty.jobDescriptionId,
@@ -391,7 +542,7 @@ export async function validatePreBountySubmission(params: {
     });
 
     throw new ForbiddenError(
-      `Fake Resume Detector blocked this bounty submission: ${detectorReport.summary}`
+      `Fake Resume Detector blocked this bounty submission: ${detectorReport.summary}${stakeStatus === "pending" ? " Your Conviction Stake was slashed." : ""}`
     );
   }
 
@@ -401,6 +552,10 @@ export async function validatePreBountySubmission(params: {
     fingerprint,
     detectorReport,
     candidateWallet,
+    stakePdaAddress,
+    stakeTxSignature: params.stakeTxSignature ?? null,
+    stakeAmountMicros,
+    stakeStatus,
   };
 }
 
@@ -438,6 +593,13 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
   const reservedCount = activeReservations.length;
   const occupiedSlots = bounty.claimsCount + reservedCount;
   const availableSlots = Math.max(0, bounty.maxWinners - occupiedSlots);
+  const stakeMetrics = computeStakeAndBonusMetrics({
+    rewardPerWinnerMicros: bounty.rewardPerWinnerMicros,
+    maxWinners: bounty.maxWinners,
+    claimsCount: bounty.claimsCount,
+    stakeBps: bounty.stakeBps,
+    slashedPoolMicros: bounty.slashedPoolMicros,
+  });
 
   return {
     maxWinners: bounty.maxWinners,
@@ -447,6 +609,11 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
     approvedCount,
     occupiedSlots,
     availableSlots,
+    stakeBps: stakeMetrics.stakeBps,
+    stakePercent: stakeMetrics.stakePercent,
+    stakePerCandidateUsdc: stakeMetrics.stakePerCandidateUsdc,
+    slashedPoolUsdc: stakeMetrics.slashedPoolUsdc,
+    proRataBonusUsdc: stakeMetrics.proRataBonusUsdc,
   };
 }
 
@@ -457,6 +624,8 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
 export async function syncEvaluationToBountySubmission(params: {
   evaluationId: string;
   walletAddress?: string | null;
+  stakeTxSignature?: string | null;
+  requireOnChainStake?: boolean;
   provider?: LLMProvider;
   forceLlm?: boolean;
 }) {
@@ -495,6 +664,49 @@ export async function syncEvaluationToBountySubmission(params: {
       )
       .limit(1);
 
+    // Resolve on-chain ConvictionStake state when entering or updating with wallet/stake tx
+    let stakePdaAddress = existing?.stakePdaAddress ?? null;
+    const stakeTxSignature = params.stakeTxSignature ?? existing?.stakeTxSignature ?? null;
+    let stakeAmountMicros = existing?.stakeAmountMicros ?? null;
+    let stakeStatus = existing?.stakeStatus ?? "none";
+    let slashTxSignature = existing?.slashTxSignature ?? null;
+
+    if (params.stakeTxSignature) {
+      await confirmSubmittedSignature(params.stakeTxSignature);
+    }
+
+    if ((params.requireOnChainStake || params.stakeTxSignature) && candidateWallet) {
+      try {
+        const stakeRes = await fetchOnChainConvictionStake(
+          bounty.jobDescriptionId,
+          candidateWallet
+        );
+        if (stakeRes.stake) {
+          stakePdaAddress = stakeRes.stakePda;
+          stakeAmountMicros = stakeRes.stake.amountStakedMicros;
+          stakeStatus = stakeRes.stake.status;
+        }
+      } catch (err) {
+        if (params.requireOnChainStake) throw err;
+      }
+    }
+
+    if (params.requireOnChainStake && stakeStatus !== "pending") {
+      if (!candidateWallet) {
+        throw new BadRequestError(
+          "Connect your Solana wallet and lock the required Conviction Stake before entering this bounty."
+        );
+      }
+      if (stakeStatus === "slashed") {
+        throw new ForbiddenError(
+          "Your Conviction Stake on this bounty was slashed due to an anti-fraud violation."
+        );
+      }
+      throw new BadRequestError(
+        "No active Conviction Stake found on-chain for your wallet. Please lock the USDC stake first."
+      );
+    }
+
     // Always re-check restrictions against userId, candidateWallet, and resumeHash
     const restriction = await getActiveRestriction({
       bountyId: bounty.id,
@@ -511,11 +723,28 @@ export async function syncEvaluationToBountySubmission(params: {
           ? "blocked_fake"
           : "rejected";
 
+      if (stakeStatus === "pending" && candidateWallet) {
+        const slashRes = await trySlashPendingStakeOnFraud({
+          bounty,
+          candidateWallet,
+          reasonCode: restriction.reason === "duplicate_resume" ? 1 : 2,
+        });
+        if (slashRes?.slashed) {
+          stakeStatus = "slashed";
+          slashTxSignature = slashRes.txSignature ?? slashTxSignature;
+        }
+      }
+
       if (existing) {
         const [updated] = await db
           .update(bountySubmissions)
           .set({
             candidateWallet: candidateWallet ?? existing.candidateWallet,
+            stakePdaAddress,
+            stakeTxSignature,
+            stakeAmountMicros,
+            stakeStatus,
+            slashTxSignature,
             reviewStatus: blockedStatus,
             recruiterNotes: existing.recruiterNotes ?? restriction.details,
             updatedAt: new Date(),
@@ -542,6 +771,11 @@ export async function syncEvaluationToBountySubmission(params: {
             restriction.reason === "fake_resume_detected" ? 90 : 0,
           reviewStatus: blockedStatus,
           recruiterNotes: restriction.details,
+          stakePdaAddress,
+          stakeTxSignature,
+          stakeAmountMicros,
+          stakeStatus,
+          slashTxSignature,
         })
         .returning();
       return { submission: inserted, restriction, bounty };
@@ -566,6 +800,17 @@ export async function syncEvaluationToBountySubmission(params: {
 
       if (dup.isDuplicate) {
         const details = `Duplicate or near-identical resume (${Math.round(dup.similarity * 100)}% similarity) detected before bounty entry.`;
+        if (stakeStatus === "pending" && candidateWallet) {
+          const slashRes = await trySlashPendingStakeOnFraud({
+            bounty,
+            candidateWallet,
+            reasonCode: 1,
+          });
+          if (slashRes?.slashed) {
+            stakeStatus = "slashed";
+            slashTxSignature = slashRes.txSignature ?? slashTxSignature;
+          }
+        }
         const createdRestriction = await recordBountyRestriction({
           bountyId: bounty.id,
           jobDescriptionId: bounty.jobDescriptionId,
@@ -590,6 +835,11 @@ export async function syncEvaluationToBountySubmission(params: {
             fakeDetectorStatus: "passed",
             reviewStatus: "blocked_duplicate",
             recruiterNotes: details,
+            stakePdaAddress,
+            stakeTxSignature,
+            stakeAmountMicros,
+            stakeStatus,
+            slashTxSignature,
           })
           .returning();
         return { submission: blocked, restriction: createdRestriction, bounty };
@@ -615,6 +865,17 @@ export async function syncEvaluationToBountySubmission(params: {
 
       if (report.isFlagged) {
         const details = `Fake Resume Detector flagged submission (${report.riskScore}/100): ${report.summary}`;
+        if (stakeStatus === "pending" && candidateWallet) {
+          const slashRes = await trySlashPendingStakeOnFraud({
+            bounty,
+            candidateWallet,
+            reasonCode: 2,
+          });
+          if (slashRes?.slashed) {
+            stakeStatus = "slashed";
+            slashTxSignature = slashRes.txSignature ?? slashTxSignature;
+          }
+        }
         const createdRestriction = await recordBountyRestriction({
           bountyId: bounty.id,
           jobDescriptionId: bounty.jobDescriptionId,
@@ -641,6 +902,11 @@ export async function syncEvaluationToBountySubmission(params: {
             fakeDetectorReport: detectorReport,
             reviewStatus: "blocked_fake",
             recruiterNotes: details,
+            stakePdaAddress,
+            stakeTxSignature,
+            stakeAmountMicros,
+            stakeStatus,
+            slashTxSignature,
           })
           .returning();
         return { submission: blocked, restriction: createdRestriction, bounty };
@@ -688,6 +954,11 @@ export async function syncEvaluationToBountySubmission(params: {
           reviewStatus: nextStatus,
           slotReservedAt,
           reviewDeadlineAt,
+          stakePdaAddress,
+          stakeTxSignature,
+          stakeAmountMicros,
+          stakeStatus,
+          slashTxSignature,
           updatedAt: new Date(),
         })
         .where(eq(bountySubmissions.id, existing.id))
@@ -712,11 +983,19 @@ export async function syncEvaluationToBountySubmission(params: {
         reviewStatus: nextStatus,
         slotReservedAt,
         reviewDeadlineAt,
+        stakePdaAddress,
+        stakeTxSignature,
+        stakeAmountMicros,
+        stakeStatus,
+        slashTxSignature,
       })
       .returning();
 
     return { submission: created, restriction: null, bounty };
   } catch (err) {
+    if (params.requireOnChainStake && (err instanceof BadRequestError || err instanceof ForbiddenError)) {
+      throw err;
+    }
     logger.warn("Could not sync evaluation to bounty submission", {
       evaluationId: params.evaluationId,
       error: err instanceof Error ? err.message : String(err),
@@ -734,6 +1013,10 @@ export async function persistInitialBountySubmission(params: {
   resumeHash: string;
   fingerprint: number[];
   detectorReport: FakeResumeDetectorReport;
+  stakePdaAddress?: string | null;
+  stakeTxSignature?: string | null;
+  stakeAmountMicros?: string | null;
+  stakeStatus?: string;
 }) {
   try {
     await db
@@ -751,6 +1034,10 @@ export async function persistInitialBountySubmission(params: {
         fakeDetectorScore: params.detectorReport.riskScore,
         fakeDetectorReport: params.detectorReport as unknown as Record<string, unknown>,
         reviewStatus: "evaluating",
+        stakePdaAddress: params.stakePdaAddress ?? null,
+        stakeTxSignature: params.stakeTxSignature ?? null,
+        stakeAmountMicros: params.stakeAmountMicros ?? null,
+        stakeStatus: params.stakeStatus ?? "none",
       })
       .onConflictDoNothing();
   } catch (err) {
@@ -947,6 +1234,8 @@ export async function getBountyPublisherReviewWorkspace(
     };
   });
 
+  const stakeMetrics = computeStakeAndBonusMetrics(bountyRow.bounty);
+
   return {
     bounty: {
       ...bountyRow.bounty,
@@ -955,9 +1244,19 @@ export async function getBountyPublisherReviewWorkspace(
       totalPoolUsdc:
         (Number(bountyRow.bounty.rewardPerWinnerMicros) * bountyRow.bounty.maxWinners) /
         1_000_000,
+      stakeBps: stakeMetrics.stakeBps,
+      stakePercent: stakeMetrics.stakePercent,
+      stakePerCandidateUsdc: stakeMetrics.stakePerCandidateUsdc,
+      slashedPoolMicros: stakeMetrics.slashedPoolMicros,
+      slashedPoolUsdc: stakeMetrics.slashedPoolUsdc,
+      proRataBonusUsdc: stakeMetrics.proRataBonusUsdc,
     },
     slotMetrics,
-    submissions,
+    submissions: submissions.map((s) => ({
+      ...s,
+      stakeAmountUsdc: s.stakeAmountMicros ? Number(s.stakeAmountMicros) / 1_000_000 : 0,
+      bonusPaidUsdc: s.bonusPaidMicros ? Number(s.bonusPaidMicros) / 1_000_000 : 0,
+    })),
     restrictions,
   };
 }
@@ -968,6 +1267,14 @@ export async function reviewBountySubmissionDecision(params: {
   recruiterUserId: string;
   action: "approve" | "reject";
   recruiterNotes?: string;
+  payoutTxSignature?: string;
+  claimReceiptPda?: string;
+  amountPaidMicros?: string;
+  bonusPaidMicros?: string;
+  claimsCount?: number;
+  slashTxSignature?: string;
+  slashedPoolMicros?: string;
+  isClosed?: boolean;
 }) {
   const [bounty] = await db
     .select()
@@ -1010,10 +1317,14 @@ export async function reviewBountySubmissionDecision(params: {
       );
     }
 
+    const isSettledOnChain = Boolean(params.payoutTxSignature);
     const [updated] = await db
       .update(bountySubmissions)
       .set({
-        reviewStatus: "approved",
+        reviewStatus: isSettledOnChain ? "claimed" : "approved",
+        stakeStatus: isSettledOnChain ? "approved" : sub.stakeStatus,
+        payoutTxSignature: params.payoutTxSignature ?? sub.payoutTxSignature,
+        bonusPaidMicros: params.bonusPaidMicros ?? sub.bonusPaidMicros,
         reviewedAt: now,
         reviewedByUserId: params.recruiterUserId,
         ...(trimmedNotes ? { recruiterNotes: trimmedNotes } : {}),
@@ -1022,18 +1333,52 @@ export async function reviewBountySubmissionDecision(params: {
       .where(eq(bountySubmissions.id, sub.id))
       .returning();
 
+    if (isSettledOnChain && sub.candidateWallet && params.payoutTxSignature) {
+      const nextClaimsCount = params.claimsCount ?? bounty.claimsCount + 1;
+      const isFilled = params.isClosed || nextClaimsCount >= bounty.maxWinners;
+
+      await db
+        .update(bounties)
+        .set({
+          claimsCount: nextClaimsCount,
+          ...(params.slashedPoolMicros ? { slashedPoolMicros: params.slashedPoolMicros } : {}),
+          status: isFilled ? "filled" : "active",
+          updatedAt: now,
+        })
+        .where(eq(bounties.id, bounty.id));
+
+      await db
+        .insert(bountyClaims)
+        .values({
+          bountyId: bounty.id,
+          candidateUserId: sub.candidateUserId,
+          candidateWallet: sub.candidateWallet,
+          evaluationId: sub.evaluationId,
+          claimReceiptPda: params.claimReceiptPda ?? "",
+          claimTxSignature: params.payoutTxSignature,
+          amountMicros: params.amountPaidMicros ?? bounty.rewardPerWinnerMicros,
+        })
+        .onConflictDoNothing();
+    }
+
     await recordBountyAudit({
       userId: params.recruiterUserId,
-      action: "bounty.submission_approved",
+      action: isSettledOnChain
+        ? "bounty.submission_approved_and_paid"
+        : "bounty.submission_approved",
       targetType: "bounty_submission",
       targetId: sub.id,
-      metadata: { bountyId: bounty.id, notes: trimmedNotes },
+      metadata: {
+        bountyId: bounty.id,
+        notes: trimmedNotes,
+        payoutTxSignature: params.payoutTxSignature,
+      },
     });
 
     return updated;
   }
 
-  // Reject / Flag: free reserved slot & permanently restrict candidate/wallet/resumeHash
+  // Reject / Flag Fraud: slash pending stake into pool, free reserved slot & permanently restrict entity
   const rejectDetails =
     trimmedNotes || "Flagged and rejected by bounty publisher during candidate review.";
 
@@ -1041,6 +1386,8 @@ export async function reviewBountySubmissionDecision(params: {
     .update(bountySubmissions)
     .set({
       reviewStatus: "rejected",
+      stakeStatus: params.slashTxSignature ? "slashed" : sub.stakeStatus,
+      slashTxSignature: params.slashTxSignature ?? sub.slashTxSignature,
       reviewedAt: now,
       reviewedByUserId: params.recruiterUserId,
       recruiterNotes: rejectDetails,
@@ -1048,6 +1395,16 @@ export async function reviewBountySubmissionDecision(params: {
     })
     .where(eq(bountySubmissions.id, sub.id))
     .returning();
+
+  if (params.slashedPoolMicros) {
+    await db
+      .update(bounties)
+      .set({
+        slashedPoolMicros: params.slashedPoolMicros,
+        updatedAt: now,
+      })
+      .where(eq(bounties.id, bounty.id));
+  }
 
   await recordBountyRestriction({
     bountyId: bounty.id,
@@ -1065,7 +1422,11 @@ export async function reviewBountySubmissionDecision(params: {
     action: "bounty.submission_rejected",
     targetType: "bounty_submission",
     targetId: sub.id,
-    metadata: { bountyId: bounty.id, details: rejectDetails },
+    metadata: {
+      bountyId: bounty.id,
+      details: rejectDetails,
+      slashTxSignature: params.slashTxSignature,
+    },
   });
 
   return updated;

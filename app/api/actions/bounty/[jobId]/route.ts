@@ -132,6 +132,9 @@ export async function GET(
     const maxWinners = onChain.escrow?.maxWinners ?? bounty?.maxWinners ?? 1;
     const claimsCount = onChain.escrow?.claimsCount ?? bounty?.claimsCount ?? 0;
     const minScore = onChain.escrow?.minScore ?? bounty?.minScore ?? 85;
+    const stakeBps = onChain.escrow?.stakeBps ?? 1000;
+    const stakeUsdc = ((rewardUsdc * stakeBps) / 10_000).toFixed(2);
+    const slashedUsdc = (Number(onChain.escrow?.slashedPoolAmountMicros ?? "0") / 1_000_000).toFixed(2);
     const totalPoolUsdc = rewardUsdc * maxWinners;
     const escrowStatus = onChain.escrow?.isClosed
       ? "CLOSED"
@@ -145,8 +148,8 @@ export async function GET(
         : `COOV Bounty Escrow (${rewardUsdc} USDC / winner)`,
       description: [
         `Status: ${escrowStatus} · Slots: ${claimsCount}/${maxWinners} claimed (${totalPoolUsdc.toFixed(2)} USDC pool).`,
-        `Min AI Hiring Bar: ${minScore}/100 (SHA-256 duplicate & Fake Resume Detector gated).`,
-        `Escrow PDA: ${onChain.escrowPda} · Vault PDA: ${onChain.vaultPda} · Devnet USDC: ${usdcMint.toBase58()}.`,
+        `Min AI Bar: ${minScore}/100 · Conviction Stake: ${stakeUsdc} USDC (${(stakeBps / 100).toFixed(1)}%) · Slashed Spam Yield: +${slashedUsdc} USDC.`,
+        `Escrow PDA: ${onChain.escrowPda} · Vault PDA: ${onChain.vaultPda}.`,
       ].join(" "),
       label: "Inspect Escrow On-Chain",
       links: {
@@ -178,7 +181,7 @@ export async function GET(
         {
           type: "transaction",
           label: "Fund Bounty Escrow (USDC)",
-          href: `${origin}/api/actions/bounty/${effectiveJobId}?mode=fund&rewardUsdc={rewardUsdc}&maxWinners={maxWinners}&minScore={minScore}&days={days}`,
+          href: `${origin}/api/actions/bounty/${effectiveJobId}?mode=fund&rewardUsdc={rewardUsdc}&maxWinners={maxWinners}&minScore={minScore}&stakePct={stakePct}&days={days}`,
           parameters: [
             {
               name: "rewardUsdc",
@@ -202,6 +205,14 @@ export async function GET(
               required: true,
               type: "number",
               min: 50,
+              max: 100,
+            },
+            {
+              name: "stakePct",
+              label: "Conviction Stake % (Default 10%)",
+              required: false,
+              type: "number",
+              min: 1,
               max: 100,
             },
             {
@@ -281,6 +292,7 @@ export async function POST(
     const rewardUsdc = Number(reqUrl.searchParams.get("rewardUsdc") ?? "5");
     const maxWinners = Math.round(Number(reqUrl.searchParams.get("maxWinners") ?? "3"));
     const minScore = Math.round(Number(reqUrl.searchParams.get("minScore") ?? "85"));
+    const stakePct = Number(reqUrl.searchParams.get("stakePct") ?? "10");
     const days = Math.round(Number(reqUrl.searchParams.get("days") ?? "30"));
 
     if (!Number.isFinite(rewardUsdc) || rewardUsdc <= 0) {
@@ -292,10 +304,14 @@ export async function POST(
     if (!Number.isInteger(minScore) || minScore < 50 || minScore > 100) {
       return actionErrorResponse("`minScore` must be between 50 and 100.", 400);
     }
+    if (!Number.isFinite(stakePct) || stakePct < 1 || stakePct > 100) {
+      return actionErrorResponse("`stakePct` must be between 1 and 100.", 400);
+    }
     if (!Number.isInteger(days) || days < 1 || days > 180) {
       return actionErrorResponse("`days` must be between 1 and 180.", 400);
     }
 
+    const stakeBps = Math.round(stakePct * 100);
     const rewardPerWinnerMicros = BigInt(Math.round(rewardUsdc * 1_000_000));
     const expiresAtUnix = Math.floor(Date.now() / 1000) + days * 86_400;
 
@@ -320,6 +336,7 @@ export async function POST(
             rewardPerWinnerMicros,
             maxWinners,
             expiresAtUnix,
+            stakeBps,
             tokenProgramId: mintInfo.owner,
             programId,
           })

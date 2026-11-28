@@ -6,6 +6,7 @@ import {
   IX_DISCRIMINATORS,
   deriveClaimReceiptPda,
   deriveConfigPda,
+  deriveConvictionStakePda,
   deriveEscrowPda,
   deriveEscrowVaultPda,
   deriveEvaluationPda,
@@ -25,6 +26,10 @@ export const EVENT_DISCRIMINATORS = {
   BountyCreated: [68, 252, 247, 196, 154, 247, 130, 49],
   BountyClaimed: [140, 202, 21, 51, 211, 65, 142, 21],
   BountyWithdrawn: [20, 146, 119, 119, 163, 30, 47, 147],
+  ConvictionStakeLocked: [23, 107, 39, 3, 104, 61, 80, 2],
+  ConvictionStakeApproved: [200, 162, 19, 134, 144, 162, 130, 112],
+  FraudStakeSlashed: [40, 239, 240, 23, 60, 143, 226, 40],
+  ConvictionStakeRefunded: [143, 215, 48, 4, 230, 22, 182, 136],
 } as const;
 
 type LegacyIdlType =
@@ -68,6 +73,18 @@ interface LegacyIdl {
       type: LegacyIdlType;
       index?: boolean;
     }>;
+  }>;
+  types?: Array<{
+    name: string;
+    type:
+      | {
+          kind: "struct";
+          fields: LegacyIdlField[];
+        }
+      | {
+          kind: "enum";
+          variants: Array<{ name: string }>;
+        };
   }>;
   errors?: Array<{
     code: number;
@@ -166,6 +183,26 @@ export function normalizeIdlForAnchor(programId: PublicKey = getProgramId()): Id
         })),
       },
     })),
+    ...(legacy.types ?? []).map((t) =>
+      t.type.kind === "enum"
+        ? {
+            name: t.name,
+            type: {
+              kind: "enum" as const,
+              variants: t.type.variants,
+            },
+          }
+        : {
+            name: t.name,
+            type: {
+              kind: "struct" as const,
+              fields: t.type.fields.map((f) => ({
+                name: f.name,
+                type: normalizeLegacyType(f.type),
+              })),
+            },
+          }
+    ),
   ];
 
   return {
@@ -302,6 +339,33 @@ export async function fetchBountyEscrowViaAnchor(
 }
 
 /**
+ * Fetches and deserializes a `ConvictionStake` PDA (`["conviction_stake", escrow, candidate]`) via Anchor.
+ */
+export async function fetchConvictionStakeViaAnchor(
+  jobId: string,
+  candidateWallet: string | PublicKey,
+  programId: PublicKey = getProgramId()
+) {
+  const candidatePubkey =
+    typeof candidateWallet === "string" ? new PublicKey(candidateWallet) : candidateWallet;
+  const [escrowPda] = deriveEscrowPda(uuidToBytes16(jobId), programId);
+  const [stakePda] = deriveConvictionStakePda(escrowPda, candidatePubkey, programId);
+  const account = await withSolanaConnection(async (connection) => {
+    const program = getCoovAnchorProgram(connection, programId);
+    const ns = program.account as Record<
+      string,
+      { fetchNullable: (addr: PublicKey) => Promise<Record<string, unknown> | null> }
+    >;
+    return ns.convictionStake.fetchNullable(stakePda);
+  });
+  return {
+    escrowPda: escrowPda.toBase58(),
+    stakePda: stakePda.toBase58(),
+    account,
+  };
+}
+
+/**
  * Convenience re-exports grouping PDA derivation helpers alongside Anchor deserialization.
  */
 export const COOV_PDAS = {
@@ -311,4 +375,5 @@ export const COOV_PDAS = {
   deriveEscrowPda,
   deriveEscrowVaultPda,
   deriveClaimReceiptPda,
+  deriveConvictionStakePda,
 } as const;

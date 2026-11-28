@@ -16,6 +16,7 @@ import {
 const SubmitToBountySchema = z.object({
   evaluationId: z.string().uuid(),
   walletAddress: z.string().min(32).max(64).optional(),
+  stakeTxSignature: z.string().min(32).max(128).optional(),
 });
 
 export const POST = createApiHandler(
@@ -65,7 +66,9 @@ export const POST = createApiHandler(
 
     const res = await syncEvaluationToBountySubmission({
       evaluationId: evalRow.id,
-      walletAddress,
+      walletAddress: walletAddress ?? evalRow.candidateWallet,
+      stakeTxSignature: parsed.stakeTxSignature,
+      requireOnChainStake: true,
     });
 
     if (res?.restriction) {
