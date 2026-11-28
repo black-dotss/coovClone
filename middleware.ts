@@ -5,9 +5,11 @@ import { getEnv } from "@/lib/env";
 export async function middleware(req: NextRequest) {
   const url = req.nextUrl;
 
-  // Bypass webhook endpoints so external payment providers (Polar, Verify.ET) do not get blocked or redirected
+  // Bypass webhook and Solana Actions/Blinks endpoints so external providers & wallets do not get blocked or redirected
   if (
     url.pathname.startsWith("/api/webhooks/") ||
+    url.pathname.startsWith("/api/actions/") ||
+    url.pathname === "/actions.json" ||
     url.pathname.startsWith("/polar-sh/") ||
     url.pathname.startsWith("/api/polar-sh/")
   ) {

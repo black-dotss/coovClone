@@ -22,12 +22,14 @@
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
     "@langchain/core": "^1.4.1",
     "@langchain/langgraph": "^1.7.4",
     "@neon/auth": "^0.8.2",
     "@neondatabase/serverless": "^1.2.1",
     "@opennextjs/cloudflare": "^1.20.18",
     "@polar-sh/sdk": "^1.3.1",
+    "@solana/actions": "^1.6.6",
     "@solana/spl-token": "^0.4.15",
     "@solana/wallet-standard-features": "^1.5.0",
     "@solana/web3.js": "^1.99.0",

@@ -121,41 +121,50 @@ async function downloadSolanaIdentityCardPng(props: SolanaIdentityCardProps) {
   ctx.fillStyle = "#e4e4e7";
   ctx.fillText(badgeText, W - 104 - badgeW + 24, 128);
 
-  // Enlarged Mascot Showcase Frame
-  drawRoundedRect(ctx, 104, 194, W - 208, 760, 30);
-  ctx.fillStyle = "#151520";
-  ctx.fill();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#2b2b3b";
-  ctx.stroke();
-
-  const showcaseGlow = ctx.createRadialGradient(W / 2, 574, 40, W / 2, 574, 340);
-  showcaseGlow.addColorStop(0, "rgba(168, 85, 247, 0.3)");
-  showcaseGlow.addColorStop(1, "rgba(21, 21, 32, 0)");
+  // Borderless Enlarged Mascot + Aligned Giant Score Showcase
+  const showcaseGlow = ctx.createRadialGradient(420, 560, 40, 420, 560, 340);
+  showcaseGlow.addColorStop(0, "rgba(168, 85, 247, 0.28)");
+  showcaseGlow.addColorStop(1, "rgba(17, 17, 24, 0)");
   ctx.fillStyle = showcaseGlow;
-  ctx.fillRect(104, 194, W - 208, 760);
+  ctx.fillRect(80, 190, 700, 740);
 
   try {
     const dollImg = await loadImage("/doll/sol.png");
-    const boxSize = 690;
-    const scale = Math.min(boxSize / dollImg.width, boxSize / dollImg.height);
+    const maxDollW = 640;
+    const maxDollH = 680;
+    const scale = Math.min(maxDollW / dollImg.width, maxDollH / dollImg.height);
     const drawW = dollImg.width * scale;
     const drawH = dollImg.height * scale;
     ctx.drawImage(
       dollImg,
-      (W - drawW) / 2,
-      194 + (760 - drawH) / 2,
+      96 + (maxDollW - drawW) / 2,
+      210 + (maxDollH - drawH) / 2,
       drawW,
       drawH
     );
   } catch {
     ctx.fillStyle = "#a855f7";
     ctx.font = "800 36px sans-serif";
-    ctx.fillText("SOLANA CREDENTIAL", W / 2 - 190, 574);
+    ctx.fillText("SOLANA CREDENTIAL", 120, 560);
   }
 
-  // Bold Role Title & Giant Score Section
-  let cursorY = 1040;
+  // Giant Score aligned beside the mascot (borderless)
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#a1a1aa";
+  ctx.font = "700 26px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillText("SCORE", W - 104, 430);
+
+  ctx.fillStyle = "#c084fc";
+  ctx.font = "900 184px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillText(`${props.score}`, W - 104, 608);
+
+  ctx.fillStyle = "#71717a";
+  ctx.font = "700 44px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillText("/ 100", W - 104, 672);
+  ctx.textAlign = "left";
+
+  // Bold Role Title & Metadata Section
+  let cursorY = 980;
   ctx.fillStyle = "#a1a1aa";
   ctx.font = "700 22px ui-monospace, SFMono-Regular, Menlo, monospace";
   ctx.fillText("VERIFIED CREDENTIAL", 104, cursorY);
@@ -163,33 +172,13 @@ async function downloadSolanaIdentityCardPng(props: SolanaIdentityCardProps) {
   cursorY += 66;
   ctx.fillStyle = "#ffffff";
   ctx.font = "800 54px system-ui, -apple-system, sans-serif";
-  const roleLines = wrapCanvasText(ctx, props.roleTitle || "Solana Candidate", 640).slice(0, 2);
+  const roleLines = wrapCanvasText(ctx, props.roleTitle || "Solana Candidate", W - 208).slice(0, 2);
   for (const line of roleLines) {
     ctx.fillText(line, 104, cursorY);
     cursorY += 64;
   }
 
-  // Bold Score Box on right
-  drawRoundedRect(ctx, W - 404, 1012, 300, 184, 26);
-  ctx.fillStyle = "#171724";
-  ctx.fill();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "rgba(168, 85, 247, 0.7)";
-  ctx.stroke();
-
-  ctx.fillStyle = "#a1a1aa";
-  ctx.font = "700 22px ui-monospace, SFMono-Regular, Menlo, monospace";
-  ctx.fillText("SCORE", W - 368, 1060);
-
-  ctx.fillStyle = "#c084fc";
-  ctx.font = "900 92px ui-monospace, SFMono-Regular, Menlo, monospace";
-  ctx.fillText(`${props.score}`, W - 368, 1156);
-
-  ctx.fillStyle = "#71717a";
-  ctx.font = "700 34px ui-monospace, SFMono-Regular, Menlo, monospace";
-  ctx.fillText("/100", W - 228, 1156);
-
-  const metaLineY = Math.max(cursorY + 24, 1254);
+  const metaLineY = Math.max(cursorY + 24, 1185);
   const subParts = [props.scoreTier, props.subtitle].filter(Boolean);
   if (subParts.length > 0) {
     ctx.fillStyle = "#c084fc";
@@ -304,43 +293,45 @@ export function SolanaIdentityCard(props: SolanaIdentityCardProps) {
           </span>
         </div>
 
-        {/* Enlarged Solana Doll Centerpiece */}
-        <div className="my-3 flex-1 min-h-0 rounded-2xl border border-border bg-surface-elevated flex items-center justify-center p-4 relative overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.22),transparent_70%)] pointer-events-none" />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/doll/sol.png"
-            alt="COOV Solana Credential Mascot"
-            className="relative w-full h-full max-h-[260px] object-contain drop-shadow-[0_16px_32px_rgba(168,85,247,0.4)]"
-          />
+        {/* Borderless Enlarged Solana Doll + Aligned Giant Score */}
+        <div className="my-2 flex-1 min-h-0 flex items-center justify-between gap-2 relative">
+          <div className="flex-1 min-w-0 h-full flex items-center justify-center relative">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.22),transparent_70%)] pointer-events-none" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/doll/sol.png"
+              alt="COOV Solana Credential Mascot"
+              className="relative w-full h-full max-h-[250px] object-contain drop-shadow-[0_16px_32px_rgba(168,85,247,0.4)]"
+            />
+          </div>
+
+          <div className="shrink-0 text-right pr-1 flex flex-col justify-center">
+            <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-text-muted block mb-1">
+              Score
+            </span>
+            <span className="text-5xl sm:text-6xl font-black font-mono text-purple-400 leading-none tracking-tight">
+              {props.score}
+            </span>
+            <span className="text-sm font-mono font-bold text-text-muted mt-1">
+              / 100
+            </span>
+          </div>
         </div>
 
-        {/* Bold Role Title & Score Block */}
-        <div className="space-y-3.5">
-          <div className="flex items-end justify-between gap-3">
-            <div className="min-w-0 space-y-1">
-              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-text-muted block">
-                Verified Credential
-              </span>
-              <h4 className="text-base sm:text-lg font-extrabold text-text leading-tight line-clamp-2">
-                {props.roleTitle || "Solana Candidate"}
-              </h4>
-              {(props.scoreTier || props.subtitle) && (
-                <p className="text-xs font-mono font-semibold text-purple-400 truncate">
-                  {[props.scoreTier, props.subtitle].filter(Boolean).join(" · ")}
-                </p>
-              )}
-            </div>
-
-            <div className="px-3.5 py-2.5 rounded-xl bg-surface-elevated border-2 border-purple-500/50 text-right shrink-0">
-              <span className="text-[10px] font-mono font-bold uppercase text-text-muted block">
-                Score
-              </span>
-              <span className="text-3xl font-black font-mono text-purple-400 leading-none">
-                {props.score}
-                <span className="text-xs text-text-muted font-bold">/100</span>
-              </span>
-            </div>
+        {/* Bold Role Title Block */}
+        <div className="space-y-3">
+          <div className="min-w-0 space-y-1">
+            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-text-muted block">
+              Verified Credential
+            </span>
+            <h4 className="text-base sm:text-lg font-extrabold text-text leading-tight line-clamp-2">
+              {props.roleTitle || "Solana Candidate"}
+            </h4>
+            {(props.scoreTier || props.subtitle) && (
+              <p className="text-xs font-mono font-semibold text-purple-400 truncate">
+                {[props.scoreTier, props.subtitle].filter(Boolean).join(" · ")}
+              </p>
+            )}
           </div>
 
           {/* Skills */}
