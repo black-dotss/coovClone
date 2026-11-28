@@ -1,4 +1,5 @@
 import React from "react";
+import { redirect } from "next/navigation";
 import { eq, or } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bounties, jobDescriptions } from "@/lib/db/schema";
@@ -31,27 +32,33 @@ export default async function NewEvaluationPage({
   const rawScout =
     params.ref?.trim() || params.scout?.trim() || params.referrer?.trim() || null;
 
+  const session = await getSession().catch(() => null);
+  if (!session) {
+    const qs = new URLSearchParams();
+    if (bountyId) qs.set("bountyId", bountyId);
+    if (initialRole) qs.set("role", initialRole);
+    if (rawScout) qs.set("ref", rawScout);
+    const target = qs.toString() ? `/evaluations/new?${qs.toString()}` : "/evaluations/new";
+    redirect(`/auth?callbackUrl=${encodeURIComponent(target)}`);
+  }
+
   let initialBounty: ActiveBountyTarget | null = null;
   let initialRestriction: { reason: string; details: string } | null = null;
 
   if (bountyId && UUID_REGEX.test(bountyId)) {
     try {
-      const [rowPromise, sessionPromise] = [
-        db
-          .select({
-            bounty: bounties,
-            rawText: jobDescriptions.rawText,
-          })
-          .from(bounties)
-          .innerJoin(jobDescriptions, eq(bounties.jobDescriptionId, jobDescriptions.id))
-          .where(
-            or(eq(bounties.id, bountyId), eq(bounties.jobDescriptionId, bountyId))
-          )
-          .limit(1),
-        getSession().catch(() => null),
-      ];
+      const rows = await db
+        .select({
+          bounty: bounties,
+          rawText: jobDescriptions.rawText,
+        })
+        .from(bounties)
+        .innerJoin(jobDescriptions, eq(bounties.jobDescriptionId, jobDescriptions.id))
+        .where(
+          or(eq(bounties.id, bountyId), eq(bounties.jobDescriptionId, bountyId))
+        )
+        .limit(1);
 
-      const [rows, session] = await Promise.all([rowPromise, sessionPromise]);
       const match = rows[0];
 
       if (match && match.bounty.status === "active") {

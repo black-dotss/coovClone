@@ -6,8 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Alert } from "@/components/ui/alert";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { Modal } from "@/components/ui/modal";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { LoadingSpinner, FullPageLoading } from "@/components/ui/loading-spinner";
@@ -499,11 +498,11 @@ function ProfilePageContent() {
         onDismiss={() => setError(null)}
       />
 
-      {successMessage && (
-        <Alert variant="success" title="Success">
-          {successMessage}
-        </Alert>
-      )}
+      <SuccessPopup
+        title="Success"
+        message={successMessage}
+        onDismiss={() => setSuccessMessage(null)}
+      />
 
       {/* Mobile Horizontal Pill Bar */}
       <div className="lg:hidden flex items-center gap-1.5 overflow-x-auto pb-2 scrollbar-none border-b border-border">

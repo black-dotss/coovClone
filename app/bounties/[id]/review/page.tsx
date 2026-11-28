@@ -6,7 +6,7 @@ import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { apiFetch } from "@/lib/client/api";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
@@ -422,12 +422,11 @@ export default function BountyPublisherReviewPage() {
         message={error}
         onDismiss={() => setError(null)}
       />
-      {notice && (
-        <div className="rounded-xl border border-border bg-surface p-5 space-y-1">
-          <p className="text-sm font-semibold text-purple-400">Review Updated</p>
-          <p className="text-sm text-text-secondary">{notice}</p>
-        </div>
-      )}
+      <SuccessPopup
+        title="Review Updated"
+        message={notice}
+        onDismiss={() => setNotice(null)}
+      />
 
       {/* Slot, Conviction Stake & Anti-Fraud Metrics Bar */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">

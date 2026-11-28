@@ -5,8 +5,7 @@ import Link from "next/link";
 import { useSession } from "@/lib/auth/auth-client";
 import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
 
 const SUPER_ADMIN_EMAIL = "israelashenafi29@gmail.com";
@@ -114,11 +113,11 @@ export default function AdminGrantSubscriptionPage() {
         </p>
       </div>
 
-      {successMessage && (
-        <Alert variant="success">
-          {successMessage}
-        </Alert>
-      )}
+      <SuccessPopup
+        title="Plan Granted"
+        message={successMessage}
+        onDismiss={() => setSuccessMessage(null)}
+      />
 
       <ErrorPopup
         title="Grant Plan Notice"

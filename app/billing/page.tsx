@@ -2,14 +2,16 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Alert } from "@/components/ui/alert";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { Modal } from "@/components/ui/modal";
 import { FullPageLoading } from "@/components/ui/loading-spinner";
+import { useSession } from "@/lib/auth/auth-client";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 
 interface UsageData {
@@ -105,6 +107,8 @@ interface PaymentOrder {
 type ProviderType = "telebirr" | "cbe";
 
 export default function BillingPage() {
+  const router = useRouter();
+  const { data: session } = useSession();
   const { publicKey, openConnectModal, signAndSubmitTx, clusterLabel } =
     useSolanaWallet();
 
@@ -174,6 +178,10 @@ export default function BillingPage() {
   };
 
   const openEtbModal = (tier: string) => {
+    if (!session) {
+      router.push("/auth?callbackUrl=/billing");
+      return;
+    }
     setSelectedPlanTier(
       tier as "pro_monthly" | "pro_plus_monthly" | "pro_yearly" | "pro_plus_yearly" | "unlimited_yearly"
     );
@@ -347,6 +355,10 @@ export default function BillingPage() {
   };
 
   const handlePolarCheckout = async (planTier: string) => {
+    if (!session) {
+      router.push("/auth?callbackUrl=/billing");
+      return;
+    }
     setPolarLoadingTier(planTier);
     setError(null);
     try {
@@ -368,6 +380,10 @@ export default function BillingPage() {
   };
 
   const handleUsdcCheckout = async (planTier: string) => {
+    if (!session) {
+      router.push("/auth?callbackUrl=/billing");
+      return;
+    }
     if (!publicKey) {
       openConnectModal();
       return;
@@ -512,6 +528,12 @@ export default function BillingPage() {
             To evaluate more CVs without waiting, upgrade to Pro below with USD, Solana USDC, or ETB.
           </Alert>
         )}
+
+        <SuccessPopup
+          title="Payment Confirmed"
+          message={verifyResult?.status === "verified" ? verifyResult.message : null}
+          onDismiss={() => setVerifyResult(null)}
+        />
 
         <ErrorPopup
           title={
@@ -1181,13 +1203,12 @@ export default function BillingPage() {
 
             {!error &&
               verifyResult &&
+              verifyResult.status !== "verified" &&
               verifyResult.message &&
               verifyResult.message.trim().length > 0 && (
               <Alert
                 variant={
-                  verifyResult.status === "verified"
-                    ? "success"
-                    : verifyResult.status === "pending"
+                  verifyResult.status === "pending"
                     ? "warning"
                     : "danger"
                 }

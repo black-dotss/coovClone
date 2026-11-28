@@ -7,7 +7,7 @@ import { apiFetch } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
-import { ErrorPopup } from "@/components/ui/error-popup";
+import { ErrorPopup, SuccessPopup } from "@/components/ui/error-popup";
 import { FullPageLoading, LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Modal } from "@/components/ui/modal";
 
@@ -515,7 +515,12 @@ export default function AdminPage() {
           message={message?.type === "danger" ? message.text : null}
           onDismiss={() => setMessage(null)}
         />
-        {message && message.type !== "danger" && (
+        <SuccessPopup
+          title="Confirmed"
+          message={message?.type === "success" ? message.text : null}
+          onDismiss={() => setMessage(null)}
+        />
+        {message && message.type !== "danger" && message.type !== "success" && (
           <Alert
             variant={message.type}
             action={

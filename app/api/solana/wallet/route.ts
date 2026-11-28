@@ -1,8 +1,8 @@
 import { PublicKey } from "@solana/web3.js";
-import { and, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { userProfiles } from "@/lib/db/schema";
+import { evaluations, jobDescriptions, userProfiles } from "@/lib/db/schema";
 import { requireAuth } from "@/lib/auth";
 import {
   BadRequestError,
@@ -49,16 +49,54 @@ export const GET = createApiHandler(async (req: Request) => {
   const url = new URL(req.url);
   const previewWallet = url.searchParams.get("wallet")?.trim() || null;
 
-  const [profile] = await db
-    .select({
-      walletAddress: userProfiles.walletAddress,
-      walletVerifiedAt: userProfiles.walletVerifiedAt,
-      profilePdaAddress: userProfiles.profilePdaAddress,
-      profileTxSignature: userProfiles.profileTxSignature,
-    })
-    .from(userProfiles)
-    .where(eq(userProfiles.userId, session.user.id))
-    .limit(1);
+  const [profileRows, completedEvalRows] = await Promise.all([
+    db
+      .select({
+        walletAddress: userProfiles.walletAddress,
+        walletVerifiedAt: userProfiles.walletVerifiedAt,
+        profilePdaAddress: userProfiles.profilePdaAddress,
+        profileTxSignature: userProfiles.profileTxSignature,
+      })
+      .from(userProfiles)
+      .where(eq(userProfiles.userId, session.user.id))
+      .limit(1),
+    db
+      .select({
+        id: evaluations.id,
+        overallScore: evaluations.overallScore,
+        evalTxSignature: evaluations.evalTxSignature,
+        sbtMintAddress: evaluations.sbtMintAddress,
+        createdAt: evaluations.createdAt,
+        roleTitle: jobDescriptions.title,
+        company: jobDescriptions.company,
+      })
+      .from(evaluations)
+      .leftJoin(jobDescriptions, eq(evaluations.jobDescriptionId, jobDescriptions.id))
+      .where(
+        and(
+          eq(evaluations.ownerUserId, session.user.id),
+          eq(evaluations.status, "completed")
+        )
+      )
+      .orderBy(desc(evaluations.overallScore), desc(evaluations.createdAt))
+      .limit(20),
+  ]);
+
+  const profile = profileRows[0] ?? null;
+  const completedEvaluationsCount = completedEvalRows.length;
+  const bestEval = completedEvalRows[0] ?? null;
+  const bestCompletedScore = bestEval?.overallScore ?? 0;
+  const bestCompletedRoleTitle = bestEval?.roleTitle || bestEval?.company || null;
+  const readyEvaluations = completedEvalRows.slice(0, 6).map((row) => ({
+    id: row.id,
+    roleTitle: row.roleTitle || row.company || "Target Role",
+    company: row.company || null,
+    overallScore: row.overallScore ?? 0,
+    evalTxSignature: row.evalTxSignature,
+    sbtMintAddress: row.sbtMintAddress,
+    sbtEligible: (row.overallScore ?? 0) >= 85,
+    createdAt: row.createdAt,
+  }));
 
   const targetWallet = previewWallet || profile?.walletAddress || null;
   let onChainProfile = null;
@@ -103,6 +141,10 @@ export const GET = createApiHandler(async (req: Request) => {
     onChainReputation,
     credentials,
     onChainError,
+    completedEvaluationsCount,
+    bestCompletedScore,
+    bestCompletedRoleTitle,
+    readyEvaluations,
   });
 });
 
