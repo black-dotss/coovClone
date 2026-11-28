@@ -11,7 +11,6 @@ import {
   jobDescriptions,
   userProfiles,
 } from "@/lib/db/schema";
-import { computeStakeAndBonusMetrics, formatRemainingDuration, RESERVED_SUBMISSION_STATUSES } from "@/lib/bounties/service";
 import { getSession, requireAuth } from "@/lib/auth";
 import { createJobDescription } from "@/lib/job-descriptions";
 import {
@@ -22,6 +21,7 @@ import {
   successResponse,
 } from "@/lib/shared";
 import {
+  checkWalletJurorEligibility,
   confirmSubmittedSignature,
   fetchOnChainEscrow,
   fetchOnChainReputation,
@@ -29,7 +29,16 @@ import {
   getExplorerTxUrl,
   getSolanaCluster,
   prepareCreateBountyEscrowTx,
+  type WalletJurorEligibility,
 } from "@/lib/solana";
+import {
+  computeStakeAndBonusMetrics,
+  countOpenDisputesByBounty,
+  formatRemainingDuration,
+  listJuryDisputes,
+  RESERVED_SUBMISSION_STATUSES,
+  type PublicJuryDisputeItem,
+} from "@/lib/bounties/service";
 
 const LOGO_URL_REGEX = /^(https?:\/\/\S+|data:image\/(png|jpeg|jpg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+)$/i;
 
@@ -96,6 +105,7 @@ export const GET = createApiHandler(async (req: Request) => {
       slashedPoolMicros: bounties.slashedPoolMicros,
       maxWinners: bounties.maxWinners,
       claimsCount: bounties.claimsCount,
+      openDisputesCount: bounties.openDisputesCount,
       status: bounties.status,
       expiresAt: bounties.expiresAt,
       createdAt: bounties.createdAt,
@@ -106,9 +116,9 @@ export const GET = createApiHandler(async (req: Request) => {
     .orderBy(desc(bounties.createdAt));
 
   const bountyIds = rows.map((r) => r.id);
-  const activeReservations =
+  const [activeReservations, openDisputeCounts] = await Promise.all([
     bountyIds.length > 0
-      ? await db
+      ? db
           .select({
             bountyId: bountySubmissions.bountyId,
             reviewStatus: bountySubmissions.reviewStatus,
@@ -120,12 +130,18 @@ export const GET = createApiHandler(async (req: Request) => {
               inArray(bountySubmissions.reviewStatus, [...RESERVED_SUBMISSION_STATUSES])
             )
           )
-      : [];
+      : Promise.resolve([]),
+    countOpenDisputesByBounty(bountyIds),
+  ]);
 
-  // Sync live claims/closed/slashed/streak state for open bounties
+  // Sync live claims/closed/slashed/streak/dispute state for open bounties
   const syncedRows = await Promise.all(
     rows.map(async (row) => {
       let claimsCount = row.claimsCount;
+      let openDisputesCount = Math.max(
+        row.openDisputesCount ?? 0,
+        openDisputeCounts.get(row.id) ?? 0
+      );
       let status = row.status;
       let stakeBps = row.stakeBps;
       let slashedPoolMicros = row.slashedPoolMicros;
@@ -135,6 +151,10 @@ export const GET = createApiHandler(async (req: Request) => {
           const onChain = await fetchOnChainEscrow(row.jobDescriptionId);
           if (onChain.escrow) {
             claimsCount = onChain.escrow.claimsCount;
+            openDisputesCount = Math.max(
+              onChain.escrow.openDisputesCount ?? 0,
+              openDisputeCounts.get(row.id) ?? 0
+            );
             stakeBps = onChain.escrow.stakeBps || row.stakeBps;
             slashedPoolMicros = onChain.escrow.slashedPoolAmountMicros || row.slashedPoolMicros;
             minStreak = onChain.escrow.minStreak ?? minStreak;
@@ -158,7 +178,7 @@ export const GET = createApiHandler(async (req: Request) => {
       const approvedCount = reservedForBounty.filter(
         (r) => r.reviewStatus === "approved"
       ).length;
-      const occupiedSlots = claimsCount + reservedForBounty.length;
+      const occupiedSlots = claimsCount + reservedForBounty.length + openDisputesCount;
       const availableSlots = Math.max(0, row.maxWinners - occupiedSlots);
       const stakeMetrics = computeStakeAndBonusMetrics({
         rewardPerWinnerMicros: row.rewardPerWinnerMicros,
@@ -172,6 +192,7 @@ export const GET = createApiHandler(async (req: Request) => {
       return {
         ...row,
         claimsCount,
+        openDisputesCount,
         status,
         minStreak: stakeMetrics.minStreak,
         stakeBps: stakeMetrics.stakeBps,
@@ -244,6 +265,16 @@ export const GET = createApiHandler(async (req: Request) => {
   }> = [];
   let candidateReputation: Awaited<ReturnType<typeof fetchOnChainReputation>>["reputation"] = null;
   let reputationPda: string | null = null;
+  let jurorEligibility: WalletJurorEligibility = {
+    eligible: false,
+    method: "none",
+    activeStreak: 0,
+    fraudFlags: 0,
+    sbtMint: null,
+    sbtAta: null,
+    sbtCount: 0,
+  };
+  let targetWalletForViewer: string | null = walletParam;
 
   if (session?.user?.id || walletParam) {
     const restrictionConds = [];
@@ -259,8 +290,9 @@ export const GET = createApiHandler(async (req: Request) => {
         .limit(1);
       targetWalletForRep = prof?.walletAddress ?? null;
     }
+    targetWalletForViewer = targetWalletForRep;
 
-    const [evalRows, claimRows, subRows, restrictionRows, repRes] = await Promise.all([
+    const [evalRows, claimRows, subRows, restrictionRows, repRes, jurorRes] = await Promise.all([
       session?.user?.id
         ? db
             .select({
@@ -329,6 +361,9 @@ export const GET = createApiHandler(async (req: Request) => {
       targetWalletForRep
         ? fetchOnChainReputation(targetWalletForRep).catch(() => null)
         : Promise.resolve(null),
+      targetWalletForRep
+        ? checkWalletJurorEligibility(targetWalletForRep).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
     myEvaluations = evalRows;
@@ -336,6 +371,9 @@ export const GET = createApiHandler(async (req: Request) => {
     if (repRes) {
       candidateReputation = repRes.reputation;
       reputationPda = repRes.reputationPda;
+    }
+    if (jurorRes) {
+      jurorEligibility = jurorRes;
     }
 
     const nowMs = Date.now();
@@ -366,6 +404,11 @@ export const GET = createApiHandler(async (req: Request) => {
     }));
   }
 
+  const allDisputes: PublicJuryDisputeItem[] = await listJuryDisputes({
+    currentUserId: session?.user?.id ?? null,
+    viewerWallet: targetWalletForViewer,
+  });
+
   return successResponse({
     cluster: getSolanaCluster(),
     currentUserId: session?.user?.id ?? null,
@@ -376,6 +419,9 @@ export const GET = createApiHandler(async (req: Request) => {
     myRestrictions,
     candidateReputation,
     reputationPda,
+    jurorEligibility,
+    activeDisputes: allDisputes.filter((d) => d.status === "open"),
+    disputes: allDisputes,
   });
 });
 

@@ -13,6 +13,7 @@ import { db } from "@/lib/db";
 import {
   bounties,
   bountyClaims,
+  bountyDisputes,
   bountySubmissions,
   evaluations,
 } from "@/lib/db/schema";
@@ -112,7 +113,7 @@ export const GET = createApiHandler(
       await syncEvaluationToBountySubmission({ evaluationId: evalRow.id });
     }
 
-    const [subRows, claimRows, reservedRows, restriction, metrics] = await Promise.all([
+    const [subRows, claimRows, reservedRows, restriction, metrics, disputeRows] = await Promise.all([
       db
         .select()
         .from(bountySubmissions)
@@ -156,9 +157,21 @@ export const GET = createApiHandler(
         walletAddress: evalRow.candidateWallet,
       }),
       getBountySlotMetrics(bounty.id, bounty),
+      db
+        .select()
+        .from(bountyDisputes)
+        .where(
+          and(
+            eq(bountyDisputes.bountyId, bounty.id),
+            eq(bountyDisputes.candidateUserId, session.user.id)
+          )
+        )
+        .limit(1)
+        .catch(() => []),
     ]);
 
     const submission = subRows[0] ?? null;
+    const dispute = disputeRows[0] ?? null;
     const myClaim = claimRows.find((c) => c.candidateUserId === session.user.id) ?? null;
 
     let spotSecured: number | null = null;
@@ -249,6 +262,15 @@ export const GET = createApiHandler(
         ? {
             txSignature: myClaim.claimTxSignature,
             txUrl: getExplorerTxUrl(myClaim.claimTxSignature),
+          }
+        : null,
+      dispute: dispute
+        ? {
+            id: dispute.id,
+            disputeTicketPda: dispute.disputeTicketPda,
+            status: dispute.status,
+            votesForCandidate: dispute.votesForCandidate,
+            votesForRecruiter: dispute.votesForRecruiter,
           }
         : null,
       spotSecured,

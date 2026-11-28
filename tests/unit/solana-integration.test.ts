@@ -8,6 +8,7 @@ import {
   IX_DISCRIMINATORS,
   STREAK_DECAY_SECONDS,
   buildApproveAndPayoutIx,
+  buildCastJuryVoteIx,
   buildClaimBountyIx,
   buildCreateBountyEscrowIx,
   buildInitProfileIx,
@@ -15,6 +16,7 @@ import {
   buildInitializeConfigIx,
   buildMigrateEscrowIx,
   buildMintCredentialIx,
+  buildOpenDisputeIx,
   buildRecordEvaluationIx,
   buildRefundConvictionStakeIx,
   buildSlashFraudStakeIx,
@@ -25,10 +27,12 @@ import {
   computeConvictionStakeMicros,
   computeScoutSplitMicros,
   decodeConvictionStake,
+  decodeDisputeTicket,
   decodeReputationState,
   deriveClaimReceiptPda,
   deriveConfigPda,
   deriveConvictionStakePda,
+  deriveDisputeTicketPda,
   deriveEscrowPda,
   deriveEscrowVaultPda,
   deriveEvaluationPda,
@@ -320,6 +324,70 @@ describe("Solana Protocol Integration & Crypto Primitives", () => {
     const withdrawIx = buildWithdrawExpiredEscrowIx({ recruiter: admin, usdcMint, jobId });
     expect(withdrawIx.data).toEqual(Buffer.from(IX_DISCRIMINATORS.withdrawExpiredEscrow));
     expect(withdrawIx.keys).toHaveLength(6);
+
+    // Feature 8: No-Chill Dispute Jury instructions & DisputeTicket Borsh decoding
+    const escrowPda = deriveEscrowPda(jobId)[0];
+    const [disputePda] = deriveDisputeTicketPda(escrowPda, candidate);
+    expect(disputePda.toBase58()).toHaveLength(44);
+
+    const openDisputeIx = buildOpenDisputeIx({ candidate, jobId, evalId });
+    expect(openDisputeIx.data).toEqual(Buffer.from(IX_DISCRIMINATORS.openDispute));
+    expect(openDisputeIx.keys).toHaveLength(8);
+    expect(openDisputeIx.keys[6].pubkey.equals(disputePda)).toBe(true);
+
+    const sbtMint = Keypair.generate().publicKey;
+    const votePayIx = buildCastJuryVoteIx({
+      juror: oracle,
+      candidate,
+      usdcMint,
+      jobId,
+      approveCandidate: true,
+      jurorSbtMint: sbtMint,
+      referrer: scout,
+    });
+    expect(votePayIx.data.subarray(0, 8)).toEqual(Buffer.from(IX_DISCRIMINATORS.castJuryVote));
+    expect(votePayIx.data[8]).toBe(1);
+    expect(votePayIx.keys).toHaveLength(19);
+    expect(votePayIx.keys[6].pubkey.equals(disputePda)).toBe(true);
+
+    const voteUpholdIx = buildCastJuryVoteIx({
+      juror: oracle,
+      candidate,
+      usdcMint,
+      jobId,
+      approveCandidate: false,
+      candidateTokenAccount: null,
+    });
+    expect(voteUpholdIx.data[8]).toBe(0);
+
+    // Synthetic 213-byte DisputeTicket Borsh account
+    const ticketBuf = Buffer.alloc(213);
+    Buffer.from(ACCOUNT_DISCRIMINATORS.DisputeTicket).copy(ticketBuf, 0);
+    escrowPda.toBuffer().copy(ticketBuf, 8);
+    candidate.toBuffer().copy(ticketBuf, 40);
+    ticketBuf.writeUInt8(93, 72); // evaluation_score
+    ticketBuf.writeUInt8(2, 73); // votes_for_candidate
+    ticketBuf.writeUInt8(1, 74); // votes_for_recruiter
+    const j1 = Keypair.generate().publicKey;
+    const j2 = Keypair.generate().publicKey;
+    const j3 = Keypair.generate().publicKey;
+    j1.toBuffer().copy(ticketBuf, 75);
+    j2.toBuffer().copy(ticketBuf, 107);
+    j3.toBuffer().copy(ticketBuf, 139);
+    ticketBuf.writeUInt8(1, 171); // ResolvedCandidate
+    ticketBuf.writeBigInt64LE(BigInt(nowSec), 172);
+    deriveEvaluationPda(candidate, evalId)[0].toBuffer().copy(ticketBuf, 180);
+    ticketBuf.writeUInt8(253, 212);
+
+    const decodedTicket = decodeDisputeTicket(ticketBuf);
+    expect(decodedTicket.bounty).toBe(escrowPda.toBase58());
+    expect(decodedTicket.candidate).toBe(candidate.toBase58());
+    expect(decodedTicket.evaluationScore).toBe(93);
+    expect(decodedTicket.votesForCandidate).toBe(2);
+    expect(decodedTicket.votesForRecruiter).toBe(1);
+    expect(decodedTicket.jurors).toEqual([j1.toBase58(), j2.toBase58(), j3.toBase58()]);
+    expect(decodedTicket.status).toBe("resolved_candidate");
+    expect(decodedTicket.bump).toBe(253);
   });
 
   it("computes deterministic PII-redacted canonical SHA-256 report hashes", async () => {

@@ -31,6 +31,8 @@ export const IX_DISCRIMINATORS = {
   approveAndPayout: Uint8Array.from([105, 214, 1, 188, 213, 196, 49, 250]),
   slashFraudStake: Uint8Array.from([75, 199, 203, 193, 83, 210, 34, 73]),
   refundConvictionStake: Uint8Array.from([82, 208, 161, 196, 125, 247, 33, 229]),
+  openDispute: Uint8Array.from([137, 25, 99, 119, 23, 223, 161, 42]),
+  castJuryVote: Uint8Array.from([30, 199, 56, 0, 121, 96, 89, 37]),
 } as const;
 
 export const ACCOUNT_DISCRIMINATORS = {
@@ -39,6 +41,7 @@ export const ACCOUNT_DISCRIMINATORS = {
   ReputationState: Uint8Array.from([245, 80, 180, 222, 93, 218, 20, 207]),
   EvaluationRecord: Uint8Array.from([11, 75, 86, 83, 213, 40, 43, 130]),
   BountyEscrow: Uint8Array.from([59, 18, 13, 80, 225, 187, 6, 16]),
+  DisputeTicket: Uint8Array.from([234, 86, 115, 59, 99, 221, 10, 41]),
   BountyClaim: Uint8Array.from([130, 113, 6, 57, 79, 54, 78, 205]),
   ConvictionStake: Uint8Array.from([174, 191, 35, 38, 149, 30, 133, 38]),
 } as const;
@@ -47,9 +50,13 @@ export const DEFAULT_STAKE_BPS = 1000;
 export const SCOUT_SPLIT_BPS = 1000;
 export const STREAK_DECAY_SECONDS = 30 * 86_400; // 2,592,000 seconds (30 days)
 export const STREAK_ZERO_STAKE_THRESHOLD = 2;
+export const DISPUTE_MIN_SCORE = 90;
+export const JURY_CONSENSUS_THRESHOLD = 2;
+export const JURY_MAX_VOTES = 3;
 export const LEGACY_ESCROW_SPACE = 144;
 export const V2_ESCROW_SPACE = 154;
 export const V3_ESCROW_SPACE = 155;
+export const V4_ESCROW_SPACE = 157;
 
 export function computeConvictionStakeMicros(
   rewardPerWinnerMicros: bigint | number | string | null | undefined,
@@ -202,6 +209,17 @@ export function deriveConvictionStakePda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [textEncoder.encode("conviction_stake"), escrow.toBytes(), candidate.toBytes()],
+    programId
+  );
+}
+
+export function deriveDisputeTicketPda(
+  escrow: PublicKey,
+  candidate: PublicKey,
+  programId: PublicKey = getProgramId()
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [textEncoder.encode("dispute_ticket"), escrow.toBytes(), candidate.toBytes()],
     programId
   );
 }
@@ -973,6 +991,147 @@ export function buildWithdrawExpiredEscrowIx(params: {
   });
 }
 
+export function buildOpenDisputeIx(params: {
+  candidate: PublicKey;
+  jobId: string;
+  evalId: string;
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId ?? getProgramId();
+  const jobBytes = uuidToBytes16(params.jobId);
+  const evalBytes = uuidToBytes16(params.evalId);
+
+  const [config] = deriveConfigPda(programId);
+  const [escrow] = deriveEscrowPda(jobBytes, programId);
+  const [evaluation] = deriveEvaluationPda(params.candidate, evalBytes, programId);
+  const [reputation] = deriveReputationPda(params.candidate, programId);
+  const [convictionStake] = deriveConvictionStakePda(escrow, params.candidate, programId);
+  const [disputeTicket] = deriveDisputeTicketPda(escrow, params.candidate, programId);
+
+  const data = new BorshWriter()
+    .writeBytes(IX_DISCRIMINATORS.openDispute)
+    .toBuffer();
+
+  return new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: params.candidate, isSigner: true, isWritable: true },
+      { pubkey: escrow, isSigner: false, isWritable: true },
+      { pubkey: evaluation, isSigner: false, isWritable: false },
+      { pubkey: reputation, isSigner: false, isWritable: false },
+      { pubkey: convictionStake, isSigner: false, isWritable: true },
+      { pubkey: disputeTicket, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+}
+
+export function buildCastJuryVoteIx(params: {
+  juror: PublicKey;
+  candidate: PublicKey;
+  usdcMint: PublicKey;
+  jobId: string;
+  approveCandidate: boolean;
+  jurorSbtMint?: PublicKey | null;
+  jurorSbtAta?: PublicKey | null;
+  candidateTokenAccount?: PublicKey | null;
+  referrer?: PublicKey | null;
+  tokenProgramId?: PublicKey;
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId ?? getProgramId();
+  const tokenProgramId = params.tokenProgramId ?? TOKEN_PROGRAM_ID;
+  const jobBytes = uuidToBytes16(params.jobId);
+
+  const [config] = deriveConfigPda(programId);
+  const [escrow] = deriveEscrowPda(jobBytes, programId);
+  const [vault] = deriveEscrowVaultPda(escrow, programId);
+  const [disputeTicket] = deriveDisputeTicketPda(escrow, params.candidate, programId);
+  const [jurorProfile] = deriveProfilePda(params.juror, programId);
+  const [jurorReputation] = deriveReputationPda(params.juror, programId);
+  const [convictionStake] = deriveConvictionStakePda(escrow, params.candidate, programId);
+  const [claimReceipt] = deriveClaimReceiptPda(escrow, params.candidate, programId);
+  const [candidateReputation] = deriveReputationPda(params.candidate, programId);
+
+  const sbtMintKey = params.jurorSbtMint ?? programId;
+  const sbtAtaKey =
+    params.jurorSbtAta ??
+    (params.jurorSbtMint
+      ? getAssociatedTokenAddressSync(
+          params.jurorSbtMint,
+          params.juror,
+          false,
+          TOKEN_2022_PROGRAM_ID,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        )
+      : programId);
+
+  const candidateTokenAccount =
+    params.candidateTokenAccount === null
+      ? programId
+      : params.candidateTokenAccount ??
+        getAssociatedTokenAddressSync(
+          params.usdcMint,
+          params.candidate,
+          false,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+
+  const referrerTokenAccount = params.referrer
+    ? getAssociatedTokenAddressSync(
+        params.usdcMint,
+        params.referrer,
+        false,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    : null;
+
+  const data = new BorshWriter()
+    .writeBytes(IX_DISCRIMINATORS.castJuryVote)
+    .writeU8(params.approveCandidate ? 1 : 0)
+    .toBuffer();
+
+  return new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: config, isSigner: false, isWritable: false },
+      { pubkey: params.juror, isSigner: true, isWritable: true },
+      { pubkey: params.candidate, isSigner: false, isWritable: false },
+      { pubkey: params.usdcMint, isSigner: false, isWritable: false },
+      { pubkey: escrow, isSigner: false, isWritable: true },
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: disputeTicket, isSigner: false, isWritable: true },
+      { pubkey: jurorProfile, isSigner: false, isWritable: false },
+      { pubkey: jurorReputation, isSigner: false, isWritable: false },
+      { pubkey: sbtMintKey, isSigner: false, isWritable: false },
+      { pubkey: sbtAtaKey, isSigner: false, isWritable: false },
+      { pubkey: convictionStake, isSigner: false, isWritable: true },
+      { pubkey: claimReceipt, isSigner: false, isWritable: true },
+      { pubkey: candidateReputation, isSigner: false, isWritable: true },
+      {
+        pubkey: candidateTokenAccount,
+        isSigner: false,
+        isWritable: params.candidateTokenAccount !== null,
+      },
+      referrerTokenAccount
+        ? { pubkey: referrerTokenAccount, isSigner: false, isWritable: true }
+        : { pubkey: programId, isSigner: false, isWritable: false },
+      { pubkey: tokenProgramId, isSigner: false, isWritable: false },
+      {
+        pubkey: params.jurorSbtMint ? TOKEN_2022_PROGRAM_ID : programId,
+        isSigner: false,
+        isWritable: false,
+      },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+}
+
 // ============================================================================
 // Account Decoders
 // ============================================================================
@@ -1185,6 +1344,7 @@ export interface DecodedBountyEscrow {
   stakeBps: number;
   slashedPoolAmountMicros: string;
   minStreak: number;
+  openDisputesCount: number;
   isLegacyLayout: boolean;
 }
 
@@ -1207,6 +1367,7 @@ export function decodeBountyEscrow(data: Uint8Array): DecodedBountyEscrow {
   let stakeBps = DEFAULT_STAKE_BPS;
   let slashedPoolAmountMicros = "0";
   let minStreak = 0;
+  let openDisputesCount = 0;
   let isLegacyLayout = true;
 
   if (data.length >= V2_ESCROW_SPACE) {
@@ -1216,6 +1377,9 @@ export function decodeBountyEscrow(data: Uint8Array): DecodedBountyEscrow {
   }
   if (data.length >= V3_ESCROW_SPACE) {
     minStreak = r.readU8();
+  }
+  if (data.length >= V4_ESCROW_SPACE) {
+    openDisputesCount = r.readU16();
     isLegacyLayout = false;
   }
 
@@ -1236,7 +1400,63 @@ export function decodeBountyEscrow(data: Uint8Array): DecodedBountyEscrow {
     stakeBps,
     slashedPoolAmountMicros,
     minStreak,
+    openDisputesCount,
     isLegacyLayout,
+  };
+}
+
+export type DisputeStatusLabel = "open" | "resolved_candidate" | "resolved_recruiter";
+
+export interface DecodedDisputeTicket {
+  bounty: string;
+  candidate: string;
+  evaluationScore: number;
+  votesForCandidate: number;
+  votesForRecruiter: number;
+  jurors: string[];
+  status: DisputeStatusLabel;
+  openedAt: number;
+  evaluation: string;
+  bump: number;
+}
+
+const DEFAULT_PUBKEY_STR = PublicKey.default.toBase58();
+
+export function decodeDisputeTicket(data: Uint8Array): DecodedDisputeTicket {
+  const r = new BorshReader(data);
+  r.assertDiscriminator(ACCOUNT_DISCRIMINATORS.DisputeTicket, "DisputeTicket");
+  const bounty = r.readPubkey();
+  const candidate = r.readPubkey();
+  const evaluationScore = r.readU8();
+  const votesForCandidate = r.readU8();
+  const votesForRecruiter = r.readU8();
+  const rawJurors = [r.readPubkey(), r.readPubkey(), r.readPubkey()];
+  const totalVotes = Math.min(3, votesForCandidate + votesForRecruiter);
+  const jurors = rawJurors
+    .slice(0, totalVotes)
+    .filter((pk) => pk !== DEFAULT_PUBKEY_STR);
+  const statusIdx = r.readU8();
+  const status: DisputeStatusLabel =
+    statusIdx === 1
+      ? "resolved_candidate"
+      : statusIdx === 2
+      ? "resolved_recruiter"
+      : "open";
+  const openedAt = r.readI64();
+  const evaluation = r.readPubkey();
+  const bump = r.readU8();
+
+  return {
+    bounty,
+    candidate,
+    evaluationScore,
+    votesForCandidate,
+    votesForRecruiter,
+    jurors,
+    status,
+    openedAt,
+    evaluation,
+    bump,
   };
 }
 
