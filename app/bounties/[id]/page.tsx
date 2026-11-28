@@ -386,67 +386,79 @@ export default function BountyDetailPage() {
         </div>
 
         {/* Economics & Trust Gates */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="p-4 rounded-lg bg-surface-elevated border border-border">
-            <span className="text-[10px] font-mono text-text-muted uppercase block">
-              Winner Reward
-            </span>
-            <p className="text-xl font-extrabold text-purple-400 mt-0.5">
-              {bounty.rewardPerWinnerUsdc} USDC
-            </p>
-            <span className="text-[10px] font-mono text-text-muted block">
-              90/10 split: {candidate90Usdc.toFixed(2)} / {scout10Usdc.toFixed(2)} USDC
-            </span>
+        <div className="space-y-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-4 rounded-lg bg-surface-elevated border border-border">
+              <span className="text-[10px] font-mono text-text-muted uppercase block">
+                Winner Reward
+              </span>
+              <p className="text-xl font-extrabold text-purple-400 mt-0.5 whitespace-nowrap">
+                {bounty.rewardPerWinnerUsdc} USDC
+              </p>
+              <span className="text-[10px] font-mono text-text-muted block whitespace-nowrap">
+                90/10 split: {candidate90Usdc.toFixed(2)} / {scout10Usdc.toFixed(2)} USDC
+              </span>
+            </div>
+
+            <div className="p-4 rounded-lg bg-surface-elevated border border-border">
+              <span className="text-[10px] font-mono text-text-muted uppercase block">
+                Entry Bar
+              </span>
+              <p className="text-xl font-extrabold text-text mt-0.5 whitespace-nowrap">
+                {bounty.minScore}/100
+              </p>
+              <span className="text-[10px] font-mono text-text-muted block">
+                {requiredStreak > 0
+                  ? `Min Streak: ${requiredStreak}+ (${activeStreak} yours)`
+                  : "No min streak"}
+              </span>
+            </div>
+
+            <div className="p-4 rounded-lg bg-surface-elevated border border-border">
+              <span className="text-[10px] font-mono text-text-muted uppercase block">
+                Conviction Stake
+              </span>
+              {isZeroStakeVip ? (
+                <>
+                  <p className="text-lg font-extrabold text-purple-400 mt-0.5 whitespace-nowrap">
+                    0 USDC Stake
+                  </p>
+                  <span className="text-[10px] font-mono text-purple-400 block">
+                    Verified Streak Perk
+                  </span>
+                </>
+              ) : (
+                <>
+                  <p className="text-xl font-extrabold text-text mt-0.5 whitespace-nowrap">
+                    {standardStakeUsdc.toFixed(2)} USDC
+                  </p>
+                  <span className="text-[10px] font-mono text-text-muted block">
+                    {stakePct}% refundable
+                  </span>
+                </>
+              )}
+            </div>
           </div>
 
-          <div className="p-4 rounded-lg bg-surface-elevated border border-border">
-            <span className="text-[10px] font-mono text-text-muted uppercase block">
-              Entry Bar
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-text-muted">
+            <span>
+              Slashed Spam Yield:{" "}
+              <strong
+                className={
+                  (bounty.slashedPoolUsdc ?? 0) > 0
+                    ? "text-purple-400"
+                    : "text-text-secondary"
+                }
+              >
+                +{(bounty.slashedPoolUsdc ?? 0).toFixed(2)} USDC
+              </strong>
             </span>
-            <p className="text-xl font-extrabold text-text mt-0.5">
-              {bounty.minScore}/100
-            </p>
-            <span className="text-[10px] font-mono text-text-muted block">
-              {requiredStreak > 0
-                ? `Min Streak: ${requiredStreak}+ (${activeStreak} yours)`
-                : "No min streak"}
-            </span>
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-elevated border border-border">
-            <span className="text-[10px] font-mono text-text-muted uppercase block">
-              Conviction Stake
-            </span>
-            {isZeroStakeVip ? (
-              <>
-                <p className="text-lg font-extrabold text-purple-400 mt-0.5">
-                  0 USDC Stake
-                </p>
-                <span className="text-[10px] font-mono text-purple-400 block">
-                  Verified Streak Perk
-                </span>
-              </>
-            ) : (
-              <>
-                <p className="text-xl font-extrabold text-text mt-0.5">
-                  {standardStakeUsdc.toFixed(2)} USDC
-                </p>
-                <span className="text-[10px] font-mono text-text-muted block">
-                  {stakePct}% refundable
-                </span>
-              </>
-            )}
-          </div>
-
-          <div className="p-4 rounded-lg bg-surface-elevated border border-border">
-            <span className="text-[10px] font-mono text-text-muted uppercase block">
-              Slashed Spam Yield
-            </span>
-            <p className="text-xl font-extrabold text-purple-400 mt-0.5">
-              +{(bounty.slashedPoolUsdc ?? 0).toFixed(2)} USDC
-            </p>
-            <span className="text-[10px] font-mono text-text-muted block">
-              +{(bounty.proRataBonusUsdc ?? 0).toFixed(2)} USDC / slot
+            <span
+              className={
+                (bounty.proRataBonusUsdc ?? 0) > 0 ? "text-purple-400" : undefined
+              }
+            >
+              +{(bounty.proRataBonusUsdc ?? 0).toFixed(2)} USDC / slot bonus
             </span>
           </div>
         </div>
