@@ -1,7 +1,7 @@
 import React from "react";
 
 export interface AlertProps extends React.HTMLAttributes<HTMLDivElement> {
-  variant?: "info" | "warning" | "danger" | "success";
+  variant?: "info" | "warning" | "danger" | "success" | "purple";
   title?: string;
   action?: React.ReactNode;
 }
@@ -19,6 +19,7 @@ export const Alert: React.FC<AlertProps> = ({
     warning: "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-200",
     danger: "bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-900 text-red-800 dark:text-red-200",
     success: "bg-purple-50 dark:bg-purple-950/40 border-purple-200 dark:border-purple-900 text-purple-800 dark:text-purple-200",
+    purple: "bg-gradient-to-br from-[#fae8f5] via-[#f3e8ff] to-[#ebe5ff] dark:from-[#2a1222] dark:via-[#241129] dark:to-[#1b0f2a] border-purple-400/50 text-purple-900 dark:text-purple-200",
   };
 
   return (

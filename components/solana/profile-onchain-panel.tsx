@@ -227,10 +227,8 @@ export const ProfileOnChainPanel: React.FC = () => {
               <SolanaIdentityCard
                 badgeLabel={
                   data?.credentials?.length
-                    ? `${data.credentials.length} SBT MINTED`
-                    : data?.onChainProfile
-                    ? "CANDIDATE ID"
-                    : "PROFILE ID"
+                    ? `${data.credentials.length} SBT Minted`
+                    : "Candidate ID"
                 }
                 clusterLabel={clusterLabel}
                 roleTitle={data?.onChainProfile?.lastRoleTitle || "Solana Verified Candidate"}
@@ -248,10 +246,17 @@ export const ProfileOnChainPanel: React.FC = () => {
                 }
                 issuedLabel={
                   data?.onChainReputation?.isZeroStakeVip
-                    ? "ZERO-STAKE VIP"
+                    ? "Zero-Stake VIP"
                     : data?.linkedWallet
-                    ? "WALLET VERIFIED"
-                    : "LINK WALLET"
+                    ? "Wallet Verified"
+                    : "Link Wallet"
+                }
+                onFooterAction={
+                  data?.linkedWallet
+                    ? undefined
+                    : publicKey
+                    ? () => void handleLinkWallet()
+                    : openConnectModal
                 }
                 downloadFileName="coov-solana-profile-card.png"
                 onDownloadError={(msg) => setError(msg)}
