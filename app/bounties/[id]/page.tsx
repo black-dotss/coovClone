@@ -531,14 +531,26 @@ export default function BountyDetailPage() {
             )}
           </div>
 
-          <a
-            href={bounty.escrowUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs font-mono text-purple-400 hover:underline"
-          >
-            Inspect Escrow on Explorer →
-          </a>
+          <div className="flex flex-wrap items-center gap-4 text-xs font-mono">
+            <a
+              href={bounty.escrowUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-purple-400 hover:underline"
+            >
+              Inspect Escrow on Explorer →
+            </a>
+            {bounty.txUrl && (
+              <a
+                href={bounty.txUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-purple-400 hover:underline"
+              >
+                Funding Tx →
+              </a>
+            )}
+          </div>
         </div>
       </div>
     </div>
