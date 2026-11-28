@@ -22,8 +22,10 @@ import {
   buildSlashFraudStakeIx,
   buildSubmitWithConvictionStakeIx,
   computeConvictionStakeMicros,
+  computeScoutSplitMicros,
   decodeBountyEscrow,
   decodeConvictionStake,
+  decodeReputationState,
   getCoovAnchorProgram,
   normalizeIdlForAnchor,
   uuidToBytes16,
@@ -42,6 +44,7 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     expect(idl.address).toBe(DEFAULT_SOLANA_PROGRAM_ID);
     expect(program.account).toHaveProperty("programConfig");
     expect(program.account).toHaveProperty("candidateProfile");
+    expect(program.account).toHaveProperty("reputationState");
     expect(program.account).toHaveProperty("evaluationRecord");
     expect(program.account).toHaveProperty("bountyEscrow");
     expect(program.account).toHaveProperty("bountyClaim");
@@ -67,6 +70,13 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
       PROGRAM_ID
     );
     expect(profilePda.equals(expectedProfilePda)).toBe(true);
+
+    const [repPda] = COOV_PDAS.deriveReputationPda(candidate, PROGRAM_ID);
+    const [expectedRepPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("reputation"), candidate.toBuffer()],
+      PROGRAM_ID
+    );
+    expect(repPda.equals(expectedRepPda)).toBe(true);
 
     const [evaluationPda] = COOV_PDAS.deriveEvaluationPda(candidate, evalId, PROGRAM_ID);
     const [expectedEvalPda] = PublicKey.findProgramAddressSync(
@@ -150,6 +160,7 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
       maxWinners,
       expiresAtUnix: Math.floor(Date.now() / 1000) + 30 * 86_400,
       stakeBps: 1000,
+      minStreak: 2,
       tokenProgramId: TOKEN_PROGRAM_ID,
       programId: PROGRAM_ID,
     });
@@ -168,10 +179,11 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
       maxWinners,
       expiresAt: new BN((decodedCreate?.data as { expiresAt: BN }).expiresAt.toString()),
       stakeBps: 1000,
+      minStreak: 2,
     });
     expect(Buffer.from(createIx.data).equals(encodedViaAnchor)).toBe(true);
 
-    // Build synthetic 144-byte legacy & 154-byte v2 BountyEscrow buffers and verify decoding
+    // Build synthetic 144B legacy & 155B v3 BountyEscrow buffers and verify Anchor Coder parity
     const [escrowPda] = COOV_PDAS.deriveEscrowPda(jobId, PROGRAM_ID);
     const [vaultPda, vaultBump] = COOV_PDAS.deriveEscrowVaultPda(escrowPda, PROGRAM_ID);
     const [stakePda, stakeBump] = COOV_PDAS.deriveConvictionStakePda(
@@ -202,14 +214,15 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     expect(decodedLegacy.slashedPoolAmountMicros).toBe("0");
 
     const slashedMicros = BigInt(4_000_000); // 4.00 USDC from 2 slashed scammers
-    const v2EscrowBuf = Buffer.concat([
+    const v3EscrowBuf = Buffer.concat([
       legacyEscrowBuf,
       Buffer.from(new Uint8Array([1000 & 0xff, (1000 >> 8) & 0xff])), // stakeBps = 1000 (10%)
       Buffer.from(new BN(slashedMicros.toString()).toArray("le", 8)),
+      Buffer.from([2]), // minStreak = 2
     ]);
-    expect(v2EscrowBuf.length).toBe(154);
+    expect(v3EscrowBuf.length).toBe(155);
 
-    const decodedCodec = decodeBountyEscrow(v2EscrowBuf);
+    const decodedCodec = decodeBountyEscrow(v3EscrowBuf);
     const decodedAnchor = program.coder.accounts.decode<{
       recruiter: PublicKey;
       minScore: number;
@@ -218,7 +231,8 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
       rewardPerWinner: BN;
       stakeBps: number;
       slashedPoolAmount: BN;
-    }>("bountyEscrow", v2EscrowBuf);
+      minStreak: number;
+    }>("bountyEscrow", v3EscrowBuf);
 
     expect(decodedCodec.isLegacyLayout).toBe(false);
     expect(decodedAnchor.recruiter.toBase58()).toBe(decodedCodec.recruiter);
@@ -228,10 +242,17 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
     expect(decodedAnchor.rewardPerWinner.toString()).toBe(decodedCodec.rewardPerWinnerMicros);
     expect(decodedAnchor.stakeBps).toBe(1000);
     expect(decodedAnchor.slashedPoolAmount.toString()).toBe("4000000");
+    expect(decodedAnchor.minStreak).toBe(2);
 
-    // Verify ConvictionStake PDA derivation, Borsh decoding & pro-rata payout math
+    // Verify v3 ConvictionStake with Scout Referrer + 90/10 split math + Anchor parity
+    const scout = Keypair.generate().publicKey;
     const stakeMicros = computeConvictionStakeMicros(rewardPerWinnerMicros, 1000);
     expect(stakeMicros).toBe(BigInt(400_000)); // 10% of 4.00 USDC = 0.40 USDC
+    expect(computeScoutSplitMicros(rewardPerWinnerMicros, true)).toEqual({
+      candidateRewardMicros: BigInt(3_600_000), // 90%
+      scoutCutMicros: BigInt(400_000), // 10%
+    });
+
     const stakeBuf = Buffer.concat([
       Buffer.from(ACCOUNT_DISCRIMINATORS.ConvictionStake),
       escrowPda.toBuffer(),
@@ -240,16 +261,48 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
       Buffer.from([0]), // Pending
       Buffer.from(new BN(1_700_000_000).toArray("le", 8)),
       Buffer.from(new BN(0).toArray("le", 8)),
+      Buffer.from([1]), // referrer = Some(scout)
+      scout.toBuffer(),
+      Buffer.from([0]), // isZeroStakeVip = false
       Buffer.from([stakeBump]),
     ]);
     const decodedStake = decodeConvictionStake(stakeBuf);
+    const decodedStakeAnchor = program.coder.accounts.decode<{
+      referrer: PublicKey | null;
+      isZeroStakeVip: boolean;
+    }>("convictionStake", stakeBuf);
     expect(decodedStake.status).toBe("pending");
-    expect(decodedStake.amountStakedMicros).toBe("400000");
+    expect(decodedStake.referrer).toBe(scout.toBase58());
+    expect(decodedStakeAnchor.referrer?.toBase58()).toBe(scout.toBase58());
+    expect(decodedStake.isZeroStakeVip).toBe(false);
+
+    // Verify ReputationState 59-byte Borsh parity
+    const repBuf = Buffer.alloc(59);
+    Buffer.from(ACCOUNT_DISCRIMINATORS.ReputationState).copy(repBuf, 0);
+    candidate.toBuffer().copy(repBuf, 8);
+    const nowUnix = Math.floor(Date.now() / 1000);
+    repBuf.writeBigInt64LE(BigInt(nowUnix), 40);
+    repBuf.writeUInt8(2, 48);
+    repBuf.writeBigUInt64LE(BigInt(3_600_000), 49);
+    repBuf.writeUInt8(0, 57);
+    repBuf.writeUInt8(255, 58);
+    const decodedRep = decodeReputationState(repBuf, nowUnix);
+    expect(decodedRep.isZeroStakeVip).toBe(true);
+    expect(decodedRep.totalEarnedUsdc).toBe(3.6);
+    const decodedRepAnchor = program.coder.accounts.decode<{
+      verifiedStreak: number;
+      fraudFlags: number;
+      totalEarnedUsdc: BN;
+    }>("reputationState", repBuf);
+    expect(decodedRepAnchor.verifiedStreak).toBe(2);
+    expect(decodedRepAnchor.fraudFlags).toBe(0);
+    expect(decodedRepAnchor.totalEarnedUsdc.toString()).toBe("3600000");
 
     const stakeIx = buildSubmitWithConvictionStakeIx({
       candidate,
       usdcMint: DEVNET_USDC_MINT,
       jobId,
+      referrer: scout,
       tokenProgramId: TOKEN_PROGRAM_ID,
       programId: PROGRAM_ID,
     });
@@ -262,6 +315,7 @@ describe("COOV Anchor Program & Multi-SDK Integration", () => {
       usdcMint: DEVNET_USDC_MINT,
       jobId,
       evaluationKey: COOV_PDAS.deriveEvaluationPda(candidate, evalId, PROGRAM_ID)[0],
+      referrer: scout,
       tokenProgramId: TOKEN_PROGRAM_ID,
       programId: PROGRAM_ID,
     });

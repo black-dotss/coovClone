@@ -684,6 +684,7 @@ export const bounties = pgTable(
     createTxSignature: text("create_tx_signature"),
     refundTxSignature: text("refund_tx_signature"),
     minScore: integer("min_score").notNull(),
+    minStreak: integer("min_streak").notNull().default(0),
     rewardPerWinnerMicros: text("reward_per_winner_micros").notNull(),
     stakeBps: integer("stake_bps").notNull().default(1000),
     slashedPoolMicros: text("slashed_pool_micros").notNull().default("0"),
@@ -719,6 +720,8 @@ export const bountyClaims = pgTable(
     claimReceiptPda: text("claim_receipt_pda").notNull(),
     claimTxSignature: text("claim_tx_signature").notNull(),
     amountMicros: text("amount_micros").notNull(),
+    referrerWallet: text("referrer_wallet"),
+    scoutCutMicros: text("scout_cut_micros"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -765,6 +768,9 @@ export const bountySubmissions = pgTable(
     stakeTxSignature: text("stake_tx_signature"),
     stakeAmountMicros: text("stake_amount_micros"),
     stakeStatus: text("stake_status").notNull().default("none"), // none, pending, approved, slashed, refunded
+    isZeroStakeVip: boolean("is_zero_stake_vip").notNull().default(false),
+    referrerWallet: text("referrer_wallet"),
+    scoutCutMicros: text("scout_cut_micros"),
     slashTxSignature: text("slash_tx_signature"),
     payoutTxSignature: text("payout_tx_signature"),
     bonusPaidMicros: text("bonus_paid_micros"),

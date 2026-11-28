@@ -30,11 +30,16 @@ import {
   NotFoundError,
 } from "@/lib/shared/errors";
 import { logger } from "@/lib/shared/logger";
-import { computeConvictionStakeMicros, DEFAULT_STAKE_BPS } from "@/lib/solana/codec";
+import {
+  computeConvictionStakeMicros,
+  computeScoutSplitMicros,
+  DEFAULT_STAKE_BPS,
+} from "@/lib/solana/codec";
 import {
   confirmSubmittedSignature,
   executeOracleSlashFraudStake,
   fetchOnChainConvictionStake,
+  fetchOnChainReputation,
 } from "@/lib/solana/oracle";
 
 export const BOUNTY_REVIEW_WINDOW_HOURS = 24;
@@ -53,6 +58,7 @@ export function computeStakeAndBonusMetrics(bounty: {
   claimsCount: number;
   stakeBps?: number | null;
   slashedPoolMicros?: string | null;
+  minStreak?: number | null;
 }) {
   const stakeBps =
     typeof bounty.stakeBps === "number" && bounty.stakeBps > 0
@@ -64,6 +70,13 @@ export function computeStakeAndBonusMetrics(bounty: {
     stakeBps
   ).toString();
   const stakePerCandidateUsdc = Number(stakePerCandidateMicros) / 1_000_000;
+
+  const { candidateRewardMicros, scoutCutMicros } = computeScoutSplitMicros(
+    bounty.rewardPerWinnerMicros ?? "0",
+    true
+  );
+  const candidate90Usdc = Number(candidateRewardMicros) / 1_000_000;
+  const scout10Usdc = Number(scoutCutMicros) / 1_000_000;
 
   const slashedPoolMicrosBig = BigInt(bounty.slashedPoolMicros ?? "0");
   const slashedPoolMicros = slashedPoolMicrosBig.toString();
@@ -77,6 +90,9 @@ export function computeStakeAndBonusMetrics(bounty: {
     stakePercent,
     stakePerCandidateMicros,
     stakePerCandidateUsdc,
+    candidate90Usdc,
+    scout10Usdc,
+    minStreak: bounty.minStreak ?? 0,
     slashedPoolMicros,
     slashedPoolUsdc,
     proRataBonusMicros,
@@ -95,6 +111,9 @@ export interface BountySlotMetrics {
   stakeBps: number;
   stakePercent: number;
   stakePerCandidateUsdc: number;
+  candidate90Usdc: number;
+  scout10Usdc: number;
+  minStreak: number;
   slashedPoolUsdc: number;
   proRataBonusUsdc: number;
 }
@@ -352,6 +371,7 @@ export async function validatePreBountySubmission(params: {
   cvText: string;
   walletAddress?: string | null;
   stakeTxSignature?: string | null;
+  referrerWallet?: string | null;
   requireOnChainStake?: boolean;
   provider?: LLMProvider;
   forceLlm?: boolean;
@@ -365,6 +385,8 @@ export async function validatePreBountySubmission(params: {
   stakeTxSignature: string | null;
   stakeAmountMicros: string | null;
   stakeStatus: string;
+  isZeroStakeVip: boolean;
+  referrerWallet: string | null;
 } | null> {
   const bounty = await findBountyByJobDescriptionId(params.jobDescriptionId);
   if (!bounty) return null;
@@ -391,6 +413,27 @@ export async function validatePreBountySubmission(params: {
   let stakePdaAddress: string | null = null;
   let stakeAmountMicros: string | null = null;
   let stakeStatus = "none";
+  let isZeroStakeVip = false;
+  let referrerWallet: string | null =
+    params.referrerWallet && params.referrerWallet !== candidateWallet
+      ? params.referrerWallet
+      : null;
+
+  if ((bounty.minStreak ?? 0) > 0) {
+    if (!candidateWallet) {
+      throw new BadRequestError(
+        `This bounty requires a verified Solana streak of at least ${bounty.minStreak}. Connect your Solana wallet to verify.`
+      );
+    }
+    const repRes = await fetchOnChainReputation(candidateWallet);
+    const rep = repRes.reputation;
+    const activeStreak = rep && rep.fraudFlags === 0 && rep.isFresh ? rep.verifiedStreak : 0;
+    if (activeStreak < bounty.minStreak) {
+      throw new ForbiddenError(
+        `Minimum active streak requirement not met: this bounty requires ${bounty.minStreak}+ fresh verified streak (0 fraud flags), your wallet currently has ${activeStreak}.`
+      );
+    }
+  }
 
   if (params.requireOnChainStake || params.stakeTxSignature) {
     if (!candidateWallet) {
@@ -425,6 +468,10 @@ export async function validatePreBountySubmission(params: {
     stakePdaAddress = stakeRes.stakePda;
     stakeAmountMicros = stakeRes.stake.amountStakedMicros;
     stakeStatus = stakeRes.stake.status;
+    isZeroStakeVip = stakeRes.stake.isZeroStakeVip;
+    if (stakeRes.stake.referrer && stakeRes.stake.referrer !== candidateWallet) {
+      referrerWallet = stakeRes.stake.referrer;
+    }
   }
 
   const { resumeHash, fingerprint } = await computeNormalizedResumeHash(params.cvText);
@@ -556,6 +603,8 @@ export async function validatePreBountySubmission(params: {
     stakeTxSignature: params.stakeTxSignature ?? null,
     stakeAmountMicros,
     stakeStatus,
+    isZeroStakeVip,
+    referrerWallet,
   };
 }
 
@@ -599,6 +648,7 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
     claimsCount: bounty.claimsCount,
     stakeBps: bounty.stakeBps,
     slashedPoolMicros: bounty.slashedPoolMicros,
+    minStreak: bounty.minStreak,
   });
 
   return {
@@ -612,6 +662,9 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
     stakeBps: stakeMetrics.stakeBps,
     stakePercent: stakeMetrics.stakePercent,
     stakePerCandidateUsdc: stakeMetrics.stakePerCandidateUsdc,
+    candidate90Usdc: stakeMetrics.candidate90Usdc,
+    scout10Usdc: stakeMetrics.scout10Usdc,
+    minStreak: stakeMetrics.minStreak,
     slashedPoolUsdc: stakeMetrics.slashedPoolUsdc,
     proRataBonusUsdc: stakeMetrics.proRataBonusUsdc,
   };
@@ -619,12 +672,13 @@ export async function getBountySlotMetrics(bountyId: string, bountyRow?: typeof 
 
 /**
  * Persists an initial submission row or synchronizes a completed evaluation into
- * an optimistic 48h `pending_review` slot reservation when `score >= min_score`.
+ * an optimistic 24h `pending_review` slot reservation when `score >= min_score`.
  */
 export async function syncEvaluationToBountySubmission(params: {
   evaluationId: string;
   walletAddress?: string | null;
   stakeTxSignature?: string | null;
+  referrerWallet?: string | null;
   requireOnChainStake?: boolean;
   provider?: LLMProvider;
   forceLlm?: boolean;
@@ -669,6 +723,12 @@ export async function syncEvaluationToBountySubmission(params: {
     const stakeTxSignature = params.stakeTxSignature ?? existing?.stakeTxSignature ?? null;
     let stakeAmountMicros = existing?.stakeAmountMicros ?? null;
     let stakeStatus = existing?.stakeStatus ?? "none";
+    let isZeroStakeVip = existing?.isZeroStakeVip ?? false;
+    let referrerWallet =
+      existing?.referrerWallet ??
+      (params.referrerWallet && params.referrerWallet !== candidateWallet
+        ? params.referrerWallet
+        : null);
     let slashTxSignature = existing?.slashTxSignature ?? null;
 
     if (params.stakeTxSignature) {
@@ -685,6 +745,10 @@ export async function syncEvaluationToBountySubmission(params: {
           stakePdaAddress = stakeRes.stakePda;
           stakeAmountMicros = stakeRes.stake.amountStakedMicros;
           stakeStatus = stakeRes.stake.status;
+          isZeroStakeVip = stakeRes.stake.isZeroStakeVip;
+          if (stakeRes.stake.referrer && stakeRes.stake.referrer !== candidateWallet) {
+            referrerWallet = stakeRes.stake.referrer;
+          }
         }
       } catch (err) {
         if (params.requireOnChainStake) throw err;
@@ -958,6 +1022,8 @@ export async function syncEvaluationToBountySubmission(params: {
           stakeTxSignature,
           stakeAmountMicros,
           stakeStatus,
+          isZeroStakeVip,
+          referrerWallet,
           slashTxSignature,
           updatedAt: new Date(),
         })
@@ -987,6 +1053,8 @@ export async function syncEvaluationToBountySubmission(params: {
         stakeTxSignature,
         stakeAmountMicros,
         stakeStatus,
+        isZeroStakeVip,
+        referrerWallet,
         slashTxSignature,
       })
       .returning();
@@ -1017,6 +1085,8 @@ export async function persistInitialBountySubmission(params: {
   stakeTxSignature?: string | null;
   stakeAmountMicros?: string | null;
   stakeStatus?: string;
+  isZeroStakeVip?: boolean;
+  referrerWallet?: string | null;
 }) {
   try {
     await db
@@ -1038,6 +1108,8 @@ export async function persistInitialBountySubmission(params: {
         stakeTxSignature: params.stakeTxSignature ?? null,
         stakeAmountMicros: params.stakeAmountMicros ?? null,
         stakeStatus: params.stakeStatus ?? "none",
+        isZeroStakeVip: params.isZeroStakeVip ?? false,
+        referrerWallet: params.referrerWallet ?? null,
       })
       .onConflictDoNothing();
   } catch (err) {
@@ -1241,6 +1313,8 @@ export async function getBountyPublisherReviewWorkspace(
       ...bountyRow.bounty,
       rawText: bountyRow.rawText,
       rewardPerWinnerUsdc: Number(bountyRow.bounty.rewardPerWinnerMicros) / 1_000_000,
+      candidate90Usdc: stakeMetrics.candidate90Usdc,
+      scout10Usdc: stakeMetrics.scout10Usdc,
       totalPoolUsdc:
         (Number(bountyRow.bounty.rewardPerWinnerMicros) * bountyRow.bounty.maxWinners) /
         1_000_000,
@@ -1250,12 +1324,18 @@ export async function getBountyPublisherReviewWorkspace(
       slashedPoolMicros: stakeMetrics.slashedPoolMicros,
       slashedPoolUsdc: stakeMetrics.slashedPoolUsdc,
       proRataBonusUsdc: stakeMetrics.proRataBonusUsdc,
+      minStreak: stakeMetrics.minStreak,
     },
     slotMetrics,
     submissions: submissions.map((s) => ({
       ...s,
       stakeAmountUsdc: s.stakeAmountMicros ? Number(s.stakeAmountMicros) / 1_000_000 : 0,
       bonusPaidUsdc: s.bonusPaidMicros ? Number(s.bonusPaidMicros) / 1_000_000 : 0,
+      scoutCutUsdc: s.scoutCutMicros
+        ? Number(s.scoutCutMicros) / 1_000_000
+        : s.referrerWallet
+        ? stakeMetrics.scout10Usdc
+        : 0,
     })),
     restrictions,
   };
@@ -1271,6 +1351,8 @@ export async function reviewBountySubmissionDecision(params: {
   claimReceiptPda?: string;
   amountPaidMicros?: string;
   bonusPaidMicros?: string;
+  referrerWallet?: string | null;
+  scoutCutMicros?: string | null;
   claimsCount?: number;
   slashTxSignature?: string;
   slashedPoolMicros?: string;
@@ -1318,6 +1400,11 @@ export async function reviewBountySubmissionDecision(params: {
     }
 
     const isSettledOnChain = Boolean(params.payoutTxSignature);
+    const resolvedReferrer =
+      params.referrerWallet !== undefined ? params.referrerWallet : sub.referrerWallet;
+    const resolvedScoutCutMicros =
+      params.scoutCutMicros !== undefined ? params.scoutCutMicros : sub.scoutCutMicros;
+
     const [updated] = await db
       .update(bountySubmissions)
       .set({
@@ -1325,6 +1412,8 @@ export async function reviewBountySubmissionDecision(params: {
         stakeStatus: isSettledOnChain ? "approved" : sub.stakeStatus,
         payoutTxSignature: params.payoutTxSignature ?? sub.payoutTxSignature,
         bonusPaidMicros: params.bonusPaidMicros ?? sub.bonusPaidMicros,
+        referrerWallet: resolvedReferrer,
+        scoutCutMicros: resolvedScoutCutMicros,
         reviewedAt: now,
         reviewedByUserId: params.recruiterUserId,
         ...(trimmedNotes ? { recruiterNotes: trimmedNotes } : {}),
@@ -1357,6 +1446,8 @@ export async function reviewBountySubmissionDecision(params: {
           claimReceiptPda: params.claimReceiptPda ?? "",
           claimTxSignature: params.payoutTxSignature,
           amountMicros: params.amountPaidMicros ?? bounty.rewardPerWinnerMicros,
+          referrerWallet: resolvedReferrer ?? null,
+          scoutCutMicros: resolvedScoutCutMicros ?? null,
         })
         .onConflictDoNothing();
     }

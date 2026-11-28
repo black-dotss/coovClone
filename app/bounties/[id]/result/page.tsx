@@ -44,6 +44,9 @@ interface BountyResultResponse {
     recruiterNotes: string | null;
     stakePdaAddress?: string | null;
     stakeStatus?: string;
+    isZeroStakeVip?: boolean;
+    referrerWallet?: string | null;
+    scoutCutUsdc?: number;
     stakeAmountUsdc?: number;
     bonusPaidUsdc?: number;
     remainingReviewLabel: string | null;
@@ -268,7 +271,9 @@ function BountyResultContent() {
           {data.submission?.stakeStatus && data.submission.stakeStatus !== "none" && (
             <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-border flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
               <span className="text-text-muted">
-                Conviction Stake ({data.submission.stakeAmountUsdc ?? data.bounty.stakePerCandidateUsdc ?? 0} USDC)
+                {data.submission.isZeroStakeVip
+                  ? "0 USDC Stake (Verified Streak Perk)"
+                  : `Conviction Stake (${data.submission.stakeAmountUsdc ?? data.bounty.stakePerCandidateUsdc ?? 0} USDC)`}
               </span>
               <span className="text-purple-400 font-semibold uppercase">
                 {data.submission.stakeStatus}
@@ -277,6 +282,19 @@ function BountyResultContent() {
                   : (data.bounty.proRataBonusUsdc ?? 0) > 0 && isSuccess
                   ? ` (+${data.bounty.proRataBonusUsdc?.toFixed(2)} USDC est. yield)`
                   : ""}
+              </span>
+            </div>
+          )}
+
+          {data.submission?.referrerWallet && (
+            <div className="px-4 py-3 rounded-xl bg-surface-elevated border border-border flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+              <span className="text-text-muted">
+                Scout 90 / 10 Split Active ({data.submission.referrerWallet.slice(0, 6)}...
+                {data.submission.referrerWallet.slice(-4)})
+              </span>
+              <span className="text-purple-400 font-semibold">
+                {(data.bounty.rewardPerWinnerUsdc * 0.9).toFixed(2)} USDC Candidate ·{" "}
+                {(data.bounty.rewardPerWinnerUsdc * 0.1).toFixed(2)} USDC Scout
               </span>
             </div>
           )}

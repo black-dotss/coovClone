@@ -83,8 +83,11 @@ export const GET = createApiHandler(
               company: bounty.company,
               companyLogoUrl: bounty.companyLogoUrl,
               minScore: bounty.minScore,
+              minStreak: bounty.minStreak ?? 0,
               maxWinners: bounty.maxWinners,
               rewardPerWinnerUsdc: Number(bounty.rewardPerWinnerMicros) / 1_000_000,
+              candidate90Usdc: earlyStakeMetrics.candidate90Usdc,
+              scout10Usdc: earlyStakeMetrics.scout10Usdc,
               stakeBps: earlyStakeMetrics.stakeBps,
               stakePercent: earlyStakeMetrics.stakePercent,
               stakePerCandidateUsdc: earlyStakeMetrics.stakePerCandidateUsdc,
@@ -187,8 +190,11 @@ export const GET = createApiHandler(
         company: bounty.company,
         companyLogoUrl: bounty.companyLogoUrl,
         minScore: bounty.minScore,
+        minStreak: bounty.minStreak ?? 0,
         maxWinners: bounty.maxWinners,
         rewardPerWinnerUsdc: Number(bounty.rewardPerWinnerMicros) / 1_000_000,
+        candidate90Usdc: earlyStakeMetrics.candidate90Usdc,
+        scout10Usdc: earlyStakeMetrics.scout10Usdc,
         stakeBps: earlyStakeMetrics.stakeBps,
         stakePercent: earlyStakeMetrics.stakePercent,
         stakePerCandidateUsdc: earlyStakeMetrics.stakePerCandidateUsdc,
@@ -214,6 +220,11 @@ export const GET = createApiHandler(
             recruiterNotes: submission.recruiterNotes,
             stakePdaAddress: submission.stakePdaAddress,
             stakeStatus: submission.stakeStatus,
+            isZeroStakeVip: submission.isZeroStakeVip,
+            referrerWallet: submission.referrerWallet,
+            scoutCutUsdc: submission.scoutCutMicros
+              ? Number(submission.scoutCutMicros) / 1_000_000
+              : 0,
             stakeAmountUsdc: submission.stakeAmountMicros
               ? Number(submission.stakeAmountMicros) / 1_000_000
               : 0,

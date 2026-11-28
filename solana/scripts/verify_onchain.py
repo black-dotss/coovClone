@@ -146,6 +146,10 @@ def derive_conviction_stake_pda(
     )
 
 
+def derive_reputation_pda(candidate: Pubkey, program_id: Pubkey) -> tuple[Pubkey, int]:
+    return Pubkey.find_program_address([b"reputation", bytes(candidate)], program_id)
+
+
 @dataclass
 class DecodedProgramConfig:
     pda: str
@@ -206,6 +210,7 @@ class DecodedBountyEscrow:
     vault_bump: int
     stake_bps: int = 1000
     slashed_pool_amount_micros: int = 0
+    min_streak: int = 0
     is_legacy_layout: bool = False
     vault_balance_usdc: Optional[float] = None
 
@@ -219,6 +224,19 @@ class DecodedConvictionStake:
     status: str
     submitted_at: int
     resolved_at: int
+    bump: int
+    referrer: Optional[str] = None
+    is_zero_stake_vip: bool = False
+
+
+@dataclass
+class DecodedReputationState:
+    pda: str
+    wallet: str
+    last_verified_at: int
+    verified_streak: int
+    total_earned_usdc_micros: int
+    fraud_flags: int
     bump: int
 
 
@@ -306,11 +324,14 @@ def decode_bounty_escrow(pda: Pubkey, vault_pda: Pubkey, raw: bytes) -> DecodedB
 
     stake_bps = 1000
     slashed_pool_amount_micros = 0
+    min_streak = 0
     is_legacy_layout = True
     if len(raw) >= 154:
         parsed_bps = r.read_u16()
         stake_bps = parsed_bps if parsed_bps > 0 else 1000
         slashed_pool_amount_micros = r.read_u64()
+    if len(raw) >= 155:
+        min_streak = r.read_u8()
         is_legacy_layout = False
 
     return DecodedBountyEscrow(
@@ -330,6 +351,7 @@ def decode_bounty_escrow(pda: Pubkey, vault_pda: Pubkey, raw: bytes) -> DecodedB
         vault_bump=vault_bump,
         stake_bps=stake_bps,
         slashed_pool_amount_micros=slashed_pool_amount_micros,
+        min_streak=min_streak,
         is_legacy_layout=is_legacy_layout,
     )
 
@@ -342,14 +364,42 @@ def decode_conviction_stake(pda: Pubkey, raw: bytes) -> DecodedConvictionStake:
     amount_staked_micros = r.read_u64()
     status_idx = r.read_u8()
     status_map = {0: "Pending", 1: "Approved", 2: "Slashed", 3: "Refunded"}
+    submitted_at = r.read_i64()
+    resolved_at = r.read_i64()
+    referrer: Optional[str] = None
+    is_zero_stake_vip = False
+    if len(raw) <= 98:
+        bump = r.read_u8()
+    else:
+        has_ref = r.read_u8()
+        referrer = r.read_pubkey() if has_ref == 1 else None
+        is_zero_stake_vip = r.read_bool()
+        bump = r.read_u8()
+
     return DecodedConvictionStake(
         pda=str(pda),
         escrow=escrow,
         candidate=candidate,
         amount_staked_micros=amount_staked_micros,
         status=status_map.get(status_idx, f"Unknown({status_idx})"),
-        submitted_at=r.read_i64(),
-        resolved_at=r.read_i64(),
+        submitted_at=submitted_at,
+        resolved_at=resolved_at,
+        bump=bump,
+        referrer=referrer,
+        is_zero_stake_vip=is_zero_stake_vip,
+    )
+
+
+def decode_reputation_state(pda: Pubkey, raw: bytes) -> DecodedReputationState:
+    r = BorshReader(raw)
+    r.assert_discriminator("ReputationState")
+    return DecodedReputationState(
+        pda=str(pda),
+        wallet=r.read_pubkey(),
+        last_verified_at=r.read_i64(),
+        verified_streak=r.read_u8(),
+        total_earned_usdc_micros=r.read_u64(),
+        fraud_flags=r.read_u8(),
         bump=r.read_u8(),
     )
 
@@ -434,6 +484,19 @@ async def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 report["checks"]["candidate_profile"] = {
                     "pda": str(profile_pda),
+                    "wallet": str(candidate_pk),
+                    "initialized": False,
+                }
+
+            rep_pda, _ = derive_reputation_pda(candidate_pk, program_id)
+            rep_resp = await client.get_account_info(rep_pda)
+            if rep_resp.value and rep_resp.value.owner == program_id:
+                report["checks"]["reputation_state"] = asdict(
+                    decode_reputation_state(rep_pda, bytes(rep_resp.value.data))
+                )
+            else:
+                report["checks"]["reputation_state"] = {
+                    "pda": str(rep_pda),
                     "wallet": str(candidate_pk),
                     "initialized": False,
                 }

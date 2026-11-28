@@ -32,7 +32,12 @@ pub const MAX_DEFENSE_BOOST: u8 = 15;
 pub const DEFAULT_STAKE_BPS: u16 = 1_000; // 10%
 pub const MAX_STAKE_BPS: u16 = 10_000; // 100%
 pub const LEGACY_ESCROW_SPACE: usize = 144;
+pub const V2_ESCROW_SPACE: usize = 154;
 pub const LEGACY_ESCROW_DISC: [u8; 8] = [59, 18, 13, 80, 225, 187, 6, 16];
+pub const STREAK_QUALIFY_SCORE: u8 = 75;
+pub const STREAK_ZERO_STAKE_THRESHOLD: u8 = 2;
+pub const STREAK_DECAY_SECONDS: i64 = 30 * 86_400; // 2,592,000 seconds (30 days)
+pub const SCOUT_SPLIT_BPS: u64 = 1_000; // 10% referral cut, 90% candidate
 
 fn resolve_stake_bps(stake_bps: u16) -> u16 {
     if stake_bps == 0 {
@@ -52,6 +57,46 @@ fn compute_stake_amount(reward_per_winner: u64, stake_bps: u16) -> Result<u64> {
     let amount_u64 = u64::try_from(amount).map_err(|_| CoovError::MathOverflow)?;
     require!(amount_u64 > 0, CoovError::InvalidAmount);
     Ok(amount_u64)
+}
+
+fn compute_scout_split(reward_per_winner: u64, has_referrer: bool) -> Result<(u64, u64)> {
+    if !has_referrer {
+        return Ok((reward_per_winner, 0));
+    }
+    let scout_u128 = ((reward_per_winner as u128)
+        .checked_mul(SCOUT_SPLIT_BPS as u128)
+        .ok_or(CoovError::MathOverflow)?)
+        / 10_000u128;
+    let scout_cut = u64::try_from(scout_u128).map_err(|_| CoovError::MathOverflow)?;
+    let candidate_reward = reward_per_winner
+        .checked_sub(scout_cut)
+        .ok_or(CoovError::MathOverflow)?;
+    Ok((candidate_reward, scout_cut))
+}
+
+fn verify_reputation_pda(
+    rep: &ReputationState,
+    candidate: &Pubkey,
+    rep_key: &Pubkey,
+) -> Result<()> {
+    let (expected_rep, _) =
+        Pubkey::find_program_address(&[b"reputation", candidate.as_ref()], &crate::ID);
+    require_keys_eq!(*rep_key, expected_rep, CoovError::InvalidReputationAccount);
+    require_keys_eq!(rep.wallet, *candidate, CoovError::UnauthorizedCandidate);
+    Ok(())
+}
+
+fn is_reputation_fresh(rep: &ReputationState, now: i64) -> bool {
+    rep.last_verified_at > 0 && now.saturating_sub(rep.last_verified_at) <= STREAK_DECAY_SECONDS
+}
+
+fn apply_verified_streak_update(rep: &mut ReputationState, now: i64) {
+    if is_reputation_fresh(rep, now) {
+        rep.verified_streak = rep.verified_streak.saturating_add(1);
+    } else {
+        rep.verified_streak = 1;
+    }
+    rep.last_verified_at = now;
 }
 
 #[program]
@@ -109,8 +154,28 @@ pub mod coov_protocol {
         Ok(())
     }
 
-    /// Features 1 & 3: Anchors a completed 6-agent LangGraph evaluation on-chain
-    /// and updates the candidate's on-chain Profile & Skill Registry.
+    /// Feature 7 (Reputation Decay & Streak Multiplier): Initializes the deterministic
+    /// ReputationState PDA (`seeds = [b"reputation", candidate]`) safely alongside existing
+    /// variable-length CandidateProfile PDAs without breaking Devnet accounts.
+    pub fn init_reputation(ctx: Context<InitReputation>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let rep = &mut ctx.accounts.reputation;
+        rep.wallet = ctx.accounts.candidate.key();
+        rep.last_verified_at = 0;
+        rep.verified_streak = 0;
+        rep.total_earned_usdc = 0;
+        rep.fraud_flags = 0;
+        rep.bump = ctx.bumps.reputation;
+
+        emit!(ReputationInitialized {
+            candidate: rep.wallet,
+            timestamp: now,
+        });
+        Ok(())
+    }
+
+    /// Features 1, 3 & 7: Anchors a completed 6-agent LangGraph evaluation on-chain,
+    /// updates CandidateProfile, and increments ReputationState streak when `composite_score >= 75`.
     /// Co-signed by `candidate` (payer) and `oracle_authority` (COOV backend).
     pub fn record_evaluation(
         ctx: Context<RecordEvaluation>,
@@ -146,6 +211,7 @@ pub mod coov_protocol {
         }
 
         let now = Clock::get()?.unix_timestamp;
+        let candidate_key = ctx.accounts.candidate.key();
 
         // 1. Update Candidate Profile PDA
         let profile = &mut ctx.accounts.profile;
@@ -164,7 +230,7 @@ pub mod coov_protocol {
 
         // 2. Write Evaluation Audit Trail PDA
         let eval_rec = &mut ctx.accounts.evaluation;
-        eval_rec.candidate = ctx.accounts.candidate.key();
+        eval_rec.candidate = candidate_key;
         eval_rec.eval_id = eval_id;
         eval_rec.job_id = job_id;
         eval_rec.initial_report_hash = report_hash;
@@ -180,6 +246,22 @@ pub mod coov_protocol {
         eval_rec.created_at = now;
         eval_rec.updated_at = now;
         eval_rec.bump = ctx.bumps.evaluation;
+
+        // 3. Advance Verified Reputation Streak on qualifying score (>= 75) with 30-day decay
+        if composite_score >= STREAK_QUALIFY_SCORE {
+            if let Some(rep) = ctx.accounts.reputation.as_deref_mut() {
+                let rep_key = rep.key();
+                verify_reputation_pda(rep, &candidate_key, &rep_key)?;
+                apply_verified_streak_update(rep, now);
+                emit!(ReputationUpdated {
+                    candidate: rep.wallet,
+                    verified_streak: rep.verified_streak,
+                    total_earned_usdc: rep.total_earned_usdc,
+                    fraud_flags: rep.fraud_flags,
+                    last_verified_at: rep.last_verified_at,
+                });
+            }
+        }
 
         emit!(EvaluationRecorded {
             candidate: eval_rec.candidate,
@@ -203,16 +285,18 @@ pub mod coov_protocol {
     ) -> Result<()> {
         require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
         let eval_rec = &mut ctx.accounts.evaluation;
+        let prev_score = eval_rec.composite_score;
         let max_allowed = eval_rec
             .initial_score
             .saturating_add(MAX_DEFENSE_BOOST)
             .min(100);
         require!(
-            new_composite_score >= eval_rec.composite_score && new_composite_score <= max_allowed,
+            new_composite_score >= prev_score && new_composite_score <= max_allowed,
             CoovError::InvalidDefenseScore
         );
 
         let now = Clock::get()?.unix_timestamp;
+        let candidate_key = ctx.accounts.candidate.key();
         eval_rec.current_report_hash = new_report_hash;
         eval_rec.composite_score = new_composite_score;
         eval_rec.defense_count = eval_rec
@@ -226,6 +310,25 @@ pub mod coov_protocol {
             profile.highest_score = new_composite_score;
         }
         profile.updated_at = now;
+
+        if new_composite_score >= STREAK_QUALIFY_SCORE {
+            if let Some(rep) = ctx.accounts.reputation.as_deref_mut() {
+                let rep_key = rep.key();
+                verify_reputation_pda(rep, &candidate_key, &rep_key)?;
+                if prev_score < STREAK_QUALIFY_SCORE {
+                    apply_verified_streak_update(rep, now);
+                } else if rep.verified_streak > 0 {
+                    rep.last_verified_at = now;
+                }
+                emit!(ReputationUpdated {
+                    candidate: rep.wallet,
+                    verified_streak: rep.verified_streak,
+                    total_earned_usdc: rep.total_earned_usdc,
+                    fraud_flags: rep.fraud_flags,
+                    last_verified_at: rep.last_verified_at,
+                });
+            }
+        }
 
         emit!(EvaluationDefended {
             candidate: eval_rec.candidate,
@@ -484,13 +587,14 @@ pub mod coov_protocol {
         Ok(())
     }
 
-    /// Safely upgrades a legacy 144-byte `BountyEscrow` PDA to the v2 154-byte layout
-    /// with default `stake_bps = 1000` (10%) and `slashed_pool_amount = 0`.
+    /// Safely upgrades a legacy 144-byte or v2 154-byte `BountyEscrow` PDA to the v3 155-byte
+    /// layout (`stake_bps`, `slashed_pool_amount`, `min_streak`).
     pub fn migrate_escrow(ctx: Context<MigrateEscrow>) -> Result<()> {
         let escrow_info = ctx.accounts.escrow.to_account_info();
         require_keys_eq!(*escrow_info.owner, crate::ID, CoovError::InvalidEscrowAccount);
+        let old_len = escrow_info.data_len();
         require!(
-            escrow_info.data_len() == LEGACY_ESCROW_SPACE,
+            old_len == LEGACY_ESCROW_SPACE || old_len == V2_ESCROW_SPACE,
             CoovError::InvalidEscrowAccount
         );
 
@@ -530,17 +634,20 @@ pub mod coov_protocol {
 
         escrow_info.realloc(BountyEscrow::SPACE, false)?;
         let mut data = escrow_info.try_borrow_mut_data()?;
-        data[LEGACY_ESCROW_SPACE..LEGACY_ESCROW_SPACE + 2]
-            .copy_from_slice(&DEFAULT_STAKE_BPS.to_le_bytes());
-        data[LEGACY_ESCROW_SPACE + 2..BountyEscrow::SPACE]
-            .copy_from_slice(&0u64.to_le_bytes());
+        if old_len == LEGACY_ESCROW_SPACE {
+            data[LEGACY_ESCROW_SPACE..LEGACY_ESCROW_SPACE + 2]
+                .copy_from_slice(&DEFAULT_STAKE_BPS.to_le_bytes());
+            data[LEGACY_ESCROW_SPACE + 2..V2_ESCROW_SPACE]
+                .copy_from_slice(&0u64.to_le_bytes());
+        }
+        data[V2_ESCROW_SPACE] = 0u8; // min_streak default 0
 
         Ok(())
     }
 
-    /// Feature 4: Recruiter creates & funds a multi-winner USDC bounty escrow pool
-    /// (`reward_per_winner * max_winners`) with an `expires_at` deadline and `stake_bps`.
-    /// Passing `stake_bps == 0` defaults cleanly to 1,000 bps (10%).
+    /// Feature 4 + 7: Recruiter creates & funds a multi-winner USDC bounty escrow pool
+    /// (`reward_per_winner * max_winners`) with an `expires_at` deadline, `stake_bps`,
+    /// and optional minimum active streak gating (`min_streak`).
     pub fn create_bounty_escrow(
         ctx: Context<CreateBountyEscrow>,
         job_id: [u8; 16],
@@ -549,6 +656,7 @@ pub mod coov_protocol {
         max_winners: u16,
         expires_at: i64,
         stake_bps: u16,
+        min_streak: u8,
     ) -> Result<()> {
         require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
         require!(min_score > 0 && min_score <= 100, CoovError::InvalidScore);
@@ -594,6 +702,7 @@ pub mod coov_protocol {
         escrow.vault_bump = ctx.bumps.vault;
         escrow.stake_bps = effective_stake_bps;
         escrow.slashed_pool_amount = 0;
+        escrow.min_streak = min_streak;
 
         emit!(BountyCreated {
             escrow: escrow.key(),
@@ -605,16 +714,29 @@ pub mod coov_protocol {
             min_score,
             expires_at,
             stake_bps: effective_stake_bps,
+            min_streak,
         });
 
         Ok(())
     }
 
-    /// Feature 5 (Anti-Spam Conviction Stake): Candidate locks `(reward_per_winner * stake_bps) / 10_000`
-    /// Devnet USDC into the bounty's escrow vault BEFORE entering review.
-    pub fn submit_with_conviction_stake(ctx: Context<SubmitWithConvictionStake>) -> Result<()> {
+    /// Feature 5 + 6 + 7: Candidate locks Conviction Stake BEFORE entering review.
+    /// - Optionally attaches a Scout/Referrer wallet for an on-chain 90/10 split.
+    /// - Enforces `escrow.min_streak` if configured.
+    /// - Grants Zero-Stake Fast-Track Perk when `verified_streak >= 2`, `fraud_flags == 0`,
+    ///   and last verification is active within 30 days.
+    pub fn submit_with_conviction_stake(
+        ctx: Context<SubmitWithConvictionStake>,
+        referrer: Option<Pubkey>,
+    ) -> Result<()> {
         require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
         let now = Clock::get()?.unix_timestamp;
+        let candidate_key = ctx.accounts.candidate.key();
+
+        if let Some(ref_pk) = referrer {
+            require!(ref_pk != candidate_key, CoovError::SelfReferralNotAllowed);
+            require!(ref_pk != Pubkey::default(), CoovError::InvalidReferrerAccount);
+        }
 
         let escrow = &ctx.accounts.escrow;
         require!(!escrow.is_closed, CoovError::EscrowClosed);
@@ -624,29 +746,73 @@ pub mod coov_protocol {
             CoovError::BountyFullyClaimed
         );
 
-        let amount_staked = compute_stake_amount(escrow.reward_per_winner, escrow.stake_bps)?;
+        let mut is_zero_stake_vip = false;
+        let mut verified_streak: u8 = 0;
+        let mut has_active_clean_streak = false;
 
-        transfer_checked(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.candidate_token_account.to_account_info(),
-                    mint: ctx.accounts.usdc_mint.to_account_info(),
-                    to: ctx.accounts.vault.to_account_info(),
-                    authority: ctx.accounts.candidate.to_account_info(),
-                },
-            ),
-            amount_staked,
-            ctx.accounts.usdc_mint.decimals,
-        )?;
+        if let Some(rep) = ctx.accounts.reputation.as_deref() {
+            let rep_key = rep.key();
+            verify_reputation_pda(rep, &candidate_key, &rep_key)?;
+            verified_streak = rep.verified_streak;
+            let fresh = is_reputation_fresh(rep, now);
+            has_active_clean_streak = rep.fraud_flags == 0 && fresh;
+            if has_active_clean_streak && verified_streak >= STREAK_ZERO_STAKE_THRESHOLD {
+                is_zero_stake_vip = true;
+            }
+        }
+
+        if escrow.min_streak > 0 {
+            require!(
+                has_active_clean_streak && verified_streak >= escrow.min_streak,
+                CoovError::StreakBelowBountyRequirement
+            );
+        }
+
+        let amount_staked = if is_zero_stake_vip {
+            0u64
+        } else {
+            let amt = compute_stake_amount(escrow.reward_per_winner, escrow.stake_bps)?;
+            let candidate_ata = ctx
+                .accounts
+                .candidate_token_account
+                .as_ref()
+                .ok_or(CoovError::InvalidTokenAccount)?;
+            require_keys_eq!(
+                candidate_ata.mint,
+                ctx.accounts.usdc_mint.key(),
+                CoovError::InvalidTokenAccount
+            );
+            require_keys_eq!(
+                candidate_ata.owner,
+                candidate_key,
+                CoovError::InvalidTokenAccount
+            );
+
+            transfer_checked(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: candidate_ata.to_account_info(),
+                        mint: ctx.accounts.usdc_mint.to_account_info(),
+                        to: ctx.accounts.vault.to_account_info(),
+                        authority: ctx.accounts.candidate.to_account_info(),
+                    },
+                ),
+                amt,
+                ctx.accounts.usdc_mint.decimals,
+            )?;
+            amt
+        };
 
         let stake = &mut ctx.accounts.conviction_stake;
         stake.escrow = escrow.key();
-        stake.candidate = ctx.accounts.candidate.key();
+        stake.candidate = candidate_key;
         stake.amount_staked = amount_staked;
         stake.status = ConvictionStatus::Pending;
         stake.submitted_at = now;
         stake.resolved_at = 0;
+        stake.referrer = referrer;
+        stake.is_zero_stake_vip = is_zero_stake_vip;
         stake.bump = ctx.bumps.conviction_stake;
 
         emit!(ConvictionStakeLocked {
@@ -654,15 +820,19 @@ pub mod coov_protocol {
             candidate: stake.candidate,
             stake_pda: stake.key(),
             amount_staked,
+            referrer,
+            is_zero_stake_vip,
             timestamp: now,
         });
 
         Ok(())
     }
 
-    /// Feature 5 (Recruiter Approval OR 24h Timeout Oracle Auto-Claim):
-    /// Transfers `reward_per_winner` + 100% refund of `amount_staked` + pro-rata bonus share
-    /// from `slashed_pool_amount` back to the candidate's ATA, and marks ConvictionStake Approved.
+    /// Feature 5 + 6 + 7 (Recruiter Approval OR 24h Timeout Oracle Auto-Claim):
+    /// Executes an atomic 90/10 Scout Split when `conviction_stake.referrer` is set:
+    /// - Candidate receives 90% reward + 100% refunded stake + pro-rata slashed pool yield
+    /// - Referrer/Scout receives 10% reward directly to their USDC ATA
+    /// Without a referrer, candidate receives 100% reward + stake refund + bonus yield.
     pub fn approve_and_payout(
         ctx: Context<ApproveAndPayout>,
         evaluation_key: Pubkey,
@@ -670,6 +840,7 @@ pub mod coov_protocol {
         require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
         let now = Clock::get()?.unix_timestamp;
         let escrow_info = ctx.accounts.escrow.to_account_info();
+        let candidate_key = ctx.accounts.candidate.key();
 
         let job_id = ctx.accounts.escrow.job_id;
         let bump = ctx.accounts.escrow.bump;
@@ -688,13 +859,21 @@ pub mod coov_protocol {
             CoovError::StakeAlreadyResolved
         );
 
+        let referrer = ctx.accounts.conviction_stake.referrer;
+        if let Some(ref_pk) = referrer {
+            require!(ref_pk != candidate_key, CoovError::SelfReferralNotAllowed);
+        }
+
+        let (candidate_reward, scout_cut) =
+            compute_scout_split(reward_per_winner, referrer.is_some())?;
+
         let remaining_slots = (max_winners - claims_count) as u64;
         let bonus_share = slashed_pool_amount
             .checked_div(remaining_slots)
             .unwrap_or(0);
         let stake_refund = ctx.accounts.conviction_stake.amount_staked;
 
-        let total_payout = reward_per_winner
+        let candidate_payout = candidate_reward
             .checked_add(stake_refund)
             .ok_or(CoovError::MathOverflow)?
             .checked_add(bonus_share)
@@ -710,13 +889,44 @@ pub mod coov_protocol {
                     from: ctx.accounts.vault.to_account_info(),
                     mint: ctx.accounts.usdc_mint.to_account_info(),
                     to: ctx.accounts.candidate_token_account.to_account_info(),
-                    authority: escrow_info,
+                    authority: escrow_info.clone(),
                 },
                 signer_seeds,
             ),
-            total_payout,
+            candidate_payout,
             ctx.accounts.usdc_mint.decimals,
         )?;
+
+        if let Some(ref_pk) = referrer {
+            let ref_ata = ctx
+                .accounts
+                .referrer_token_account
+                .as_ref()
+                .ok_or(CoovError::InvalidReferrerAccount)?;
+            require_keys_eq!(
+                ref_ata.mint,
+                ctx.accounts.usdc_mint.key(),
+                CoovError::InvalidReferrerAccount
+            );
+            require_keys_eq!(ref_ata.owner, ref_pk, CoovError::InvalidReferrerAccount);
+
+            if scout_cut > 0 {
+                transfer_checked(
+                    CpiContext::new_with_signer(
+                        ctx.accounts.token_program.to_account_info(),
+                        TransferChecked {
+                            from: ctx.accounts.vault.to_account_info(),
+                            mint: ctx.accounts.usdc_mint.to_account_info(),
+                            to: ref_ata.to_account_info(),
+                            authority: escrow_info,
+                        },
+                        signer_seeds,
+                    ),
+                    scout_cut,
+                    ctx.accounts.usdc_mint.decimals,
+                )?;
+            }
+        }
 
         let stake_mut = &mut ctx.accounts.conviction_stake;
         stake_mut.status = ConvictionStatus::Approved;
@@ -735,11 +945,28 @@ pub mod coov_protocol {
             escrow_mut.is_closed = true;
         }
 
+        if let Some(rep) = ctx.accounts.reputation.as_deref_mut() {
+            let rep_key = rep.key();
+            verify_reputation_pda(rep, &candidate_key, &rep_key)?;
+            rep.total_earned_usdc = rep
+                .total_earned_usdc
+                .checked_add(candidate_payout)
+                .ok_or(CoovError::MathOverflow)?;
+            apply_verified_streak_update(rep, now);
+            emit!(ReputationUpdated {
+                candidate: rep.wallet,
+                verified_streak: rep.verified_streak,
+                total_earned_usdc: rep.total_earned_usdc,
+                fraud_flags: rep.fraud_flags,
+                last_verified_at: rep.last_verified_at,
+            });
+        }
+
         let receipt = &mut ctx.accounts.claim_receipt;
         receipt.escrow = escrow_mut.key();
-        receipt.candidate = ctx.accounts.candidate.key();
+        receipt.candidate = candidate_key;
         receipt.evaluation = evaluation_key;
-        receipt.amount_paid = total_payout;
+        receipt.amount_paid = candidate_payout;
         receipt.claimed_at = now;
         receipt.bump = ctx.bumps.claim_receipt;
 
@@ -747,10 +974,12 @@ pub mod coov_protocol {
             escrow: escrow_mut.key(),
             candidate: receipt.candidate,
             stake_pda: stake_mut.key(),
-            reward_paid: reward_per_winner,
+            reward_paid: candidate_reward,
             stake_refunded: stake_refund,
             bonus_share,
-            total_paid: total_payout,
+            scout_paid: scout_cut,
+            referrer,
+            total_paid: candidate_payout,
             timestamp: now,
         });
 
@@ -758,7 +987,7 @@ pub mod coov_protocol {
             escrow: escrow_mut.key(),
             candidate: receipt.candidate,
             evaluation: receipt.evaluation,
-            amount_paid: total_payout,
+            amount_paid: candidate_payout,
             claims_count: escrow_mut.claims_count,
             timestamp: now,
         });
@@ -766,13 +995,14 @@ pub mod coov_protocol {
         Ok(())
     }
 
-    /// Feature 5 (Anti-Fraud Slash): Called by `oracle_authority` or `recruiter` when a
-    /// submission fails the Duplicate Resume / Fake Detector gate or is flagged in review.
-    /// Keeps `amount_staked` inside the vault, credits `slashed_pool_amount` for honest winners,
-    /// frees the winner slot, and marks ConvictionStake Slashed.
+    /// Feature 5 + 7 (Anti-Fraud Slash & Permanent Streak Penalty):
+    /// Called by `oracle_authority` or `recruiter` on Duplicate / Fake / Fraud flags.
+    /// Keeps `amount_staked` inside the vault, credits `slashed_pool_amount`, permanently
+    /// resets `verified_streak = 0`, and increments `fraud_flags += 1`.
     pub fn slash_fraud_stake(ctx: Context<SlashFraudStake>, reason_code: u8) -> Result<()> {
         require!(!ctx.accounts.config.paused, CoovError::ProtocolPaused);
         let now = Clock::get()?.unix_timestamp;
+        let candidate_key = ctx.accounts.candidate.key();
         require!(!ctx.accounts.escrow.is_closed, CoovError::EscrowClosed);
 
         let stake = &mut ctx.accounts.conviction_stake;
@@ -791,6 +1021,18 @@ pub mod coov_protocol {
             .checked_add(amount_slashed)
             .ok_or(CoovError::MathOverflow)?;
 
+        if let Some(rep) = ctx.accounts.reputation.as_deref_mut() {
+            let rep_key = rep.key();
+            verify_reputation_pda(rep, &candidate_key, &rep_key)?;
+            rep.verified_streak = 0;
+            rep.fraud_flags = rep.fraud_flags.saturating_add(1);
+            emit!(FraudPenaltyApplied {
+                candidate: rep.wallet,
+                fraud_flags: rep.fraud_flags,
+                timestamp: now,
+            });
+        }
+
         emit!(FraudStakeSlashed {
             escrow: escrow.key(),
             candidate: stake.candidate,
@@ -805,15 +1047,16 @@ pub mod coov_protocol {
     }
 
     /// Refunds 100% of principal `amount_staked` (0 reward, 0 bonus) back to an honest
-    /// candidate whose evaluation was non-fraudulent but did not win (e.g., below min_score,
-    /// waitlisted when slots filled, or bounty expired).
+    /// candidate whose evaluation was non-fraudulent but did not win (or marks Refunded for
+    /// 0-USDC Zero-Stake VIP submissions).
     pub fn refund_conviction_stake(ctx: Context<RefundConvictionStake>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let escrow_info = ctx.accounts.escrow.to_account_info();
         let authority_key = ctx.accounts.authority.key();
+        let candidate_key = ctx.accounts.candidate.key();
         let is_oracle = authority_key == ctx.accounts.config.oracle_authority;
         let is_recruiter = authority_key == ctx.accounts.escrow.recruiter;
-        let is_candidate_after_close_or_expiry = authority_key == ctx.accounts.candidate.key()
+        let is_candidate_after_close_or_expiry = authority_key == candidate_key
             && (ctx.accounts.escrow.is_closed
                 || ctx.accounts.escrow.claims_count >= ctx.accounts.escrow.max_winners
                 || now > ctx.accounts.escrow.expires_at);
@@ -828,25 +1071,43 @@ pub mod coov_protocol {
         );
 
         let refund_amount = ctx.accounts.conviction_stake.amount_staked;
-        let job_id = ctx.accounts.escrow.job_id;
-        let bump = ctx.accounts.escrow.bump;
-        let escrow_seeds: &[&[u8]] = &[b"escrow", job_id.as_ref(), &[bump]];
-        let signer_seeds: &[&[&[u8]]] = &[escrow_seeds];
+        if refund_amount > 0 {
+            let candidate_ata = ctx
+                .accounts
+                .candidate_token_account
+                .as_ref()
+                .ok_or(CoovError::InvalidTokenAccount)?;
+            require_keys_eq!(
+                candidate_ata.mint,
+                ctx.accounts.usdc_mint.key(),
+                CoovError::InvalidTokenAccount
+            );
+            require_keys_eq!(
+                candidate_ata.owner,
+                candidate_key,
+                CoovError::InvalidTokenAccount
+            );
 
-        transfer_checked(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                TransferChecked {
-                    from: ctx.accounts.vault.to_account_info(),
-                    mint: ctx.accounts.usdc_mint.to_account_info(),
-                    to: ctx.accounts.candidate_token_account.to_account_info(),
-                    authority: escrow_info,
-                },
-                signer_seeds,
-            ),
-            refund_amount,
-            ctx.accounts.usdc_mint.decimals,
-        )?;
+            let job_id = ctx.accounts.escrow.job_id;
+            let bump = ctx.accounts.escrow.bump;
+            let escrow_seeds: &[&[u8]] = &[b"escrow", job_id.as_ref(), &[bump]];
+            let signer_seeds: &[&[&[u8]]] = &[escrow_seeds];
+
+            transfer_checked(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    TransferChecked {
+                        from: ctx.accounts.vault.to_account_info(),
+                        mint: ctx.accounts.usdc_mint.to_account_info(),
+                        to: candidate_ata.to_account_info(),
+                        authority: escrow_info,
+                    },
+                    signer_seeds,
+                ),
+                refund_amount,
+                ctx.accounts.usdc_mint.decimals,
+            )?;
+        }
 
         let stake_mut = &mut ctx.accounts.conviction_stake;
         stake_mut.status = ConvictionStatus::Refunded;
@@ -863,12 +1124,11 @@ pub mod coov_protocol {
         Ok(())
     }
 
-    /// Feature 4: Trustless bounty claim. Any candidate with an on-chain `EvaluationRecord`
-    /// matching `escrow.job_id` and `composite_score >= escrow.min_score` claims their
-    /// `reward_per_winner` USDC payout directly without needing an off-chain oracle signature.
+    /// Feature 4: Trustless legacy bounty claim when no ConvictionStake PDA exists.
     pub fn claim_bounty(ctx: Context<ClaimBounty>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let escrow_info = ctx.accounts.escrow.to_account_info();
+        let candidate_key = ctx.accounts.candidate.key();
 
         let job_id = ctx.accounts.escrow.job_id;
         let bump = ctx.accounts.escrow.bump;
@@ -917,9 +1177,26 @@ pub mod coov_protocol {
             escrow_mut.is_closed = true;
         }
 
+        if let Some(rep) = ctx.accounts.reputation.as_deref_mut() {
+            let rep_key = rep.key();
+            verify_reputation_pda(rep, &candidate_key, &rep_key)?;
+            rep.total_earned_usdc = rep
+                .total_earned_usdc
+                .checked_add(reward_per_winner)
+                .ok_or(CoovError::MathOverflow)?;
+            apply_verified_streak_update(rep, now);
+            emit!(ReputationUpdated {
+                candidate: rep.wallet,
+                verified_streak: rep.verified_streak,
+                total_earned_usdc: rep.total_earned_usdc,
+                fraud_flags: rep.fraud_flags,
+                last_verified_at: rep.last_verified_at,
+            });
+        }
+
         let receipt = &mut ctx.accounts.claim_receipt;
         receipt.escrow = escrow_mut.key();
-        receipt.candidate = ctx.accounts.candidate.key();
+        receipt.candidate = candidate_key;
         receipt.evaluation = eval_rec.key();
         receipt.amount_paid = reward_per_winner;
         receipt.claimed_at = now;
@@ -1115,6 +1392,26 @@ pub struct InitProfile<'info> {
 }
 
 #[derive(Accounts)]
+pub struct InitReputation<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: Candidate wallet owning the ReputationState PDA
+    pub candidate: UncheckedAccount<'info>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = ReputationState::SPACE,
+        seeds = [b"reputation", candidate.key().as_ref()],
+        bump
+    )]
+    pub reputation: Box<Account<'info, ReputationState>>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 #[instruction(eval_id: [u8; 16])]
 pub struct RecordEvaluation<'info> {
     #[account(
@@ -1147,6 +1444,9 @@ pub struct RecordEvaluation<'info> {
     pub evaluation: Box<Account<'info, EvaluationRecord>>,
 
     pub system_program: Program<'info, System>,
+
+    #[account(mut)]
+    pub reputation: Option<Box<Account<'info, ReputationState>>>,
 }
 
 #[derive(Accounts)]
@@ -1177,6 +1477,9 @@ pub struct UpdateEvaluationAfterDefense<'info> {
         has_one = candidate
     )]
     pub evaluation: Box<Account<'info, EvaluationRecord>>,
+
+    #[account(mut)]
+    pub reputation: Option<Box<Account<'info, ReputationState>>>,
 }
 
 #[derive(Accounts)]
@@ -1218,7 +1521,7 @@ pub struct MigrateEscrow<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
-    /// CHECK: Verified owner == crate::ID, discriminator == BountyEscrow, and len == 144 bytes.
+    /// CHECK: Verified owner == crate::ID, discriminator == BountyEscrow, and len == 144 or 154 bytes.
     #[account(mut)]
     pub escrow: UncheckedAccount<'info>,
 
@@ -1296,13 +1599,8 @@ pub struct SubmitWithConvictionStake<'info> {
     #[account(mut)]
     pub vault: InterfaceAccount<'info, TokenAccount>,
 
-    #[account(
-        mut,
-        token::mint = usdc_mint,
-        token::authority = candidate,
-        token::token_program = token_program
-    )]
-    pub candidate_token_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut)]
+    pub candidate_token_account: Option<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         init,
@@ -1315,6 +1613,8 @@ pub struct SubmitWithConvictionStake<'info> {
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
+
+    pub reputation: Option<Box<Account<'info, ReputationState>>>,
 }
 
 #[derive(Accounts)]
@@ -1378,6 +1678,12 @@ pub struct ApproveAndPayout<'info> {
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
+
+    #[account(mut)]
+    pub referrer_token_account: Option<InterfaceAccount<'info, TokenAccount>>,
+
+    #[account(mut)]
+    pub reputation: Option<Box<Account<'info, ReputationState>>>,
 }
 
 #[derive(Accounts)]
@@ -1411,6 +1717,9 @@ pub struct SlashFraudStake<'info> {
         has_one = candidate
     )]
     pub conviction_stake: Box<Account<'info, ConvictionStake>>,
+
+    #[account(mut)]
+    pub reputation: Option<Box<Account<'info, ReputationState>>>,
 }
 
 #[derive(Accounts)]
@@ -1440,13 +1749,8 @@ pub struct RefundConvictionStake<'info> {
     #[account(mut)]
     pub vault: InterfaceAccount<'info, TokenAccount>,
 
-    #[account(
-        mut,
-        token::mint = usdc_mint,
-        token::authority = candidate,
-        token::token_program = token_program
-    )]
-    pub candidate_token_account: InterfaceAccount<'info, TokenAccount>,
+    #[account(mut)]
+    pub candidate_token_account: Option<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -1505,6 +1809,9 @@ pub struct ClaimBounty<'info> {
 
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
+
+    #[account(mut)]
+    pub reputation: Option<Box<Account<'info, ReputationState>>>,
 }
 
 #[derive(Accounts)]
@@ -1571,6 +1878,20 @@ impl CandidateProfile {
 }
 
 #[account]
+pub struct ReputationState {
+    pub wallet: Pubkey,
+    pub last_verified_at: i64,
+    pub verified_streak: u8,
+    pub total_earned_usdc: u64,
+    pub fraud_flags: u8,
+    pub bump: u8,
+}
+
+impl ReputationState {
+    pub const SPACE: usize = 8 + 32 + 8 + 1 + 8 + 1 + 1; // 59
+}
+
+#[account]
 pub struct EvaluationRecord {
     pub candidate: Pubkey,
     pub eval_id: [u8; 16],
@@ -1626,10 +1947,12 @@ pub struct BountyEscrow {
     pub vault_bump: u8,
     pub stake_bps: u16,
     pub slashed_pool_amount: u64,
+    pub min_streak: u8,
 }
 
 impl BountyEscrow {
-    pub const SPACE: usize = 8 + 32 + 16 + 32 + 32 + 8 + 2 + 2 + 1 + 8 + 1 + 1 + 1 + 2 + 8; // 154
+    pub const SPACE: usize =
+        8 + 32 + 16 + 32 + 32 + 8 + 2 + 2 + 1 + 8 + 1 + 1 + 1 + 2 + 8 + 1; // 155
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -1648,11 +1971,13 @@ pub struct ConvictionStake {
     pub status: ConvictionStatus,
     pub submitted_at: i64,
     pub resolved_at: i64,
+    pub referrer: Option<Pubkey>,
+    pub is_zero_stake_vip: bool,
     pub bump: u8,
 }
 
 impl ConvictionStake {
-    pub const SPACE: usize = 8 + 32 + 32 + 8 + 1 + 8 + 8 + 1; // 98
+    pub const SPACE: usize = 8 + 32 + 32 + 8 + 1 + 8 + 8 + (1 + 32) + 1 + 1; // 132
 }
 
 #[account]
@@ -1676,6 +2001,28 @@ impl BountyClaim {
 #[event]
 pub struct ProfileInitialized {
     pub candidate: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct ReputationInitialized {
+    pub candidate: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct ReputationUpdated {
+    pub candidate: Pubkey,
+    pub verified_streak: u8,
+    pub total_earned_usdc: u64,
+    pub fraud_flags: u8,
+    pub last_verified_at: i64,
+}
+
+#[event]
+pub struct FraudPenaltyApplied {
+    pub candidate: Pubkey,
+    pub fraud_flags: u8,
     pub timestamp: i64,
 }
 
@@ -1719,6 +2066,7 @@ pub struct BountyCreated {
     pub min_score: u8,
     pub expires_at: i64,
     pub stake_bps: u16,
+    pub min_streak: u8,
 }
 
 #[event]
@@ -1727,6 +2075,8 @@ pub struct ConvictionStakeLocked {
     pub candidate: Pubkey,
     pub stake_pda: Pubkey,
     pub amount_staked: u64,
+    pub referrer: Option<Pubkey>,
+    pub is_zero_stake_vip: bool,
     pub timestamp: i64,
 }
 
@@ -1738,6 +2088,8 @@ pub struct ConvictionStakeApproved {
     pub reward_paid: u64,
     pub stake_refunded: u64,
     pub bonus_share: u64,
+    pub scout_paid: u64,
+    pub referrer: Option<Pubkey>,
     pub total_paid: u64,
     pub timestamp: i64,
 }
@@ -1828,6 +2180,14 @@ pub enum CoovError {
     StakeAlreadyResolved,
     #[msg("Signer is not authorized as recruiter, oracle, or expired-stake owner")]
     UnauthorizedAuthority,
-    #[msg("Escrow account is not a valid legacy 144-byte BountyEscrow PDA")]
+    #[msg("Escrow account is not a valid legacy 144-byte or 154-byte BountyEscrow PDA")]
     InvalidEscrowAccount,
+    #[msg("Self-referrals are not allowed for Scout rewards")]
+    SelfReferralNotAllowed,
+    #[msg("Provided referrer token account does not match recorded scout wallet or USDC mint")]
+    InvalidReferrerAccount,
+    #[msg("Provided reputation account does not match derived ReputationState PDA")]
+    InvalidReputationAccount,
+    #[msg("Candidate active verified streak is below the bounty minimum streak requirement")]
+    StreakBelowBountyRequirement,
 }

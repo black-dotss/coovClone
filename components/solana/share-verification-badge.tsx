@@ -14,6 +14,16 @@ interface VerifyApiResult {
   cluster: string;
   evalPda: string;
   evalPdaUrl: string;
+  reputationPda?: string;
+  reputation?: {
+    verifiedStreak: number;
+    effectiveStreak: number;
+    totalEarnedUsdc: number;
+    fraudFlags: number;
+    isFresh: boolean;
+    isZeroStakeVip: boolean;
+    daysUntilDecay: number | null;
+  } | null;
   record: {
     candidate: string;
     initialReportHash: string;
@@ -192,6 +202,20 @@ export const ShareVerificationBadge: React.FC<{
             {onChain?.record?.defenseCount ?? proof.defenseRevisionsCount}
           </span>
           <div className="flex flex-wrap items-center gap-3">
+            {onChain?.reputation && (
+              <span className="px-2 py-0.5 rounded-md bg-surface-elevated border border-border text-purple-400 font-semibold">
+                {onChain.reputation.fraudFlags > 0
+                  ? `Fraud Penalty (${onChain.reputation.fraudFlags} flag)`
+                  : onChain.reputation.isZeroStakeVip
+                  ? `Streak ${onChain.reputation.effectiveStreak}x · Zero-Stake VIP (${onChain.reputation.daysUntilDecay ?? 0}d fresh)`
+                  : onChain.reputation.isFresh
+                  ? `Streak ${onChain.reputation.effectiveStreak}x (${onChain.reputation.daysUntilDecay ?? 0}d fresh)`
+                  : onChain.reputation.verifiedStreak > 0
+                  ? "Streak Decayed (>30d)"
+                  : "Streak 0x"}{" "}
+                · {onChain.reputation.totalEarnedUsdc.toFixed(2)} USDC Earned
+              </span>
+            )}
             {onChain?.evalPda && (
               <a
                 href={onChain.evalPdaUrl}

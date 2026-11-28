@@ -6,6 +6,7 @@ export const CreateEvaluationInputSchema = z.object({
   tone: z.enum(["friendly", "strict", "brutal_roast"]).default("strict"),
   walletAddress: z.string().min(32).max(64).optional(),
   stakeTxSignature: z.string().min(32).max(128).optional(),
+  referrerWallet: z.string().min(32).max(64).optional(),
 });
 
 export type CreateEvaluationSchemaInput = z.infer<typeof CreateEvaluationInputSchema>;

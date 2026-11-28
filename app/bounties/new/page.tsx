@@ -63,6 +63,7 @@ export default function NewBountyPage() {
   const [companyLogoUrl, setCompanyLogoUrl] = useState<string | null>(null);
   const [logoError, setLogoError] = useState<string | null>(null);
   const [minScore, setMinScore] = useState("85");
+  const [minStreak, setMinStreak] = useState("0");
   const [rewardPerWinner, setRewardPerWinner] = useState("20");
   const [stakePct, setStakePct] = useState("10");
   const [maxWinners, setMaxWinners] = useState("5");
@@ -126,6 +127,7 @@ export default function NewBountyPage() {
           rawText: rawText.trim(),
           recruiterWallet: publicKey,
           minScore: Number(minScore),
+          minStreak: Number(minStreak),
           rewardPerWinnerUsdc: Number(rewardPerWinner),
           stakePct: normalizedStakePct,
           maxWinners: Number(maxWinners),
@@ -242,16 +244,29 @@ export default function NewBountyPage() {
                     onChange={(e) => setMaxWinners(e.target.value)}
                     required
                   />
-                  <div className="col-span-2">
-                    <Input
-                      label="Expires In (Days)"
-                      type="number"
-                      min={1}
-                      max={180}
-                      value={expiresInDays}
-                      onChange={(e) => setExpiresInDays(e.target.value)}
-                      required
-                    />
+                  <Input
+                    label="Expires In (Days)"
+                    type="number"
+                    min={1}
+                    max={180}
+                    value={expiresInDays}
+                    onChange={(e) => setExpiresInDays(e.target.value)}
+                    required
+                  />
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-text block">
+                      Min Active Streak (30d)
+                    </label>
+                    <select
+                      value={minStreak}
+                      onChange={(e) => setMinStreak(e.target.value)}
+                      className="w-full h-10 px-3 rounded-lg bg-surface-elevated border border-border text-sm text-text focus:outline-none focus:border-purple-500"
+                    >
+                      <option value="0">0 — Open to All</option>
+                      <option value="1">1+ Verified Audit</option>
+                      <option value="2">2+ Verified Streak (VIP)</option>
+                      <option value="3">3+ Senior Verified Streak</option>
+                    </select>
                   </div>
                 </div>
 
@@ -268,12 +283,18 @@ export default function NewBountyPage() {
                       {stakePerCandidateUsdc.toFixed(2)} USDC / applicant
                     </span>
                   </div>
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="text-text-muted">Scout Referral Split (If Shared)</span>
+                    <span className="font-bold text-text">
+                      90% Candidate · 10% Scout ({((Number(rewardPerWinner) || 0) * 0.1).toFixed(2)} USDC)
+                    </span>
+                  </div>
                   <p className="text-xs text-text-secondary leading-relaxed">
                     Applicants lock{" "}
                     <span className="font-semibold text-text">
                       {stakePerCandidateUsdc.toFixed(2)} USDC
                     </span>{" "}
-                    before entering review. Legitimate winners scoring{" "}
+                    before entering review (waived automatically for 2+ clean active streak holders). Legitimate winners scoring{" "}
                     <span className="font-semibold text-text">
                       {minScore || 85}/100+
                     </span>{" "}
@@ -281,7 +302,7 @@ export default function NewBountyPage() {
                     <span className="font-semibold text-text">
                       {rewardPerWinner || 0} USDC
                     </span>{" "}
-                    + 100% stake refund + pro-rata slashed fraud stakes.
+                    (or 90/10 split if referred by a Scout) + 100% stake refund + pro-rata slashed fraud stakes.
                   </p>
                 </div>
               </CardContent>

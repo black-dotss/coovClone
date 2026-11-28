@@ -133,6 +133,7 @@ export async function GET(
     const claimsCount = onChain.escrow?.claimsCount ?? bounty?.claimsCount ?? 0;
     const minScore = onChain.escrow?.minScore ?? bounty?.minScore ?? 85;
     const stakeBps = onChain.escrow?.stakeBps ?? 1000;
+    const minStreak = onChain.escrow?.minStreak ?? 0;
     const stakeUsdc = ((rewardUsdc * stakeBps) / 10_000).toFixed(2);
     const slashedUsdc = (Number(onChain.escrow?.slashedPoolAmountMicros ?? "0") / 1_000_000).toFixed(2);
     const totalPoolUsdc = rewardUsdc * maxWinners;
@@ -148,7 +149,7 @@ export async function GET(
         : `COOV Bounty Escrow (${rewardUsdc} USDC / winner)`,
       description: [
         `Status: ${escrowStatus} · Slots: ${claimsCount}/${maxWinners} claimed (${totalPoolUsdc.toFixed(2)} USDC pool).`,
-        `Min AI Bar: ${minScore}/100 · Conviction Stake: ${stakeUsdc} USDC (${(stakeBps / 100).toFixed(1)}%) · Slashed Spam Yield: +${slashedUsdc} USDC.`,
+        `Min AI Bar: ${minScore}/100${minStreak > 0 ? ` · Min Streak: ${minStreak}+` : ""} · Conviction Stake: ${stakeUsdc} USDC (${(stakeBps / 100).toFixed(1)}%) · 90/10 Scout Referral Split · Slashed Spam Yield: +${slashedUsdc} USDC.`,
         `Escrow PDA: ${onChain.escrowPda} · Vault PDA: ${onChain.vaultPda}.`,
       ].join(" "),
       label: "Inspect Escrow On-Chain",

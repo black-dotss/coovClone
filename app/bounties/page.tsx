@@ -11,6 +11,10 @@ import { apiFetch } from "@/lib/client/api";
 import { executeBountyClaimFlow } from "@/lib/solana/client-claim";
 import { useSolanaWallet } from "@/components/providers/solana-wallet-provider";
 import { BountyCompanyLogo } from "@/components/solana/bounty-company-logo";
+import {
+  captureScoutReferralFromSearch,
+  getStoredScoutReferral,
+} from "@/lib/solana/scout-referral";
 
 interface BountyItem {
   id: string;
@@ -26,7 +30,10 @@ interface BountyItem {
   createTxSignature: string | null;
   refundTxSignature: string | null;
   minScore: number;
+  minStreak?: number;
   rewardPerWinnerUsdc: number;
+  candidate90Usdc?: number;
+  scout10Usdc?: number;
   totalPoolUsdc: number;
   stakeBps?: number;
   stakePercent?: number;
@@ -45,6 +52,15 @@ interface BountyItem {
   rawText: string;
   escrowUrl: string;
   txUrl: string | null;
+}
+
+interface CandidateReputationSummary {
+  effectiveStreak: number;
+  fraudFlags: number;
+  totalEarnedUsdc: number;
+  isFresh: boolean;
+  isZeroStakeVip: boolean;
+  daysUntilDecay: number | null;
 }
 
 interface CandidateEvalSummary {
@@ -78,6 +94,9 @@ interface CandidateSubmissionSummary {
   stakePdaAddress?: string | null;
   stakeAmountUsdc?: number;
   stakeStatus?: string;
+  isZeroStakeVip?: boolean;
+  referrerWallet?: string | null;
+  scoutCutUsdc?: number;
   isReviewExpired: boolean;
   remainingReviewLabel: string | null;
 }
@@ -97,6 +116,7 @@ interface BountiesApiResponse {
   myClaims: CandidateClaimSummary[];
   mySubmissions?: CandidateSubmissionSummary[];
   myRestrictions?: RestrictionSummary[];
+  candidateReputation?: CandidateReputationSummary | null;
 }
 
 export default function BountiesPage() {
@@ -130,6 +150,12 @@ export default function BountiesPage() {
     }
   });
   const [busyBountyId, setBusyBountyId] = useState<string | null>(null);
+  const [copiedScoutBountyId, setCopiedScoutBountyId] = useState<string | null>(null);
+  const [capturedScoutRef, setCapturedScoutRef] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const captured = captureScoutReferralFromSearch(window.location.search);
+    return captured ?? getStoredScoutReferral([], publicKey);
+  });
 
   const loadBounties = useCallback(async () => {
     setLoading(true);
@@ -147,10 +173,17 @@ export default function BountiesPage() {
   }, [publicKey]);
 
   useEffect(() => {
+    const initialCaptured =
+      typeof window !== "undefined"
+        ? captureScoutReferralFromSearch(window.location.search)
+        : null;
+
     if (
       typeof window !== "undefined" &&
       (window.location.search.includes("created=1") ||
-        window.location.search.includes("fromEval="))
+        window.location.search.includes("fromEval=") ||
+        window.location.search.includes("ref=") ||
+        window.location.search.includes("referrer="))
     ) {
       try {
         window.history.replaceState({}, document.title, window.location.pathname);
@@ -162,7 +195,12 @@ export default function BountiesPage() {
       try {
         const query = publicKey ? `?wallet=${encodeURIComponent(publicKey)}` : "";
         const res = await apiFetch<BountiesApiResponse>(`/api/solana/bounties${query}`);
-        if (active) setData(res);
+        if (active) {
+          setData(res);
+          setCapturedScoutRef(
+            initialCaptured ?? getStoredScoutReferral([], publicKey)
+          );
+        }
       } catch (err) {
         if (active) {
           setError(
@@ -190,6 +228,31 @@ export default function BountiesPage() {
     router.push("/bounties/new");
   };
 
+  const handleCopyScoutLink = async (bounty: BountyItem) => {
+    if (!publicKey) {
+      openConnectModal();
+      return;
+    }
+    if (typeof window === "undefined") return;
+    const url = `${window.location.origin}/bounties/${bounty.id}?ref=${encodeURIComponent(
+      publicKey
+    )}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedScoutBountyId(bounty.id);
+      setNotice(
+        `Scout referral link copied for ${bounty.title}! You earn 10% (${(
+          bounty.scout10Usdc ?? bounty.rewardPerWinnerUsdc * 0.1
+        ).toFixed(2)} USDC) on-chain when your referred candidate wins.`
+      );
+      setTimeout(() => {
+        setCopiedScoutBountyId((prev) => (prev === bounty.id ? null : prev));
+      }, 3000);
+    } catch {
+      showError(new Error("Clipboard access failed."), "Could not copy Scout link.");
+    }
+  };
+
   const handleSubmitSlot = async (bounty: BountyItem, evalId: string) => {
     if (!publicKey) {
       openConnectModal();
@@ -198,14 +261,20 @@ export default function BountiesPage() {
     setBusyBountyId(bounty.id);
     setError(null);
     setNotice(null);
+    const referrerWallet = getStoredScoutReferral(
+      [bounty.id, bounty.jobDescriptionId],
+      publicKey
+    );
     try {
       const preparedStake = await apiFetch<{
         serializedTxBase64: string;
         stakeUsdc: number;
+        isZeroStakeVip?: boolean;
       }>(`/api/solana/bounties/${bounty.id}/stake`, {
         method: "POST",
         body: JSON.stringify({
           walletAddress: publicKey,
+          referrerWallet,
         }),
       });
 
@@ -217,10 +286,13 @@ export default function BountiesPage() {
           evaluationId: evalId,
           walletAddress: publicKey,
           stakeTxSignature,
+          referrerWallet,
         }),
       });
       setNotice(
-        `Locked ${preparedStake.stakeUsdc} USDC Conviction Stake & reserved slot in pending_review! Stake + slashed spam yield release with your reward on approval.`
+        preparedStake.isZeroStakeVip
+          ? "Verified Streak VIP unlocked 0 USDC Stake & reserved slot in pending_review!"
+          : `Locked ${preparedStake.stakeUsdc} USDC Conviction Stake & reserved slot in pending_review! Stake + slashed spam yield release with your reward on approval.`
       );
       await loadBounties();
     } catch (err) {
@@ -450,6 +522,22 @@ export default function BountiesPage() {
         message={error}
         onDismiss={() => setError(null)}
       />
+      {capturedScoutRef && !notice && (
+        <div className="rounded-xl border border-border bg-surface p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+          <div className="space-y-0.5">
+            <span className="font-bold text-purple-400 font-mono uppercase">
+              Scout Referral Captured ({capturedScoutRef.slice(0, 6)}...{capturedScoutRef.slice(-4)})
+            </span>
+            <p className="text-text-secondary">
+              Applying through this link triggers an atomic on-chain 90/10 split on approval (90% Candidate + 100% refunded stake + bonus yield, 10% Scout).
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setCapturedScoutRef(null)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+
       {notice && (
         <div className="rounded-xl border border-border bg-surface p-5 flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -520,6 +608,27 @@ export default function BountiesPage() {
               (mySub.reviewStatus === "approved" ||
                 (mySub.reviewStatus === "pending_review" && mySub.isReviewExpired));
 
+            const isZeroStakeVip = Boolean(data.candidateReputation?.isZeroStakeVip);
+            const activeStreak = data.candidateReputation?.effectiveStreak ?? 0;
+            const requiredStreak = bounty.minStreak ?? 0;
+            const meetsMinStreak =
+              requiredStreak <= 0 ||
+              (Boolean(data.candidateReputation) &&
+                (data.candidateReputation?.fraudFlags ?? 0) === 0 &&
+                Boolean(data.candidateReputation?.isFresh) &&
+                activeStreak >= requiredStreak);
+            const standardStakeUsdc =
+              bounty.stakePerCandidateUsdc ??
+              (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100;
+            const candidate90Usdc =
+              bounty.candidate90Usdc ?? bounty.rewardPerWinnerUsdc * 0.9;
+            const scout10Usdc =
+              bounty.scout10Usdc ?? bounty.rewardPerWinnerUsdc * 0.1;
+            const activeReferrer = getStoredScoutReferral(
+              [bounty.id, bounty.jobDescriptionId],
+              publicKey
+            );
+
             return (
               <div
                 key={bounty.id}
@@ -538,7 +647,12 @@ export default function BountiesPage() {
                           {bounty.company}
                         </span>
                         <h3 className="text-lg sm:text-xl font-extrabold text-text mt-0.5 truncate">
-                          {bounty.title}
+                          <Link
+                            href={`/bounties/${bounty.id}`}
+                            className="hover:text-purple-400 transition-colors"
+                          >
+                            {bounty.title}
+                          </Link>
                         </h3>
                       </div>
                     </div>
@@ -547,7 +661,7 @@ export default function BountiesPage() {
                     </span>
                   </div>
 
-                  {/* Pool, Stake, & Live Slashed Spam Yield Metrics */}
+                  {/* Pool, 90/10 Scout Split, Stake, & Live Slashed Spam Yield Metrics */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
                       <span className="text-[10px] font-mono text-text-muted uppercase block">
@@ -556,6 +670,9 @@ export default function BountiesPage() {
                       <p className="text-base sm:text-lg font-extrabold text-purple-400 mt-0.5">
                         {bounty.rewardPerWinnerUsdc} USDC
                       </p>
+                      <span className="text-[10px] font-mono text-text-muted block">
+                        90/10: {candidate90Usdc.toFixed(2)} / {scout10Usdc.toFixed(2)}
+                      </span>
                     </div>
                     <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
                       <span className="text-[10px] font-mono text-text-muted uppercase block">
@@ -564,18 +681,28 @@ export default function BountiesPage() {
                       <p className="text-base sm:text-lg font-extrabold text-text mt-0.5">
                         {bounty.minScore}/100
                       </p>
+                      <span className="text-[10px] font-mono text-text-muted block">
+                        {requiredStreak > 0
+                          ? `Min Streak: ${requiredStreak}+`
+                          : "Open streak (0+)"}
+                      </span>
                     </div>
                     <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
                       <span className="text-[10px] font-mono text-text-muted uppercase block">
-                        Stake ({bounty.stakePercent ?? 10}%)
+                        {isZeroStakeVip ? "Conviction Perk" : `Stake (${bounty.stakePercent ?? 10}%)`}
                       </span>
-                      <p className="text-base sm:text-lg font-extrabold text-text mt-0.5">
-                        {(
-                          bounty.stakePerCandidateUsdc ??
-                          (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
-                        ).toFixed(2)}{" "}
-                        USDC
+                      <p
+                        className={`text-base sm:text-lg font-extrabold mt-0.5 ${
+                          isZeroStakeVip ? "text-purple-400" : "text-text"
+                        }`}
+                      >
+                        {isZeroStakeVip ? "0 USDC Stake" : `${standardStakeUsdc.toFixed(2)} USDC`}
                       </p>
+                      {isZeroStakeVip && (
+                        <span className="text-[10px] font-mono text-purple-400 block">
+                          Verified Streak Perk
+                        </span>
+                      )}
                     </div>
                     <div className="p-3.5 rounded-lg bg-surface-elevated border border-border">
                       <span className="text-[10px] font-mono text-text-muted uppercase block">
@@ -625,25 +752,37 @@ export default function BountiesPage() {
 
                 <div className="space-y-3.5 pt-4 border-t border-border/70">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-text-muted">
-                    <a
-                      href={bounty.escrowUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-purple-400 hover:underline truncate max-w-[260px]"
-                    >
-                      Escrow PDA: {bounty.escrowPdaAddress.slice(0, 8)}...
-                      {bounty.escrowPdaAddress.slice(-6)} →
-                    </a>
-                    {bounty.txUrl && (
+                    <div className="flex flex-wrap items-center gap-3">
                       <a
-                        href={bounty.txUrl}
+                        href={bounty.escrowUrl}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-purple-400 hover:underline"
+                        className="text-purple-400 hover:underline truncate max-w-[230px]"
                       >
-                        Funding Tx →
+                        Escrow PDA: {bounty.escrowPdaAddress.slice(0, 8)}...
+                        {bounty.escrowPdaAddress.slice(-6)} →
                       </a>
-                    )}
+                      {bounty.txUrl && (
+                        <a
+                          href={bounty.txUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-purple-400 hover:underline"
+                        >
+                          Funding Tx →
+                        </a>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyScoutLink(bounty)}
+                      className="px-2.5 py-1 rounded-md bg-surface-elevated border border-border text-purple-400 hover:border-purple-500/60 transition-colors cursor-pointer font-semibold"
+                    >
+                      {copiedScoutBountyId === bounty.id
+                        ? "Copied Scout Link!"
+                        : "Share & Earn 10% Scout Cut"}
+                    </button>
                   </div>
 
                   {!isCreator && myRestriction && (
@@ -826,6 +965,7 @@ export default function BountiesPage() {
                           variant="secondary"
                           size="md"
                           isLoading={busyBountyId === bounty.id}
+                          disabled={!meetsMinStreak}
                           onClick={() =>
                             void handleSubmitSlot(
                               bounty,
@@ -833,19 +973,16 @@ export default function BountiesPage() {
                             )
                           }
                         >
-                          Stake{" "}
-                          {(
-                            bounty.stakePerCandidateUsdc ??
-                            (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
-                          ).toFixed(2)}{" "}
-                          USDC &amp; Enter Review ({(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →
+                          {isZeroStakeVip
+                            ? `Enter Review with 0 USDC Stake (VIP Perk) (${(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →`
+                            : `Stake ${standardStakeUsdc.toFixed(2)} USDC & Enter Review (${(claimableEval ?? qualifyingUnanchored)!.overallScore}/100) →`}
                         </Button>
                         <p className="text-[11px] font-mono text-text-muted">
-                          {(
-                            bounty.stakePerCandidateUsdc ??
-                            (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
-                          ).toFixed(2)}{" "}
-                          USDC stake → get stake back + slashed spam yield on approval
+                          {!meetsMinStreak
+                            ? `Requires ${requiredStreak}+ active streak (30d fresh, 0 fraud flags) to enter.`
+                            : isZeroStakeVip
+                            ? "0 USDC Stake (Verified Streak Perk) · keep slashed spam yield on approval"
+                            : `${standardStakeUsdc.toFixed(2)} USDC stake → get stake back + slashed spam yield on approval`}
                         </p>
                       </div>
                     ) : bestIneligibleEval ? (
@@ -860,22 +997,41 @@ export default function BountiesPage() {
                       </span>
                     ) : bounty.status === "active" && !isExpired ? (
                       <div className="space-y-1.5">
-                        <Link href={`/evaluations/new?bountyId=${bounty.id}`}>
-                          <Button variant="primary" size="md">
-                            Apply &amp; Stake{" "}
-                            {(
-                              bounty.stakePerCandidateUsdc ??
-                              (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
-                            ).toFixed(2)}{" "}
-                            USDC →
+                        <Link
+                          href={
+                            meetsMinStreak
+                              ? `/evaluations/new?bountyId=${bounty.id}${
+                                  activeReferrer
+                                    ? `&ref=${encodeURIComponent(activeReferrer)}`
+                                    : ""
+                                }`
+                              : "#"
+                          }
+                          aria-disabled={!meetsMinStreak}
+                          onClick={(e) => {
+                            if (!meetsMinStreak) {
+                              e.preventDefault();
+                              showError(
+                                new Error(
+                                  `This bounty requires a ${requiredStreak}+ active verified streak (within 30 days, 0 fraud flags). Your current active streak is ${activeStreak}.`
+                                ),
+                                "Minimum Streak Not Met"
+                              );
+                            }
+                          }}
+                        >
+                          <Button variant="primary" size="md" disabled={!meetsMinStreak}>
+                            {isZeroStakeVip
+                              ? "Apply · 0 USDC Stake (Verified Streak Perk) →"
+                              : `Apply & Stake ${standardStakeUsdc.toFixed(2)} USDC →`}
                           </Button>
                         </Link>
                         <p className="text-[11px] font-mono text-text-muted">
-                          {(
-                            bounty.stakePerCandidateUsdc ??
-                            (bounty.rewardPerWinnerUsdc * (bounty.stakePercent ?? 10)) / 100
-                          ).toFixed(2)}{" "}
-                          USDC stake → get stake back + slashed spam yield on approval
+                          {!meetsMinStreak
+                            ? `Requires ${requiredStreak}+ active streak (30d fresh, 0 fraud flags) to apply.`
+                            : isZeroStakeVip
+                            ? "0 USDC Stake (Verified Streak Perk) · waived by your active 2+ streak"
+                            : `${standardStakeUsdc.toFixed(2)} USDC stake → get stake back + slashed spam yield on approval`}
                         </p>
                       </div>
                     ) : null}

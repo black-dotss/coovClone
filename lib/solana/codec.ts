@@ -19,6 +19,7 @@ export const IX_DISCRIMINATORS = {
   initializeConfig: Uint8Array.from([208, 127, 21, 1, 194, 190, 196, 70]),
   updateConfig: Uint8Array.from([29, 158, 252, 191, 10, 83, 219, 99]),
   initProfile: Uint8Array.from([210, 162, 212, 95, 95, 186, 89, 119]),
+  initReputation: Uint8Array.from([236, 239, 233, 112, 220, 149, 26, 175]),
   recordEvaluation: Uint8Array.from([6, 188, 15, 253, 99, 31, 113, 216]),
   updateEvaluationAfterDefense: Uint8Array.from([191, 136, 98, 216, 89, 15, 151, 184]),
   mintCredential: Uint8Array.from([136, 108, 131, 240, 163, 102, 204, 13]),
@@ -35,6 +36,7 @@ export const IX_DISCRIMINATORS = {
 export const ACCOUNT_DISCRIMINATORS = {
   ProgramConfig: Uint8Array.from([196, 210, 90, 231, 144, 149, 140, 63]),
   CandidateProfile: Uint8Array.from([49, 166, 124, 251, 136, 193, 223, 251]),
+  ReputationState: Uint8Array.from([245, 80, 180, 222, 93, 218, 20, 207]),
   EvaluationRecord: Uint8Array.from([11, 75, 86, 83, 213, 40, 43, 130]),
   BountyEscrow: Uint8Array.from([59, 18, 13, 80, 225, 187, 6, 16]),
   BountyClaim: Uint8Array.from([130, 113, 6, 57, 79, 54, 78, 205]),
@@ -42,8 +44,12 @@ export const ACCOUNT_DISCRIMINATORS = {
 } as const;
 
 export const DEFAULT_STAKE_BPS = 1000;
+export const SCOUT_SPLIT_BPS = 1000;
+export const STREAK_DECAY_SECONDS = 30 * 86_400; // 2,592,000 seconds (30 days)
+export const STREAK_ZERO_STAKE_THRESHOLD = 2;
 export const LEGACY_ESCROW_SPACE = 144;
 export const V2_ESCROW_SPACE = 154;
+export const V3_ESCROW_SPACE = 155;
 
 export function computeConvictionStakeMicros(
   rewardPerWinnerMicros: bigint | number | string | null | undefined,
@@ -52,6 +58,21 @@ export function computeConvictionStakeMicros(
   const reward = BigInt(rewardPerWinnerMicros ?? "0");
   const bps = BigInt(stakeBps > 0 ? stakeBps : DEFAULT_STAKE_BPS);
   return (reward * bps) / BigInt(10_000);
+}
+
+export function computeScoutSplitMicros(
+  rewardPerWinnerMicros: bigint | number | string | null | undefined,
+  hasReferrer: boolean
+): { candidateRewardMicros: bigint; scoutCutMicros: bigint } {
+  const reward = BigInt(rewardPerWinnerMicros ?? "0");
+  if (!hasReferrer) {
+    return { candidateRewardMicros: reward, scoutCutMicros: BigInt(0) };
+  }
+  const scoutCutMicros = (reward * BigInt(SCOUT_SPLIT_BPS)) / BigInt(10_000);
+  return {
+    candidateRewardMicros: reward - scoutCutMicros,
+    scoutCutMicros,
+  };
 }
 
 // ============================================================================
@@ -116,6 +137,16 @@ export function deriveProfilePda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [textEncoder.encode("profile"), candidate.toBytes()],
+    programId
+  );
+}
+
+export function deriveReputationPda(
+  candidate: PublicKey,
+  programId: PublicKey = getProgramId()
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [textEncoder.encode("reputation"), candidate.toBytes()],
     programId
   );
 }
@@ -379,6 +410,30 @@ export function buildInitProfileIx(params: {
   });
 }
 
+export function buildInitReputationIx(params: {
+  payer: PublicKey;
+  candidate: PublicKey;
+  programId?: PublicKey;
+}): TransactionInstruction {
+  const programId = params.programId ?? getProgramId();
+  const [reputation] = deriveReputationPda(params.candidate, programId);
+
+  const data = new BorshWriter()
+    .writeBytes(IX_DISCRIMINATORS.initReputation)
+    .toBuffer();
+
+  return new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: params.payer, isSigner: true, isWritable: true },
+      { pubkey: params.candidate, isSigner: false, isWritable: false },
+      { pubkey: reputation, isSigner: false, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data,
+  });
+}
+
 export function buildRecordEvaluationIx(params: {
   oracleAuthority: PublicKey;
   candidate: PublicKey;
@@ -390,6 +445,7 @@ export function buildRecordEvaluationIx(params: {
   modelVersion: string;
   roleTitle: string;
   verifiedSkills: string[];
+  includeReputation?: boolean;
   programId?: PublicKey;
 }): TransactionInstruction {
   const programId = params.programId ?? getProgramId();
@@ -400,6 +456,7 @@ export function buildRecordEvaluationIx(params: {
   const [config] = deriveConfigPda(programId);
   const [profile] = deriveProfilePda(params.candidate, programId);
   const [evaluation] = deriveEvaluationPda(params.candidate, evalBytes, programId);
+  const [reputation] = deriveReputationPda(params.candidate, programId);
 
   const writer = new BorshWriter()
     .writeBytes(IX_DISCRIMINATORS.recordEvaluation)
@@ -426,6 +483,9 @@ export function buildRecordEvaluationIx(params: {
       { pubkey: profile, isSigner: false, isWritable: true },
       { pubkey: evaluation, isSigner: false, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      params.includeReputation !== false
+        ? { pubkey: reputation, isSigner: false, isWritable: true }
+        : { pubkey: programId, isSigner: false, isWritable: false },
     ],
     data: writer.toBuffer(),
   });
@@ -437,6 +497,7 @@ export function buildUpdateEvaluationAfterDefenseIx(params: {
   evalId: string;
   newReportHashHex: string;
   newCompositeScore: number;
+  includeReputation?: boolean;
   programId?: PublicKey;
 }): TransactionInstruction {
   const programId = params.programId ?? getProgramId();
@@ -445,6 +506,7 @@ export function buildUpdateEvaluationAfterDefenseIx(params: {
   const [config] = deriveConfigPda(programId);
   const [profile] = deriveProfilePda(params.candidate, programId);
   const [evaluation] = deriveEvaluationPda(params.candidate, evalBytes, programId);
+  const [reputation] = deriveReputationPda(params.candidate, programId);
 
   const data = new BorshWriter()
     .writeBytes(IX_DISCRIMINATORS.updateEvaluationAfterDefense)
@@ -460,6 +522,9 @@ export function buildUpdateEvaluationAfterDefenseIx(params: {
       { pubkey: params.candidate, isSigner: true, isWritable: false },
       { pubkey: profile, isSigner: false, isWritable: true },
       { pubkey: evaluation, isSigner: false, isWritable: true },
+      params.includeReputation !== false
+        ? { pubkey: reputation, isSigner: false, isWritable: true }
+        : { pubkey: programId, isSigner: false, isWritable: false },
     ],
     data,
   });
@@ -525,6 +590,7 @@ export function buildCreateBountyEscrowIx(params: {
   maxWinners: number;
   expiresAtUnix: number;
   stakeBps?: number;
+  minStreak?: number;
   tokenProgramId?: PublicKey;
   programId?: PublicKey;
 }): TransactionInstruction {
@@ -533,6 +599,7 @@ export function buildCreateBountyEscrowIx(params: {
   const jobBytes = uuidToBytes16(params.jobId);
   const stakeBps =
     params.stakeBps && params.stakeBps > 0 ? Math.min(10_000, params.stakeBps) : DEFAULT_STAKE_BPS;
+  const minStreak = Math.max(0, Math.min(255, Math.round(params.minStreak ?? 0)));
 
   const [config] = deriveConfigPda(programId);
   const [escrow] = deriveEscrowPda(jobBytes, programId);
@@ -553,6 +620,7 @@ export function buildCreateBountyEscrowIx(params: {
     .writeU16(params.maxWinners)
     .writeI64(params.expiresAtUnix)
     .writeU16(stakeBps)
+    .writeU8(minStreak)
     .toBuffer();
 
   return new TransactionInstruction({
@@ -595,6 +663,9 @@ export function buildSubmitWithConvictionStakeIx(params: {
   candidate: PublicKey;
   usdcMint: PublicKey;
   jobId: string;
+  referrer?: PublicKey | null;
+  candidateTokenAccount?: PublicKey | null;
+  includeReputation?: boolean;
   tokenProgramId?: PublicKey;
   programId?: PublicKey;
 }): TransactionInstruction {
@@ -606,17 +677,26 @@ export function buildSubmitWithConvictionStakeIx(params: {
   const [escrow] = deriveEscrowPda(jobBytes, programId);
   const [vault] = deriveEscrowVaultPda(escrow, programId);
   const [convictionStake] = deriveConvictionStakePda(escrow, params.candidate, programId);
-  const candidateTokenAccount = getAssociatedTokenAddressSync(
-    params.usdcMint,
-    params.candidate,
-    false,
-    tokenProgramId,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  const [reputation] = deriveReputationPda(params.candidate, programId);
 
-  const data = new BorshWriter()
-    .writeBytes(IX_DISCRIMINATORS.submitWithConvictionStake)
-    .toBuffer();
+  const candidateTokenAccount =
+    params.candidateTokenAccount === null
+      ? programId
+      : params.candidateTokenAccount ??
+        getAssociatedTokenAddressSync(
+          params.usdcMint,
+          params.candidate,
+          false,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
+
+  const writer = new BorshWriter().writeBytes(IX_DISCRIMINATORS.submitWithConvictionStake);
+  if (params.referrer) {
+    writer.writeU8(1).writeBytes(params.referrer.toBytes());
+  } else {
+    writer.writeU8(0);
+  }
 
   return new TransactionInstruction({
     programId,
@@ -626,12 +706,19 @@ export function buildSubmitWithConvictionStakeIx(params: {
       { pubkey: params.usdcMint, isSigner: false, isWritable: false },
       { pubkey: escrow, isSigner: false, isWritable: true },
       { pubkey: vault, isSigner: false, isWritable: true },
-      { pubkey: candidateTokenAccount, isSigner: false, isWritable: true },
+      {
+        pubkey: candidateTokenAccount,
+        isSigner: false,
+        isWritable: params.candidateTokenAccount !== null,
+      },
       { pubkey: convictionStake, isSigner: false, isWritable: true },
       { pubkey: tokenProgramId, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      params.includeReputation !== false
+        ? { pubkey: reputation, isSigner: false, isWritable: false }
+        : { pubkey: programId, isSigner: false, isWritable: false },
     ],
-    data,
+    data: writer.toBuffer(),
   });
 }
 
@@ -642,6 +729,8 @@ export function buildApproveAndPayoutIx(params: {
   usdcMint: PublicKey;
   jobId: string;
   evaluationKey: PublicKey;
+  referrer?: PublicKey | null;
+  includeReputation?: boolean;
   tokenProgramId?: PublicKey;
   programId?: PublicKey;
 }): TransactionInstruction {
@@ -654,6 +743,7 @@ export function buildApproveAndPayoutIx(params: {
   const [vault] = deriveEscrowVaultPda(escrow, programId);
   const [convictionStake] = deriveConvictionStakePda(escrow, params.candidate, programId);
   const [claimReceipt] = deriveClaimReceiptPda(escrow, params.candidate, programId);
+  const [reputation] = deriveReputationPda(params.candidate, programId);
   const candidateTokenAccount = getAssociatedTokenAddressSync(
     params.usdcMint,
     params.candidate,
@@ -661,6 +751,15 @@ export function buildApproveAndPayoutIx(params: {
     tokenProgramId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
+  const referrerTokenAccount = params.referrer
+    ? getAssociatedTokenAddressSync(
+        params.usdcMint,
+        params.referrer,
+        false,
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      )
+    : null;
 
   const data = new BorshWriter()
     .writeBytes(IX_DISCRIMINATORS.approveAndPayout)
@@ -682,6 +781,12 @@ export function buildApproveAndPayoutIx(params: {
       { pubkey: claimReceipt, isSigner: false, isWritable: true },
       { pubkey: tokenProgramId, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      referrerTokenAccount
+        ? { pubkey: referrerTokenAccount, isSigner: false, isWritable: true }
+        : { pubkey: programId, isSigner: false, isWritable: false },
+      params.includeReputation !== false
+        ? { pubkey: reputation, isSigner: false, isWritable: true }
+        : { pubkey: programId, isSigner: false, isWritable: false },
     ],
     data,
   });
@@ -692,6 +797,7 @@ export function buildSlashFraudStakeIx(params: {
   candidate: PublicKey;
   jobId: string;
   reasonCode: number;
+  includeReputation?: boolean;
   programId?: PublicKey;
 }): TransactionInstruction {
   const programId = params.programId ?? getProgramId();
@@ -700,6 +806,7 @@ export function buildSlashFraudStakeIx(params: {
   const [config] = deriveConfigPda(programId);
   const [escrow] = deriveEscrowPda(jobBytes, programId);
   const [convictionStake] = deriveConvictionStakePda(escrow, params.candidate, programId);
+  const [reputation] = deriveReputationPda(params.candidate, programId);
 
   const data = new BorshWriter()
     .writeBytes(IX_DISCRIMINATORS.slashFraudStake)
@@ -714,6 +821,9 @@ export function buildSlashFraudStakeIx(params: {
       { pubkey: params.candidate, isSigner: false, isWritable: false },
       { pubkey: escrow, isSigner: false, isWritable: true },
       { pubkey: convictionStake, isSigner: false, isWritable: true },
+      params.includeReputation !== false
+        ? { pubkey: reputation, isSigner: false, isWritable: true }
+        : { pubkey: programId, isSigner: false, isWritable: false },
     ],
     data,
   });
@@ -724,6 +834,7 @@ export function buildRefundConvictionStakeIx(params: {
   candidate: PublicKey;
   usdcMint: PublicKey;
   jobId: string;
+  candidateTokenAccount?: PublicKey | null;
   tokenProgramId?: PublicKey;
   programId?: PublicKey;
 }): TransactionInstruction {
@@ -735,13 +846,17 @@ export function buildRefundConvictionStakeIx(params: {
   const [escrow] = deriveEscrowPda(jobBytes, programId);
   const [vault] = deriveEscrowVaultPda(escrow, programId);
   const [convictionStake] = deriveConvictionStakePda(escrow, params.candidate, programId);
-  const candidateTokenAccount = getAssociatedTokenAddressSync(
-    params.usdcMint,
-    params.candidate,
-    false,
-    tokenProgramId,
-    ASSOCIATED_TOKEN_PROGRAM_ID
-  );
+  const candidateTokenAccount =
+    params.candidateTokenAccount === null
+      ? programId
+      : params.candidateTokenAccount ??
+        getAssociatedTokenAddressSync(
+          params.usdcMint,
+          params.candidate,
+          false,
+          tokenProgramId,
+          ASSOCIATED_TOKEN_PROGRAM_ID
+        );
 
   const data = new BorshWriter()
     .writeBytes(IX_DISCRIMINATORS.refundConvictionStake)
@@ -756,7 +871,11 @@ export function buildRefundConvictionStakeIx(params: {
       { pubkey: params.usdcMint, isSigner: false, isWritable: false },
       { pubkey: escrow, isSigner: false, isWritable: true },
       { pubkey: vault, isSigner: false, isWritable: true },
-      { pubkey: candidateTokenAccount, isSigner: false, isWritable: true },
+      {
+        pubkey: candidateTokenAccount,
+        isSigner: false,
+        isWritable: params.candidateTokenAccount !== null,
+      },
       { pubkey: convictionStake, isSigner: false, isWritable: true },
       { pubkey: tokenProgramId, isSigner: false, isWritable: false },
     ],
@@ -769,6 +888,7 @@ export function buildClaimBountyIx(params: {
   usdcMint: PublicKey;
   jobId: string;
   evalId: string;
+  includeReputation?: boolean;
   tokenProgramId?: PublicKey;
   programId?: PublicKey;
 }): TransactionInstruction {
@@ -788,6 +908,7 @@ export function buildClaimBountyIx(params: {
   );
   const [evaluation] = deriveEvaluationPda(params.candidate, evalBytes, programId);
   const [claimReceipt] = deriveClaimReceiptPda(escrow, params.candidate, programId);
+  const [reputation] = deriveReputationPda(params.candidate, programId);
 
   const data = new BorshWriter()
     .writeBytes(IX_DISCRIMINATORS.claimBounty)
@@ -805,6 +926,9 @@ export function buildClaimBountyIx(params: {
       { pubkey: claimReceipt, isSigner: false, isWritable: true },
       { pubkey: tokenProgramId, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      params.includeReputation !== false
+        ? { pubkey: reputation, isSigner: false, isWritable: true }
+        : { pubkey: programId, isSigner: false, isWritable: false },
     ],
     data,
   });
@@ -972,6 +1096,78 @@ export function decodeEvaluationRecord(data: Uint8Array): DecodedEvaluationRecor
   };
 }
 
+export interface DecodedReputationState {
+  wallet: string;
+  lastVerifiedAt: number;
+  verifiedStreak: number;
+  effectiveStreak: number;
+  totalEarnedUsdcMicros: string;
+  totalEarnedUsdc: number;
+  fraudFlags: number;
+  bump: number;
+  isFresh: boolean;
+  isZeroStakeVip: boolean;
+  decayExpiresAt: number | null;
+  daysUntilDecay: number | null;
+}
+
+export function buildEmptyReputationState(wallet: string): DecodedReputationState {
+  return {
+    wallet,
+    lastVerifiedAt: 0,
+    verifiedStreak: 0,
+    effectiveStreak: 0,
+    totalEarnedUsdcMicros: "0",
+    totalEarnedUsdc: 0,
+    fraudFlags: 0,
+    bump: 0,
+    isFresh: false,
+    isZeroStakeVip: false,
+    decayExpiresAt: null,
+    daysUntilDecay: null,
+  };
+}
+
+export function decodeReputationState(
+  data: Uint8Array,
+  nowSec: number = Math.floor(Date.now() / 1000)
+): DecodedReputationState {
+  const r = new BorshReader(data);
+  r.assertDiscriminator(ACCOUNT_DISCRIMINATORS.ReputationState, "ReputationState");
+  const wallet = r.readPubkey();
+  const lastVerifiedAt = r.readI64();
+  const verifiedStreak = r.readU8();
+  const totalEarnedUsdcMicros = r.readU64().toString();
+  const fraudFlags = r.readU8();
+  const bump = r.readU8();
+
+  const isFresh =
+    lastVerifiedAt > 0 && Math.max(0, nowSec - lastVerifiedAt) <= STREAK_DECAY_SECONDS;
+  const effectiveStreak = isFresh && fraudFlags === 0 ? verifiedStreak : 0;
+  const isZeroStakeVip =
+    fraudFlags === 0 && isFresh && verifiedStreak >= STREAK_ZERO_STAKE_THRESHOLD;
+  const decayExpiresAt = lastVerifiedAt > 0 ? lastVerifiedAt + STREAK_DECAY_SECONDS : null;
+  const daysUntilDecay =
+    decayExpiresAt !== null
+      ? Math.max(0, Math.ceil((decayExpiresAt - nowSec) / 86_400))
+      : null;
+
+  return {
+    wallet,
+    lastVerifiedAt,
+    verifiedStreak,
+    effectiveStreak,
+    totalEarnedUsdcMicros,
+    totalEarnedUsdc: Number(totalEarnedUsdcMicros) / 1_000_000,
+    fraudFlags,
+    bump,
+    isFresh,
+    isZeroStakeVip,
+    decayExpiresAt,
+    daysUntilDecay,
+  };
+}
+
 export interface DecodedBountyEscrow {
   recruiter: string;
   jobIdHex: string;
@@ -988,6 +1184,7 @@ export interface DecodedBountyEscrow {
   vaultBump: number;
   stakeBps: number;
   slashedPoolAmountMicros: string;
+  minStreak: number;
   isLegacyLayout: boolean;
 }
 
@@ -1009,12 +1206,16 @@ export function decodeBountyEscrow(data: Uint8Array): DecodedBountyEscrow {
 
   let stakeBps = DEFAULT_STAKE_BPS;
   let slashedPoolAmountMicros = "0";
+  let minStreak = 0;
   let isLegacyLayout = true;
 
   if (data.length >= V2_ESCROW_SPACE) {
     const rawStakeBps = r.readU16();
     stakeBps = rawStakeBps > 0 ? rawStakeBps : DEFAULT_STAKE_BPS;
     slashedPoolAmountMicros = r.readU64().toString();
+  }
+  if (data.length >= V3_ESCROW_SPACE) {
+    minStreak = r.readU8();
     isLegacyLayout = false;
   }
 
@@ -1034,6 +1235,7 @@ export function decodeBountyEscrow(data: Uint8Array): DecodedBountyEscrow {
     vaultBump,
     stakeBps,
     slashedPoolAmountMicros,
+    minStreak,
     isLegacyLayout,
   };
 }
@@ -1047,6 +1249,8 @@ export interface DecodedConvictionStake {
   status: ConvictionStakeStatusLabel;
   submittedAt: number;
   resolvedAt: number;
+  referrer: string | null;
+  isZeroStakeVip: boolean;
   bump: number;
 }
 
@@ -1067,7 +1271,19 @@ export function decodeConvictionStake(data: Uint8Array): DecodedConvictionStake 
       : "pending";
   const submittedAt = r.readI64();
   const resolvedAt = r.readI64();
-  const bump = r.readU8();
+
+  let referrer: string | null = null;
+  let isZeroStakeVip = false;
+  let bump = 0;
+
+  if (data.length <= 98) {
+    bump = r.readU8();
+  } else {
+    const hasReferrer = r.readU8();
+    referrer = hasReferrer === 1 ? r.readPubkey() : null;
+    isZeroStakeVip = r.readBool();
+    bump = r.readU8();
+  }
 
   return {
     escrow,
@@ -1076,6 +1292,8 @@ export function decodeConvictionStake(data: Uint8Array): DecodedConvictionStake 
     status,
     submittedAt,
     resolvedAt,
+    referrer,
+    isZeroStakeVip,
     bump,
   };
 }

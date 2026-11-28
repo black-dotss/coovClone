@@ -11,6 +11,7 @@ import {
   deriveEscrowVaultPda,
   deriveEvaluationPda,
   deriveProfilePda,
+  deriveReputationPda,
   uuidToBytes16,
 } from "./codec";
 import { getProgramId, getSolanaConnection, withSolanaConnection } from "./config";
@@ -20,6 +21,9 @@ import { getProgramId, getSolanaConnection, withSolanaConnection } from "./confi
  */
 export const EVENT_DISCRIMINATORS = {
   ProfileInitialized: [1, 31, 122, 19, 193, 205, 23, 27],
+  ReputationInitialized: [167, 122, 115, 118, 198, 80, 35, 69],
+  ReputationUpdated: [26, 36, 187, 150, 235, 90, 106, 89],
+  FraudPenaltyApplied: [124, 139, 238, 145, 246, 113, 146, 253],
   EvaluationRecorded: [153, 179, 229, 190, 87, 53, 206, 178],
   EvaluationDefended: [208, 144, 25, 154, 179, 206, 176, 223],
   CredentialMinted: [13, 15, 67, 163, 30, 92, 149, 213],
@@ -366,11 +370,36 @@ export async function fetchConvictionStakeViaAnchor(
 }
 
 /**
+ * Fetches and deserializes a `ReputationState` PDA (`["reputation", candidate]`) via Anchor.
+ */
+export async function fetchReputationViaAnchor(
+  candidateWallet: string | PublicKey,
+  programId: PublicKey = getProgramId()
+) {
+  const candidatePubkey =
+    typeof candidateWallet === "string" ? new PublicKey(candidateWallet) : candidateWallet;
+  const [reputationPda] = deriveReputationPda(candidatePubkey, programId);
+  const account = await withSolanaConnection(async (connection) => {
+    const program = getCoovAnchorProgram(connection, programId);
+    const ns = program.account as Record<
+      string,
+      { fetchNullable: (addr: PublicKey) => Promise<Record<string, unknown> | null> }
+    >;
+    return ns.reputationState.fetchNullable(reputationPda);
+  });
+  return {
+    reputationPda: reputationPda.toBase58(),
+    account,
+  };
+}
+
+/**
  * Convenience re-exports grouping PDA derivation helpers alongside Anchor deserialization.
  */
 export const COOV_PDAS = {
   deriveConfigPda,
   deriveProfilePda,
+  deriveReputationPda,
   deriveEvaluationPda,
   deriveEscrowPda,
   deriveEscrowVaultPda,

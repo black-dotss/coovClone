@@ -35,6 +35,7 @@ export interface CreateEvaluationInput {
   tone?: EvaluationTone;
   walletAddress?: string;
   stakeTxSignature?: string;
+  referrerWallet?: string;
   deviceId?: string;
   rawToken?: string | null;
   hardwareId?: string | null;
@@ -131,6 +132,7 @@ export async function createEvaluation(input: CreateEvaluationInput) {
       cvText: cvTextForBounty,
       walletAddress: input.walletAddress,
       stakeTxSignature: input.stakeTxSignature,
+      referrerWallet: input.referrerWallet,
       requireOnChainStake: true,
     });
   }
@@ -188,6 +190,8 @@ export async function createEvaluation(input: CreateEvaluationInput) {
         stakeTxSignature: preBountyGate.stakeTxSignature,
         stakeAmountMicros: preBountyGate.stakeAmountMicros,
         stakeStatus: preBountyGate.stakeStatus,
+        isZeroStakeVip: preBountyGate.isZeroStakeVip,
+        referrerWallet: preBountyGate.referrerWallet,
       });
     }
 

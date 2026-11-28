@@ -16,6 +16,7 @@ import { prepareSubmitWithConvictionStakeTx } from "@/lib/solana";
 
 const PrepareStakeSchema = z.object({
   walletAddress: z.string().min(32).max(64),
+  referrerWallet: z.string().min(32).max(64).optional().nullable(),
 });
 
 export const POST = createApiHandler(
@@ -67,6 +68,7 @@ export const POST = createApiHandler(
     const prepared = await prepareSubmitWithConvictionStakeTx({
       candidateWallet,
       jobId: bounty.jobDescriptionId,
+      referrerWallet: parsed.referrerWallet ?? null,
     });
 
     return successResponse({

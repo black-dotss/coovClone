@@ -14,6 +14,7 @@ import {
   successResponse,
 } from "@/lib/shared";
 import {
+  computeScoutSplitMicros,
   confirmSubmittedSignature,
   fetchOnChainClaimReceipt,
   fetchOnChainConvictionStake,
@@ -199,6 +200,12 @@ export const PATCH = createApiHandler(
       )
       .limit(1);
 
+    const referrerWallet = stakeRes.stake?.referrer ?? null;
+    const { candidateRewardMicros, scoutCutMicros } = computeScoutSplitMicros(
+      bounty.rewardPerWinnerMicros,
+      Boolean(referrerWallet && stakeRes.stake)
+    );
+
     if (!existing) {
       await db.insert(bountyClaims).values({
         bountyId: bounty.id,
@@ -208,6 +215,8 @@ export const PATCH = createApiHandler(
         claimReceiptPda: claimRes.claimReceiptPda,
         claimTxSignature: parsed.txSignature,
         amountMicros: claimRes.claim.amountPaidMicros,
+        referrerWallet,
+        scoutCutMicros: scoutCutMicros.toString(),
       });
     }
 
@@ -228,13 +237,12 @@ export const PATCH = createApiHandler(
       .where(eq(bounties.id, bounty.id));
 
     const paidMicros = BigInt(claimRes.claim.amountPaidMicros);
-    const rewardMicros = BigInt(bounty.rewardPerWinnerMicros);
     const stakeMicros = stakeRes.stake
       ? BigInt(stakeRes.stake.amountStakedMicros)
       : BigInt(0);
     const bonusMicros =
-      stakeRes.stake && paidMicros > rewardMicros + stakeMicros
-        ? paidMicros - rewardMicros - stakeMicros
+      stakeRes.stake && paidMicros > candidateRewardMicros + stakeMicros
+        ? paidMicros - candidateRewardMicros - stakeMicros
         : BigInt(0);
 
     await db
@@ -242,6 +250,7 @@ export const PATCH = createApiHandler(
       .set({
         candidateWallet,
         reviewStatus: "claimed",
+        ...(referrerWallet ? { referrerWallet, scoutCutMicros: scoutCutMicros.toString() } : {}),
         ...(stakeRes.stake?.status === "approved"
           ? {
               stakeStatus: "approved",
@@ -262,6 +271,8 @@ export const PATCH = createApiHandler(
       confirmed: true,
       claimReceiptPda: claimRes.claimReceiptPda,
       amountPaidUsdc: Number(claimRes.claim.amountPaidMicros) / 1_000_000,
+      scoutPaidUsdc: Number(scoutCutMicros) / 1_000_000,
+      referrerWallet,
       txSignature: parsed.txSignature,
       txUrl: getExplorerTxUrl(parsed.txSignature),
       claimsCount: updatedClaimsCount,

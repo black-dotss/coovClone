@@ -33,14 +33,30 @@ interface CredentialData {
   explorerUrl: string;
 }
 
+interface OnChainReputationData {
+  wallet: string;
+  lastVerifiedAt: number;
+  verifiedStreak: number;
+  effectiveStreak: number;
+  totalEarnedUsdcMicros: string;
+  totalEarnedUsdc: number;
+  fraudFlags: number;
+  isFresh: boolean;
+  isZeroStakeVip: boolean;
+  decayExpiresAt: number | null;
+  daysUntilDecay: number | null;
+}
+
 interface WalletStatusResponse {
   cluster: string;
   linkedWallet: string | null;
   walletVerifiedAt: string | null;
   profilePdaAddress: string | null;
+  reputationPdaAddress?: string | null;
   profileTxSignature: string | null;
   explorerProfileUrl: string | null;
   onChainProfile: OnChainProfileData | null;
+  onChainReputation?: OnChainReputationData | null;
   credentials: CredentialData[];
   onChainError: string | null;
 }
@@ -225,7 +241,18 @@ export const ProfileOnChainPanel: React.FC = () => {
                     : "Pending On-Chain Audit"
                 }
                 verifiedSkills={data?.onChainProfile?.topSkills ?? []}
-                issuedLabel={data?.linkedWallet ? "WALLET VERIFIED" : "LINK WALLET"}
+                subtitle={
+                  data?.onChainReputation
+                    ? `Streak ${data.onChainReputation.effectiveStreak}x · ${data.onChainReputation.totalEarnedUsdc.toFixed(2)} USDC`
+                    : null
+                }
+                issuedLabel={
+                  data?.onChainReputation?.isZeroStakeVip
+                    ? "ZERO-STAKE VIP"
+                    : data?.linkedWallet
+                    ? "WALLET VERIFIED"
+                    : "LINK WALLET"
+                }
                 downloadFileName="coov-solana-profile-card.png"
                 onDownloadError={(msg) => setError(msg)}
               />
@@ -328,6 +355,16 @@ export const ProfileOnChainPanel: React.FC = () => {
                       </p>
                     </div>
                   )}
+                  {data?.reputationPdaAddress && (
+                    <div className="space-y-0.5 pt-2 border-t border-border/60">
+                      <span className="text-[10px] uppercase text-text-muted block">
+                        Reputation PDA (Decay &amp; Streak)
+                      </span>
+                      <p className="text-purple-400 break-all">
+                        {data.reputationPdaAddress}
+                      </p>
+                    </div>
+                  )}
                   <div className="space-y-0.5 pt-2 border-t border-border/60">
                     <span className="text-[10px] uppercase text-text-muted block">
                       Soulbound SBTs
@@ -337,6 +374,68 @@ export const ProfileOnChainPanel: React.FC = () => {
                         ? `${data.credentials.length} Token-2022 SBT(s) · Latest Mint: ${data.credentials[0].mint}`
                         : "0 Token-2022 SBT(s)"}
                     </p>
+                  </div>
+                </div>
+
+                {/* On-Chain Trust Multiplier, 30-Day Decay & Zero-Stake VIP Perk */}
+                <div className="rounded-lg border border-border bg-surface p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-text font-mono">
+                      On-Chain Trust Multiplier &amp; Streak
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 text-[10px] font-mono rounded-md bg-surface-elevated border border-border ${
+                        data?.onChainReputation && data.onChainReputation.fraudFlags > 0
+                          ? "text-red-400"
+                          : data?.onChainReputation?.isZeroStakeVip
+                          ? "text-purple-400 font-bold"
+                          : "text-text-secondary"
+                      }`}
+                    >
+                      {data?.onChainReputation && data.onChainReputation.fraudFlags > 0
+                        ? `Fraud Penalty (${data.onChainReputation.fraudFlags} flag)`
+                        : data?.onChainReputation?.isZeroStakeVip
+                        ? "Zero-Stake Fast-Track Unlocked (0 USDC Stake)"
+                        : data?.onChainReputation?.isFresh
+                        ? `Active · ${data.onChainReputation.daysUntilDecay ?? 0}d decay window`
+                        : data?.onChainReputation && data.onChainReputation.verifiedStreak > 0
+                        ? "Decayed (>30 days idle — re-verify to restore)"
+                        : "Score 75+ twice within 30d to unlock 0 USDC Stake"}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <div className="p-3 rounded-lg bg-surface-elevated border border-border">
+                      <span className="text-[10px] font-mono uppercase text-text-muted block">
+                        Active Streak
+                      </span>
+                      <p className="text-xl font-extrabold text-purple-400 mt-0.5 font-mono">
+                        {data?.onChainReputation?.effectiveStreak ?? 0}x
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-surface-elevated border border-border">
+                      <span className="text-[10px] font-mono uppercase text-text-muted block">
+                        Bounty Earned
+                      </span>
+                      <p className="text-xl font-extrabold text-text mt-0.5 font-mono">
+                        {(data?.onChainReputation?.totalEarnedUsdc ?? 0).toFixed(2)}{" "}
+                        <span className="text-[10px] text-text-muted font-normal">USDC</span>
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-surface-elevated border border-border">
+                      <span className="text-[10px] font-mono uppercase text-text-muted block">
+                        Fraud Flags
+                      </span>
+                      <p
+                        className={`text-xl font-extrabold mt-0.5 font-mono ${
+                          (data?.onChainReputation?.fraudFlags ?? 0) > 0
+                            ? "text-red-400"
+                            : "text-text"
+                        }`}
+                      >
+                        {data?.onChainReputation?.fraudFlags ?? 0}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
