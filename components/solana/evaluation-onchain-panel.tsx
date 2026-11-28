@@ -378,10 +378,10 @@ export const EvaluationOnChainPanel: React.FC<{
             <SolanaIdentityCard
               badgeLabel={
                 isSbtMinted
-                  ? "SBT MINTED"
+                  ? "SBT Minted"
                   : isAnchored
-                  ? "PROOF ANCHORED"
-                  : "EVALUATION ID"
+                  ? "Proof Anchored"
+                  : "Candidate ID"
               }
               clusterLabel={clusterLabel}
               roleTitle={state.roleTitle || "Candidate Role"}
@@ -389,7 +389,22 @@ export const EvaluationOnChainPanel: React.FC<{
               scoreTier={state.scoreTier}
               subtitle={state.modelVersion}
               verifiedSkills={state.verifiedSkills}
-              issuedLabel={isAnchored ? `ANCHORED · ${clusterLabel.toUpperCase()}` : "OFF-CHAIN PREVIEW"}
+              issuedLabel={
+                isSbtMinted
+                  ? "SBT Verified"
+                  : isAnchored
+                  ? "Anchored"
+                  : publicKey
+                  ? "Anchor Proof"
+                  : "Link Wallet"
+              }
+              onFooterAction={
+                !publicKey
+                  ? openConnectModal
+                  : !isAnchored && state.programConfigInitialized && state.status === "completed"
+                  ? () => void handleAnchor()
+                  : undefined
+              }
               downloadFileName={`coov-solana-id-${state.evaluationId.slice(0, 8)}.png`}
               onDownloadError={(msg) => setError(msg)}
             />

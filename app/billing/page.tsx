@@ -113,6 +113,7 @@ export default function BillingPage() {
   const [orders, setOrders] = useState<PaymentOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [dismissedDevicePopup, setDismissedDevicePopup] = useState(false);
 
   // Currency selection: "USDC" (default Solana Devnet) | "USD" (Polar.sh) | "ETB" (Verify.ET)
   const [currency, setCurrency] = useState<"USDC" | "USD" | "ETB">("USDC");
@@ -497,7 +498,7 @@ export default function BillingPage() {
         {/* Device Restriction Alert */}
         {isDeviceRestricted && (
           <Alert
-            variant="warning"
+            variant="purple"
             title="Trial Allowance Restricted on this Device"
             action={
               <Link href="/profile">
@@ -513,21 +514,46 @@ export default function BillingPage() {
         )}
 
         <ErrorPopup
-          title="Billing Notice"
-          message={error}
-          onDismiss={() => setError(null)}
+          title={
+            error
+              ? "Billing Notice"
+              : isDeviceRestricted && !dismissedDevicePopup
+              ? "Trial Allowance Restricted on this Device"
+              : "Billing Notice"
+          }
+          message={
+            error ||
+            (isDeviceRestricted && !dismissedDevicePopup
+              ? "This device and account have reached their shared limit of 3 free recruitment reviews. To evaluate more CVs without waiting, upgrade to Pro below with USD, Solana USDC, or ETB."
+              : null)
+          }
+          onDismiss={() => {
+            if (error) {
+              setError(null);
+            } else {
+              setDismissedDevicePopup(true);
+            }
+          }}
           action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setLoading(true);
-                setError(null);
-                setRefreshKey((k) => k + 1);
-              }}
-            >
-              Retry
-            </Button>
+            error ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setLoading(true);
+                  setError(null);
+                  setRefreshKey((k) => k + 1);
+                }}
+              >
+                Retry
+              </Button>
+            ) : isDeviceRestricted ? (
+              <Link href="/profile">
+                <Button variant="outline" size="sm">
+                  Device Recovery →
+                </Button>
+              </Link>
+            ) : undefined
           }
         />
 

@@ -28,7 +28,7 @@ export default function DeviceLimitPage() {
           <h1 className="text-2xl font-bold tracking-tight text-white">
             Shared Device + Account Trial Limit
           </h1>
-          <p className="text-base font-medium text-amber-400">
+          <p className="text-base font-medium text-purple-400">
             All 3 free trial evaluations have been used on this device or account.
           </p>
         </div>
