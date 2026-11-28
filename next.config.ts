@@ -13,7 +13,14 @@ const nextConfig = (phase: string): NextConfig => {
   }
 
   const config: NextConfig = {
-    serverExternalPackages: ["pdf-parse", "pdfkit", "pdfjs-dist"],
+    serverExternalPackages: [
+      "pdf-parse",
+      "pdfkit",
+      "pdfjs-dist",
+      "@coral-xyz/anchor",
+      "@coral-xyz/anchor-errors",
+      "@coral-xyz/borsh",
+    ],
     outputFileTracingIncludes: {
       "/api/**/*": ["./node_modules/pdfjs-dist/**/*"],
     },
