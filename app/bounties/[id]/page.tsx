@@ -352,7 +352,7 @@ export default function BountyDetailPage() {
         </div>
       )}
 
-      <div className="rounded-xl border border-border bg-surface p-6 sm:p-8 space-y-6">
+      <div className="rounded-xl border border-purple-300/60 dark:border-purple-500/20 bg-purple-50/45 dark:bg-purple-500/[0.045] p-6 sm:p-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-border pb-5">
           <div className="flex items-start gap-4 min-w-0">
             <BountyCompanyLogo
