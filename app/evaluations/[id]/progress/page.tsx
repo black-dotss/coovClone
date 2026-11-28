@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Avatar, AgentRoleKey, preloadAgentAvatars } from "@/components/ui/avatar";
 import { ErrorPopup } from "@/components/ui/error-popup";
+import { FullPageLoading } from "@/components/ui/loading-spinner";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/client/api";
 
@@ -91,8 +92,9 @@ export default function LiveDebateProgressPage() {
   const evaluationId = params?.id as string;
   const isViewingArchive = searchParams?.get("view") === "chat";
 
+  const [initialLoading, setInitialLoading] = useState(true);
   const [status, setStatus] = useState<EvaluationProgressEvent["status"]>("queued");
-  const [_currentPhase, _setCurrentPhase] = useState("Preparing evaluation...");
+  const [_currentPhase, _setCurrentPhase] = useState("Loading committee discussion...");
   const [completedAgents, setCompletedAgents] = useState<CompletedAgentSummary[]>([]);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
   const [debateMessages, setDebateMessages] = useState<DebateTurn[]>([]);
@@ -132,14 +134,19 @@ export default function LiveDebateProgressPage() {
   useEffect(() => {
     if (!evaluationId) return;
 
+    let cancelled = false;
     let reconnectTimeout: NodeJS.Timeout | null = null;
     let pollInterval: NodeJS.Timeout | null = null;
     let redirectTimeout: NodeJS.Timeout | null = null;
+    let runRetryTimeout: NodeJS.Timeout | null = null;
 
     const handlePayload = (data: EvaluationProgressEvent) => {
-      const isInitialMount = wasAlreadyCompletedOnMount.current === null;
-      if (isInitialMount) {
-        wasAlreadyCompletedOnMount.current = data.status === "completed";
+      const isInitialSnapshot = wasAlreadyCompletedOnMount.current === null;
+      if (isInitialSnapshot) {
+        wasAlreadyCompletedOnMount.current =
+          data.status === "completed" ||
+          data.status === "failed" ||
+          data.status === "cancelled";
       }
       statusRef.current = data.status;
       setStatus(data.status);
@@ -157,12 +164,20 @@ export default function LiveDebateProgressPage() {
       const err = data.error || data.errorMessage;
       if (err) setError(err);
 
-      // Only auto-scroll when a new message has actually arrived AND user has not scrolled up
       const totalMsgs = (data.completedAgents?.length || 0) + (data.debateMessages?.length || 0);
       const hasNewMessage = totalMsgs > prevTotalMessagesRef.current;
       prevTotalMessagesRef.current = totalMsgs;
 
-      if ((isInitialMount || hasNewMessage) && !isUserScrolledUp.current) {
+      if (data.status === "completed" && (isViewingArchive || wasAlreadyCompletedOnMount.current === true)) {
+        // When returning to read finished chat archive, keep view at top so user can read chronologically
+        if (isInitialSnapshot && chatScrollRef.current) {
+          setTimeout(() => {
+            if (chatScrollRef.current) {
+              chatScrollRef.current.scrollTop = 0;
+            }
+          }, 50);
+        }
+      } else if ((isInitialSnapshot || hasNewMessage) && !isUserScrolledUp.current) {
         setTimeout(() => {
           if (chatScrollRef.current) {
             chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
@@ -170,14 +185,22 @@ export default function LiveDebateProgressPage() {
         }, 50);
       }
 
-      if (data.status === "completed" || data.status === "failed") {
+      if (data.status === "completed" || data.status === "failed" || data.status === "cancelled") {
         if (eventSourceRef.current) {
           eventSourceRef.current.close();
+          eventSourceRef.current = null;
         }
-        if (pollInterval) clearInterval(pollInterval);
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
 
         // Never redirect if user clicked "Return to Agent Chat" (?view=chat)
-        // or if the evaluation was already completed when they navigated to this page
+        // or if the evaluation was already finished when they opened this page
         const isArchive = isViewingArchive || wasAlreadyCompletedOnMount.current === true;
         if (data.status === "completed" && !isArchive && wasAlreadyCompletedOnMount.current === false) {
           redirectTimeout = setTimeout(() => {
@@ -194,7 +217,8 @@ export default function LiveDebateProgressPage() {
     };
 
     function connectSSE() {
-      const url = `/api/evaluations/${evaluationId}/progress`;
+      if (cancelled) return;
+      const url = `/api/evaluations/${evaluationId}/progress?stream=true`;
       const es = new EventSource(url);
       eventSourceRef.current = es;
 
@@ -212,15 +236,17 @@ export default function LiveDebateProgressPage() {
 
       es.onerror = () => {
         es.close();
-        if (statusRef.current !== "completed" && statusRef.current !== "failed") {
+        if (
+          !cancelled &&
+          statusRef.current !== "completed" &&
+          statusRef.current !== "failed" &&
+          statusRef.current !== "cancelled"
+        ) {
           reconnectTimeout = setTimeout(connectSSE, 2000);
         }
       };
     }
 
-    connectSSE();
-
-    // Ensure evaluation worker is triggered via explicit run endpoint
     const triggerRun = () => {
       apiFetch(`/api/evaluations/${evaluationId}/run`, {
         method: "POST",
@@ -229,34 +255,67 @@ export default function LiveDebateProgressPage() {
       });
     };
 
-    triggerRun();
-    const runRetryTimeout = setTimeout(() => {
-      if (statusRef.current === "queued") {
-        triggerRun();
-      }
-    }, 3000);
-
-    // Resilient fallback polling every 2 seconds for instant live updates
-    pollInterval = setInterval(async () => {
+    // Fetch saved snapshot first: if evaluation already finished, display full saved chat
+    // immediately WITHOUT triggering /run or opening SSE streams!
+    (async () => {
       try {
-        const res = await apiFetch<EvaluationProgressEvent>(
+        const snapshot = await apiFetch<EvaluationProgressEvent>(
           `/api/evaluations/${evaluationId}/progress`
         );
-        if (res && res.status) {
-          handlePayload(res);
+        if (cancelled) return;
+        if (snapshot && snapshot.status) {
+          handlePayload(snapshot);
         }
-      } catch {
-        // Polling failure is non-fatal
+
+        const alreadyDone =
+          snapshot?.status === "completed" ||
+          snapshot?.status === "failed" ||
+          snapshot?.status === "cancelled";
+
+        if (!alreadyDone) {
+          triggerRun();
+          connectSSE();
+
+          runRetryTimeout = setTimeout(() => {
+            if (!cancelled && statusRef.current === "queued") {
+              triggerRun();
+            }
+          }, 3000);
+
+          pollInterval = setInterval(async () => {
+            if (cancelled) return;
+            try {
+              const res = await apiFetch<EvaluationProgressEvent>(
+                `/api/evaluations/${evaluationId}/progress`
+              );
+              if (!cancelled && res && res.status) {
+                handlePayload(res);
+              }
+            } catch {
+              // Polling failure is non-fatal
+            }
+          }, 2000);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load evaluation chat.");
+        }
+      } finally {
+        if (!cancelled) {
+          setInitialLoading(false);
+        }
       }
-    }, 2000);
+    })();
 
     return () => {
+      cancelled = true;
       if (runRetryTimeout) clearTimeout(runRetryTimeout);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       if (redirectTimeout) clearTimeout(redirectTimeout);
       if (pollInterval) clearInterval(pollInterval);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
+        eventSourceRef.current = null;
       }
     };
   }, [evaluationId, router, isViewingArchive]);
@@ -331,6 +390,10 @@ export default function LiveDebateProgressPage() {
       </div>
     );
   };
+
+  if (initialLoading) {
+    return <FullPageLoading />;
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full space-y-6">
@@ -425,8 +488,12 @@ export default function LiveDebateProgressPage() {
         <div className="lg:col-span-6 space-y-2.5 order-1 lg:order-2">
           <div className="flex items-center justify-between pb-1.5 border-b border-border">
             <span className="text-sm font-bold text-text font-mono flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
-              Chat
+              <span
+                className={`w-2 h-2 rounded-full bg-purple-400 ${
+                  isActiveRun ? "animate-pulse" : ""
+                }`}
+              />
+              {status === "completed" ? "Saved Committee Chat" : "Chat"}
             </span>
             <span className="text-[11px] text-text-muted font-mono">
               {screeningRemarks.length + debateMessages.length} messages
